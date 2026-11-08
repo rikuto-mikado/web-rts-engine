@@ -1,0 +1,589 @@
+@import 'tailwindcss';
+
+/*
+ * Visual identity: a war table. Dark tooled leather and blackened iron frames,
+ * gold-leaf headings with ornamental rules, parchment for dispatches.
+ */
+@theme {
+  /* Readable humanist text, engraved capitals for headings; pixel blackletter only for the logo. */
+  --font-display: 'Cinzel', 'Times New Roman', serif;
+  --font-gothic: 'Jacquard 12', 'Cinzel', serif;
+  --font-sans: 'Alegreya Sans', 'Gill Sans', system-ui, sans-serif;
+  --font-serif: 'Alegreya', Georgia, serif;
+
+  /* Warm leather-and-soot neutrals (100 = parchment, 950 = soot). */
+  --color-ink-950: #0e0b08;
+  --color-ink-900: #15110c;
+  --color-ink-850: #1b1610;
+  --color-ink-800: #231c14;
+  --color-ink-700: #33291d;
+  --color-ink-600: #4a3c2b;
+  --color-ink-500: #6e5d47;
+  --color-ink-400: #9c8a6e;
+  --color-ink-300: #c4b393;
+  --color-ink-200: #ddd0b2;
+  --color-ink-100: #f1e8d3;
+
+  --color-gold-200: #f7e2a4;
+  --color-gold-300: #e9c869;
+  --color-gold-400: #d1a73f;
+  --color-gold-500: #a8801f;
+  --color-gold-600: #7a5c14;
+
+  --color-royal-300: #a9c4f2;
+  --color-royal-400: #6c95dd;
+  --color-royal-500: #3563b4;
+  --color-royal-700: #1f3a6e;
+
+  --color-ember-300: #f2a08a;
+  --color-ember-400: #de5f45;
+  --color-ember-500: #b5321f;
+  --color-ember-700: #6e1c12;
+
+  --color-parchment: #eadcbc;
+  --color-parchment-dark: #d6c398;
+  --color-inkbrown: #2e2316;
+
+  /* Squarer, forged corners instead of soft app-style rounding. */
+  --text-xs: 13px;
+  --text-xs--line-height: 1.35;
+  --text-sm: 15px;
+  --text-sm--line-height: 1.4;
+  --radius-sm: 2px;
+  --radius-md: 3px;
+  --radius-lg: 4px;
+  --radius-xl: 5px;
+  --radius-2xl: 6px;
+}
+
+:root {
+  color-scheme: dark;
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.5 0 0 0 0 0.4 0 0 0 0 0.3 0 0 0 .55 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  --paper-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='p'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.035' numOctaves='4'/%3E%3CfeColorMatrix values='0 0 0 0 0.45 0 0 0 0 0.33 0 0 0 0 0.18 0 0 0 .22 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23p)'/%3E%3C/svg%3E");
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: var(--color-ink-950);
+  color: var(--color-ink-100);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  overscroll-behavior: none;
+}
+
+/* Comfortable finger targets on touch screens. */
+@media (pointer: coarse) {
+  .btn {
+    min-height: 40px;
+  }
+  .ribbon-tab {
+    min-height: 42px;
+  }
+}
+
+.safe-top {
+  padding-top: env(safe-area-inset-top);
+}
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+@keyframes sheet-up {
+  from {
+    transform: translateY(40px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.animate-sheet-up {
+  animation: sheet-up 0.22s ease-out;
+}
+
+@layer components {
+/* Leather panel in a blackened iron frame, with rivets at the corners. */
+.panel {
+  background-color: #1a140e;
+  background-image:
+    var(--grain),
+    radial-gradient(120% 90% at 50% 0%, rgb(92 64 36 / 0.35), transparent 60%),
+    linear-gradient(180deg, #211912, #140f0a);
+  border: 1px solid #070504;
+  box-shadow:
+    inset 0 0 0 1px rgb(209 167 63 / 0.28),
+    inset 0 0 0 3px #0c0907,
+    inset 0 0 0 4px rgb(255 235 190 / 0.06),
+    inset 0 0 24px rgb(0 0 0 / 0.55),
+    0 12px 28px rgb(0 0 0 / 0.55);
+}
+.panel:not(.absolute):not(.fixed) {
+  position: relative;
+}
+.panel::before,
+.panel::after {
+  content: '';
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  top: 5px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #e8d29a, #8a6a28 55%, #2a1e0c);
+  box-shadow: 0 1px 1px rgb(0 0 0 / 0.7);
+  pointer-events: none;
+  z-index: 1;
+}
+.panel::before {
+  left: 5px;
+}
+.panel::after {
+  right: 5px;
+}
+
+/* Gold-leaf heading. */
+.panel-title {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  font-size: 17px;
+  line-height: 1.15;
+  background: linear-gradient(180deg, #fbe7ae 0%, #e2b955 45%, #a8801f 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  text-shadow: none;
+  filter: drop-shadow(0 1px 0 rgb(0 0 0 / 0.8));
+}
+
+/* Ornamental rule: ——◆ Title ◆—— */
+.ornament {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font-display);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--color-gold-300);
+}
+.ornament::before,
+.ornament::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgb(209 167 63 / 0.55));
+}
+.ornament::after {
+  background: linear-gradient(90deg, rgb(209 167 63 / 0.55), transparent);
+}
+.ornament > span::before,
+.ornament > span::after {
+  content: '◆';
+  font-size: 6px;
+  vertical-align: 2px;
+  margin: 0 0.45rem;
+  color: var(--color-gold-500);
+}
+
+/* Forged iron plate buttons. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  border-radius: 3px;
+  padding: 0.42rem 0.8rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--color-ink-100);
+  cursor: pointer;
+  border: 1px solid #070504;
+  background: linear-gradient(180deg, #3b3026, #261e16 55%, #1d1610);
+  box-shadow:
+    inset 0 1px 0 rgb(255 235 190 / 0.12),
+    inset 0 0 0 1px rgb(209 167 63 / 0.14),
+    0 1px 2px rgb(0 0 0 / 0.6);
+  transition:
+    filter 0.12s,
+    transform 0.05s,
+    box-shadow 0.12s;
+}
+.btn:hover:not(:disabled) {
+  filter: brightness(1.22);
+  box-shadow:
+    inset 0 1px 0 rgb(255 235 190 / 0.16),
+    inset 0 0 0 1px rgb(209 167 63 / 0.4),
+    0 1px 2px rgb(0 0 0 / 0.6);
+}
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+  filter: brightness(0.95);
+}
+.btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+/* Gilded command button. */
+.btn-gold {
+  color: #2a1a05;
+  text-shadow: 0 1px 0 rgb(255 240 200 / 0.4);
+  background: linear-gradient(180deg, #f1d27e, #cf9f36 50%, #a77a1c);
+  border-color: #4a3208;
+  box-shadow:
+    inset 0 1px 0 rgb(255 248 220 / 0.6),
+    inset 0 -2px 0 rgb(80 50 5 / 0.35),
+    0 1px 3px rgb(0 0 0 / 0.6);
+}
+.btn-gold:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+/* Blood-red seal for dangerous orders. */
+.btn-danger {
+  color: #fbe2d6;
+  background: linear-gradient(180deg, #8e2a1b, #6a1b10 60%, #521208);
+  border-color: #240604;
+  box-shadow:
+    inset 0 1px 0 rgb(255 200 180 / 0.2),
+    0 1px 2px rgb(0 0 0 / 0.6);
+}
+
+/* Ribbon tab. */
+.ribbon-tab {
+  position: relative;
+  flex: 1;
+  padding: 0.45rem 0.4rem 0.55rem;
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--color-ink-300);
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s;
+}
+.ribbon-tab:hover {
+  color: var(--color-ink-100);
+}
+.ribbon-tab[data-active='true'] {
+  color: var(--color-gold-200);
+  border-bottom-color: var(--color-gold-400);
+  background: linear-gradient(180deg, transparent, rgb(209 167 63 / 0.1));
+}
+
+/* Inset well for lists and stats: like leather tooled into the panel. */
+.well {
+  background: rgb(0 0 0 / 0.28);
+  border: 1px solid rgb(0 0 0 / 0.5);
+  box-shadow:
+    inset 0 1px 3px rgb(0 0 0 / 0.5),
+    0 1px 0 rgb(255 235 190 / 0.04);
+}
+
+/* Parchment for dispatches and the chronicle. */
+.parchment {
+  color: var(--color-inkbrown);
+  background-color: var(--color-parchment);
+  background-image:
+    var(--paper-grain),
+    radial-gradient(130% 120% at 50% 50%, transparent 55%, rgb(120 84 36 / 0.35) 100%);
+  border: 1px solid #6d5430;
+  box-shadow:
+    inset 0 0 0 1px rgb(255 248 228 / 0.5),
+    0 6px 16px rgb(0 0 0 / 0.5);
+  font-family: var(--font-serif);
+}
+
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(209 167 63 / 0.25) transparent;
+}
+
+input[type='range'].slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 1px;
+  background: linear-gradient(90deg, var(--fill, var(--color-gold-400)) var(--pct, 0%), rgb(0 0 0 / 0.45) var(--pct, 0%));
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.6);
+  outline: none;
+  cursor: pointer;
+}
+input[type='range'].slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 16px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #f1d27e, #a77a1c);
+  border: 1px solid #2a1a05;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.6);
+}
+input[type='range'].slider::-moz-range-thumb {
+  width: 12px;
+  height: 16px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #f1d27e, #a77a1c);
+  border: 1px solid #2a1a05;
+}
+
+select,
+input[type='number'],
+input[type='text'],
+input:not([type]) {
+  font-family: var(--font-sans);
+}
+
+}
+
+/* ---------------------------------------------------------------------- */
+/* Map overlay labels (positioned by the renderer every frame)            */
+/* ---------------------------------------------------------------------- */
+
+.map-label {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  white-space: nowrap;
+  transform-origin: 50% 100%;
+  will-change: transform;
+}
+
+.castle-label {
+  text-align: center;
+  padding: 3px 10px 4px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, rgb(30 22 14 / 0.9), rgb(16 11 7 / 0.9));
+  border: 1px solid rgb(0 0 0 / 0.8);
+  box-shadow:
+    inset 0 0 0 1px rgb(255 235 190 / 0.08),
+    0 2px 8px rgb(0 0 0 / 0.5);
+}
+/* Your own castles: gilded frame and a home marker so they are easy to spot. */
+.castle-label[data-rel='self'] {
+  background: linear-gradient(180deg, rgb(28 42 78 / 0.95), rgb(14 22 44 / 0.95));
+  box-shadow:
+    inset 0 0 0 1px #e9c869,
+    inset 0 0 0 2px rgb(0 0 0 / 0.6),
+    0 0 12px rgb(233 200 105 / 0.35),
+    0 2px 8px rgb(0 0 0 / 0.5);
+}
+.cl-home {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: #e9c869;
+  margin-bottom: 1px;
+}
+.castle-label[data-rel='self'] {
+  border-color: rgb(95 147 236 / 0.6);
+}
+.castle-label[data-rel='enemy'] {
+  border-color: rgb(240 97 74 / 0.6);
+}
+.castle-label[data-rel='neutral'] {
+  border-color: rgb(217 180 74 / 0.4);
+}
+.castle-label[data-rel='ally'] {
+  border-color: rgb(79 209 197 / 0.55);
+}
+.castle-label[data-rel='ally'] .cl-name {
+  color: #8ee6dc;
+}
+.castle-label.selected {
+  box-shadow:
+    0 0 0 2px var(--color-gold-400),
+    0 2px 10px rgb(0 0 0 / 0.5);
+}
+.cl-name {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 12.5px;
+  letter-spacing: 0.06em;
+  color: #f3efe4;
+}
+.castle-label[data-rel='self'] .cl-name {
+  color: var(--color-royal-300);
+}
+.castle-label[data-rel='enemy'] .cl-name {
+  color: var(--color-ember-300);
+}
+.cl-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 5px;
+  vertical-align: 1px;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.5);
+}
+.cl-realm {
+  font-size: 11px;
+  color: var(--color-ink-400);
+  letter-spacing: 0.02em;
+  margin-top: -1px;
+}
+.cl-crown {
+  color: var(--color-gold-300);
+  margin-right: 4px;
+}
+.cl-row {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--color-ink-200);
+  font-variant-numeric: tabular-nums;
+}
+.cl-siege {
+  color: #fff;
+  background: var(--color-ember-500);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  animation: pulse-red 1.2s ease-in-out infinite;
+}
+.cl-walls {
+  margin-top: 3px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgb(255 255 255 / 0.12);
+  overflow: hidden;
+}
+.cl-walls i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #c7372a, #eccf72);
+}
+
+.army-label {
+  min-width: 78px;
+  padding: 2px 6px 3px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, rgb(30 22 14 / 0.88), rgb(16 11 7 / 0.88));
+  border-left: 3px solid var(--color-royal-400);
+  font-size: 12px;
+}
+.army-label[data-rel='enemy'] {
+  border-left-color: var(--color-ember-400);
+}
+.army-label.selected {
+  box-shadow: 0 0 0 1.5px var(--color-gold-400);
+}
+.al-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.al-name {
+  font-weight: 600;
+  color: #f1f1f1;
+}
+.al-n {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-gold-300);
+  font-weight: 600;
+}
+.al-morale {
+  margin-top: 2px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgb(255 255 255 / 0.12);
+  overflow: hidden;
+}
+.al-morale i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #f0614a, #eccf72 50%, #6fd08c);
+  background-size: 100px 100%;
+}
+.al-form {
+  font-size: 11px;
+  color: var(--color-ink-400);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.al-status {
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.al-status.battle {
+  color: var(--color-ember-300);
+}
+.al-status.hidden {
+  color: #86efac;
+}
+.al-status.nosupply {
+  color: #fca5a5;
+  animation: pulse-red 1.2s ease-in-out infinite;
+}
+.al-status.retreat {
+  color: var(--color-ink-300);
+}
+
+.float-text {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  font-weight: 800;
+  font-size: 15px;
+  text-shadow:
+    0 1px 2px rgb(0 0 0 / 0.9),
+    0 0 6px rgb(0 0 0 / 0.6);
+  font-variant-numeric: tabular-nums;
+}
+.float-player {
+  color: #8fb8ff;
+}
+.float-enemy {
+  color: #ff8a70;
+}
+
+@keyframes pulse-red {
+  50% {
+    opacity: 0.55;
+  }
+}
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.animate-slide-in {
+  animation: slide-in 0.25s ease-out;
+}
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.animate-fade-up {
+  animation: fade-up 0.3s ease-out;
+}

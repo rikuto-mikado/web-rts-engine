@@ -1,0 +1,13 @@
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+
+from . import views
+
+router = DefaultRouter()
+router.register("campaigns", views.CampaignViewSet, basename="campaign")
+
+urlpatterns = [
+    path("health/", views.health),
+    path("content/", views.content),
+    path("", include(router.urls)),
+]

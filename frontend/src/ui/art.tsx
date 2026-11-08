@@ -1,0 +1,211 @@
+import type { OutpostKind } from '../game/outposts'
+import type { UnitType } from '../game/types'
+import { UnitGlyph } from './common'
+
+/**
+ * Small flat illustrations used in menus and the field manual. Drawn as SVG
+ * so they stay crisp at any size and match the low-poly look of the map.
+ */
+
+const SKY = '#2a3340'
+const GRASS = '#4f7a2e'
+const GRASS_D = '#3c5f22'
+const WOOD = '#7a5532'
+const WOOD_D = '#5a3d22'
+const STONE = '#a9a294'
+const STONE_D = '#7f796d'
+const CANVAS = '#e4d8bc'
+const WATER = '#3b7ea1'
+const PINE = '#2f5d34'
+const PINE_L = '#3c7641'
+
+function Frame({ children, size = 96 }: { children: React.ReactNode; size?: number }) {
+  return (
+    <svg viewBox="0 0 96 64" width={size} height={(size * 64) / 96} className="block shrink-0 rounded-sm" aria-hidden>
+      <defs>
+        <linearGradient id="sky" x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0" stopColor="#3b4a5e" />
+          <stop offset="1" stopColor={SKY} />
+        </linearGradient>
+      </defs>
+      <rect width="96" height="64" fill="url(#sky)" />
+      {children}
+    </svg>
+  )
+}
+
+const pine = (x: number, y: number, s = 1) => (
+  <g key={`p${x}-${y}`} transform={`translate(${x} ${y}) scale(${s})`}>
+    <rect x="-1" y="0" width="2" height="4" fill={WOOD_D} />
+    <polygon points="-6,1 0,-9 6,1" fill={PINE} />
+    <polygon points="-4.5,-4 0,-13 4.5,-4" fill={PINE_L} />
+  </g>
+)
+
+export function OutpostArt({ kind, size = 96 }: { kind: OutpostKind; size?: number }) {
+  switch (kind) {
+    case 'camp':
+      return (
+        <Frame size={size}>
+          <rect y="44" width="96" height="20" fill={GRASS} />
+          <polygon points="38,46 48,30 58,46" fill={CANVAS} />
+          <polygon points="48,30 58,46 53,46" fill="#c9bb98" />
+          {Array.from({ length: 13 }, (_, i) => {
+            const x = 12 + i * 6
+            return <polygon key={i} points={`${x - 2},52 ${x - 2},40 ${x},36 ${x + 2},40 ${x + 2},52`} fill={i % 2 ? WOOD : WOOD_D} />
+          })}
+          <rect x="47.5" y="18" width="1" height="13" fill={WOOD_D} />
+          <polygon points="48.5,18 58,21 48.5,24" fill="#c7372a" />
+        </Frame>
+      )
+    case 'watchtower':
+      return (
+        <Frame size={size}>
+          <polygon points="0,64 0,46 30,36 62,40 96,50 96,64" fill={GRASS_D} />
+          <polygon points="0,64 0,52 40,44 96,56 96,64" fill={GRASS} />
+          <rect x="42" y="16" width="2" height="26" fill={WOOD_D} />
+          <rect x="54" y="16" width="2" height="26" fill={WOOD_D} />
+          <line x1="43" y1="38" x2="55" y2="24" stroke={WOOD} strokeWidth="1.2" />
+          <line x1="55" y1="38" x2="43" y2="24" stroke={WOOD} strokeWidth="1.2" />
+          <rect x="39" y="12" width="20" height="5" fill={WOOD} />
+          <polygon points="37,12 49,3 61,12" fill={WOOD_D} />
+          <path d="M60 14 Q72 6 84 18" stroke="#e9c869" strokeWidth="0.8" fill="none" strokeDasharray="2 2" />
+          <polygon points="84,18 80,16 81,19" fill="#e9c869" />
+        </Frame>
+      )
+    case 'lodge':
+      return (
+        <Frame size={size}>
+          <rect y="44" width="96" height="20" fill={GRASS_D} />
+          {[8, 20, 76, 88, 66].map((x, i) => pine(x, 48 - (i % 2) * 3, 1.3))}
+          <rect x="30" y="38" width="20" height="10" fill={WOOD} />
+          <polygon points="28,38 40,29 52,38" fill="#3d5a2a" />
+          <rect x="48" y="41" width="15" height="8" fill={WOOD_D} />
+          <polygon points="46,41 55.5,34 65,41" fill="#4a6a32" />
+          <rect x="37" y="42" width="5" height="6" fill="#2a1d14" />
+          {[38, 58, 46].map((x, i) => pine(x, 56 + (i % 2) * 2, 1.1))}
+        </Frame>
+      )
+    case 'bridgefort':
+      return (
+        <Frame size={size}>
+          <rect y="44" width="96" height="20" fill={GRASS} />
+          <path d="M0 52 Q30 47 50 53 T96 52 L96 60 Q60 62 40 58 T0 60Z" fill={WATER} />
+          <rect x="54" y="47" width="40" height="3" fill={WOOD} />
+          <rect x="60" y="50" width="2" height="7" fill={STONE_D} />
+          <rect x="76" y="50" width="2" height="7" fill={STONE_D} />
+          <rect x="18" y="30" width="34" height="18" fill={STONE} />
+          {[18, 24, 30, 36, 42, 48].map((x) => (
+            <rect key={x} x={x} y="27" width="3.5" height="4" fill={STONE} />
+          ))}
+          <rect x="14" y="22" width="9" height="26" fill={STONE_D} />
+          <rect x="47" y="22" width="9" height="26" fill={STONE_D} />
+          <polygon points="13,22 18.5,15 24,22" fill="#6b4a35" />
+          <polygon points="46,22 51.5,15 57,22" fill="#6b4a35" />
+          <rect x="31" y="38" width="8" height="10" rx="4" fill="#2a1d14" />
+        </Frame>
+      )
+    case 'depot':
+      return (
+        <Frame size={size}>
+          <rect y="44" width="96" height="20" fill={GRASS} />
+          <polygon points="10,48 20,32 30,48" fill={CANVAS} />
+          <rect x="40" y="38" width="22" height="7" fill={WOOD} />
+          <path d="M40 38 Q51 26 62 38" fill="#efe6cf" />
+          <circle cx="44" cy="47" r="3.5" fill={WOOD_D} />
+          <circle cx="58" cy="47" r="3.5" fill={WOOD_D} />
+          {[
+            [68, 42],
+            [75, 42],
+            [82, 42],
+            [71.5, 35],
+            [78.5, 35],
+          ].map(([x, y], i) => (
+            <rect key={i} x={x} y={y} width="6.5" height="6.5" fill={i % 2 ? '#8a6a40' : '#75572f'} stroke="#4a3520" strokeWidth="0.6" />
+          ))}
+          <rect x="30" y="49" width="7" height="5" fill="#a8833f" />
+        </Frame>
+      )
+  }
+}
+
+/** Rock-paper-scissors diagram for the four unit types. */
+export function CounterWheel({ units, size = 260 }: { units: UnitType[]; size?: number }) {
+  const by = (k: string) => units.find((u) => u.key === k)
+  const inf = by('infantry')
+  const cav = by('cavalry')
+  const arc = by('archers')
+  const eng = by('engineers')
+  const node = (u: UnitType | undefined, x: number, y: number) =>
+    u && (
+      <g transform={`translate(${x} ${y})`}>
+        <circle r="26" fill="#1b1610" stroke={u.color} strokeWidth="2.5" />
+        <foreignObject x="-12" y="-17" width="24" height="24">
+          <div style={{ color: u.color }}>
+            <UnitGlyph unit={u.key} size={24} />
+          </div>
+        </foreignObject>
+        <text y="18" textAnchor="middle" fontSize="9" fill="#ddd0b2" fontFamily="Alegreya Sans, sans-serif" fontWeight="700">
+          {u.name}
+        </text>
+      </g>
+    )
+  const arrow = (x1: number, y1: number, x2: number, y2: number, label: string, color = '#86efac') => {
+    const dx = x2 - x1
+    const dy = y2 - y1
+    const d = Math.hypot(dx, dy)
+    const ux = dx / d
+    const uy = dy / d
+    const sx = x1 + ux * 32
+    const sy = y1 + uy * 32
+    const ex = x2 - ux * 32
+    const ey = y2 - uy * 32
+    return (
+      <g>
+        <line x1={sx} y1={sy} x2={ex} y2={ey} stroke={color} strokeWidth="2" />
+        <polygon points={`${ex},${ey} ${ex - ux * 8 - uy * 5},${ey - uy * 8 + ux * 5} ${ex - ux * 8 + uy * 5},${ey - uy * 8 - ux * 5}`} fill={color} />
+        <text x={(sx + ex) / 2 - uy * 11} y={(sy + ey) / 2 + ux * 11} textAnchor="middle" fontSize="8.5" fill={color} fontFamily="Alegreya Sans, sans-serif">
+          {label}
+        </text>
+      </g>
+    )
+  }
+  return (
+    <svg viewBox="0 0 260 248" width={size} height={(size * 248) / 260} aria-hidden>
+      {arrow(130, 40, 210, 160, 'beats', '#86efac')}
+      {arrow(210, 160, 50, 160, 'beats', '#86efac')}
+      {arrow(50, 160, 130, 40, 'beats', '#86efac')}
+      {eng && arrow(210, 160, 130, 205, 'rides down', '#fca5a5')}
+      {node(inf, 130, 40)}
+      {node(cav, 210, 160)}
+      {node(arc, 50, 160)}
+      {eng && (
+        <g transform="translate(130 205)">
+          <circle r="18" fill="#1b1610" stroke={eng.color} strokeWidth="2" />
+          <foreignObject x="-9" y="-12" width="18" height="18">
+            <div style={{ color: eng.color }}>
+              <UnitGlyph unit={eng.key} size={18} />
+            </div>
+          </foreignObject>
+          <text y="28" textAnchor="middle" fontSize="8.5" fill="#ddd0b2" fontFamily="Alegreya Sans, sans-serif" fontWeight="700">
+            {eng.name}
+          </text>
+        </g>
+      )}
+    </svg>
+  )
+}
+
+/** A wide composition bar with unit glyphs and percentages. */
+export function MixBar({ mix, units, height = 10 }: { mix: Record<string, number>; units: UnitType[]; height?: number }) {
+  const sum = Object.values(mix).reduce((a, b) => a + b, 0) || 1
+  return (
+    <div className="flex w-full overflow-hidden rounded-sm" style={{ height }}>
+      {units.map((u) => {
+        const v = mix[u.key] ?? 0
+        if (v <= 0) return null
+        return <div key={u.key} style={{ width: `${(v / sum) * 100}%`, background: u.color }} title={`${u.name} ${Math.round((v / sum) * 100)}%`} />
+      })}
+    </div>
+  )
+}
