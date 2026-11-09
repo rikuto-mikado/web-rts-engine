@@ -129,6 +129,69 @@ export function OutpostArt({ kind, size = 96 }: { kind: OutpostKind; size?: numb
   }
 }
 
+/** Engineers' works: abatis, stakes, burning and rebuilding a bridge. */
+export function WorkArt({ job, size = 96 }: { job: 'abatis' | 'stakes' | 'burn' | 'repair'; size?: number }) {
+  switch (job) {
+    case 'abatis':
+      return (
+        <Frame size={size}>
+          <rect y="44" width="96" height="20" fill={GRASS} />
+          {[14, 34, 54, 74].map((x, i) => (
+            <g key={x} transform={`translate(${x} 46) rotate(${i % 2 ? -12 : 10})`}>
+              <rect x="-11" y="-2" width="22" height="4" rx="2" fill={WOOD_D} />
+              <line x1="-6" y1="-1" x2="-11" y2="-10" stroke={WOOD} strokeWidth="1.4" />
+              <line x1="0" y1="-1" x2="2" y2="-12" stroke={WOOD} strokeWidth="1.4" />
+              <line x1="6" y1="-1" x2="11" y2="-9" stroke={WOOD} strokeWidth="1.4" />
+              <circle cx="-9" cy="-10" r="3" fill={PINE} />
+              <circle cx="3" cy="-12" r="3.4" fill={PINE_L} />
+              <circle cx="10" cy="-9" r="2.8" fill={PINE} />
+            </g>
+          ))}
+        </Frame>
+      )
+    case 'stakes':
+      return (
+        <Frame size={size}>
+          <rect y="44" width="96" height="20" fill={GRASS} />
+          {Array.from({ length: 11 }, (_, i) => (
+            <polygon key={i} points={`${8 + i * 8},50 ${11 + i * 8},50 ${16 + i * 8},32`} fill={i % 2 ? WOOD : WOOD_D} />
+          ))}
+          {Array.from({ length: 10 }, (_, i) => (
+            <polygon key={`b${i}`} points={`${12 + i * 8},56 ${15 + i * 8},56 ${20 + i * 8},40`} fill={i % 2 ? WOOD_D : WOOD} />
+          ))}
+        </Frame>
+      )
+    case 'burn':
+      return (
+        <Frame size={size}>
+          <rect y="44" width="96" height="20" fill={GRASS} />
+          <path d="M0 50 Q30 46 50 51 T96 50 L96 58 Q60 61 40 57 T0 58Z" fill={WATER} />
+          <rect x="20" y="44" width="56" height="3" fill={WOOD_D} />
+          <rect x="30" y="47" width="2" height="7" fill={STONE_D} />
+          <rect x="62" y="47" width="2" height="7" fill={STONE_D} />
+          <path d="M34 44 Q38 30 44 38 Q46 24 52 36 Q56 28 60 44Z" fill="#f08a3a" />
+          <path d="M40 44 Q44 34 48 40 Q50 32 54 44Z" fill="#ffd27a" />
+          <circle cx="50" cy="16" r="7" fill="#4a4540" opacity="0.7" />
+          <circle cx="58" cy="10" r="5" fill="#4a4540" opacity="0.5" />
+        </Frame>
+      )
+    case 'repair':
+      return (
+        <Frame size={size}>
+          <rect y="44" width="96" height="20" fill={GRASS} />
+          <path d="M0 50 Q30 46 50 51 T96 50 L96 58 Q60 61 40 57 T0 58Z" fill={WATER} />
+          <rect x="20" y="44" width="34" height="3" fill={WOOD} />
+          <rect x="30" y="47" width="2" height="7" fill={STONE_D} />
+          <rect x="62" y="47" width="2" height="7" fill={STONE_D} />
+          <rect x="56" y="38" width="14" height="3" fill={WOOD} transform="rotate(-18 63 40)" />
+          <circle cx="72" cy="30" r="3" fill={CANVAS} />
+          <rect x="70.5" y="33" width="3" height="9" fill="#2f4f8a" />
+          <line x1="74" y1="35" x2="80" y2="30" stroke={STONE} strokeWidth="1.5" />
+        </Frame>
+      )
+  }
+}
+
 /** Rock-paper-scissors diagram for the four unit types. */
 export function CounterWheel({ units, size = 260 }: { units: UnitType[]; size?: number }) {
   const by = (k: string) => units.find((u) => u.key === k)

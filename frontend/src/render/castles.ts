@@ -15,15 +15,6 @@ const ROOF_HOUSE = 0x8e4f35
 const stoneMat = applyVision(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.92 }))
 const goldMat = applyVision(new THREE.MeshStandardMaterial({ color: 0xd9b24a, metalness: 0.75, roughness: 0.32, flatShading: true, vertexColors: true }))
 
-/** Garrison sizes at which a castle grows grander. */
-export const SPLENDOUR = [1000, 1500, 2000, 3000, 4000]
-export function splendourLevel(soldiers: number, current: number): number {
-  let lvl = 0
-  for (const t of SPLENDOUR) if (soldiers >= t) lvl++
-  // Hysteresis: only lose a level once well below the threshold.
-  if (lvl < current && soldiers >= SPLENDOUR[current - 1] * 0.9) return current
-  return lvl
-}
 
 export class CastleView {
   readonly group = new THREE.Group()
@@ -37,6 +28,9 @@ export class CastleView {
   readonly grand: number
   readonly radius: number
   readonly wallRing: [number, number][] = [] // world-space points along the walls, for fire effects
+  /** Village state when built (a change rebuilds the view). */
+  readonly owned: boolean
+  readonly ruined: boolean
   readonly height: number
 
   constructor(c: Castle, world: World, color: string, grand = 0) {
@@ -46,6 +40,27 @@ export class CastleView {
     this.tier = c.tier
     this.radius = castleRadius(c.tier)
     const rnd = mulberry32(c.id.split('').reduce((s, ch) => s * 31 + ch.charCodeAt(0), 7))
+    this.owned = c.faction !== 'neutral'
+    this.ruined = !!c.ruined
+    if (c.village) {
+      const v = buildVillage(c, rnd, color)
+      this.roofMat = v.roofMat
+      this.flag = v.flag
+      this.flagBase = v.flagBase
+      const inner = v.group
+      inner.rotation.y = -Math.atan2(-c.z, -c.x)
+      this.group.add(inner)
+      this.height = world.heightAt(c.x, c.z)
+      this.group.position.set(c.x, this.height, c.z)
+      this.group.updateMatrixWorld(true)
+      const p = new THREE.Vector3()
+      for (let k = 0; k < 12; k++) {
+        p.set(Math.cos((k / 12) * Math.PI * 2) * 38, 6, Math.sin((k / 12) * Math.PI * 2) * 38).applyMatrix4(inner.matrixWorld)
+        this.wallRing.push([p.x, p.z])
+      }
+      this.wallHeight = 6
+      return
+    }
     const tier = c.tier
     const R = this.radius * 0.72
     const n = [4, 5, 6, 8][Math.min(3, tier - 1)]
@@ -278,4 +293,100 @@ export class CastleView {
     }
     pos.needsUpdate = true
   }
+}
+
+/**
+ * A village: cottages around a green with a chapel and a well, fields outside.
+ * Once it has a lord, a palisade (tier 1) or a stone wall with towers (tier 2)
+ * rings it. A plundered village is a burned shell.
+ */
+function buildVillage(c: Castle, rnd: () => number, color: string) {
+  const ruined = !!c.ruined
+  const owned = c.faction !== 'neutral' && !ruined
+  const walls: THREE.BufferGeometry[] = []
+  const roofs: THREE.BufferGeometry[] = []
+  const WALL = ruined ? 0x2e2925 : 0xd2bf94
+  const TIMBER = ruined ? 0x1e1a17 : 0x5e4229
+  const THATCH = 0xb48a4a
+  // Village green and lanes.
+  walls.push(part(cyl(30, 33, 0.6, 14), ruined ? 0x3a352e : 0x8a7650, { y: 0.1 }))
+  // Fields outside the houses.
+  if (!ruined) {
+    for (let k = 0; k < 4; k++) {
+      const a = (k / 4) * Math.PI * 2 + 0.4
+      walls.push(part(box(18, 0.4, 11), k % 2 ? 0xc9b25a : 0x7f9a3c, { x: Math.cos(a) * 46, y: 0.2, z: Math.sin(a) * 46, ry: -a }))
+    }
+  }
+  // Cottages.
+  const houses = 7
+  for (let i = 0; i < houses; i++) {
+    const a = (i / houses) * Math.PI * 2 + rnd() * 0.3
+    const r = 19 + rnd() * 6
+    const x = Math.cos(a) * r
+    const z = Math.sin(a) * r
+    const w = 6 + rnd() * 2.5
+    const d = 4.5 + rnd() * 1.5
+    const h = ruined ? 2 + rnd() * 2 : 4.2
+    walls.push(part(box(w, h, d), WALL, { x, y: h / 2, z, ry: -a }))
+    walls.push(part(box(w + 0.2, 0.5, 0.4), TIMBER, { x, y: h * 0.55, z, ry: -a }))
+    if (!ruined) roofs.push(part(cyl(0.01, d * 0.78, w + 0.8, 3), THATCH, { x, y: h + 1.7, z, rz: Math.PI / 2, ry: -a, sy: 1, sx: 0.85 }))
+    else walls.push(part(box(1.2, 3 + rnd() * 2, 1.2), 0x1a1715, { x: x + 1.5, y: 2, z }))
+  }
+  // Chapel with a small tower, and the well.
+  walls.push(part(box(9, ruined ? 4 : 7, 6), ruined ? 0x3a3530 : 0xb7ad99, { x: 0, y: ruined ? 2 : 3.5, z: -2 }))
+  if (!ruined) {
+    roofs.push(part(cyl(0.01, 5, 9.6, 3), 0x6a4a34, { x: 0, y: 8.8, z: -2, rz: Math.PI / 2, sx: 0.9 }))
+    walls.push(part(box(3, 12, 3), 0xb7ad99, { x: 4.5, y: 6, z: -2 }))
+    roofs.push(part(cone(2.6, 4, 4), 0x6a4a34, { x: 4.5, y: 14, z: -2, ry: Math.PI / 4 }))
+  }
+  walls.push(part(cyl(1.6, 1.8, 1.4, 8), 0x8f8a80, { x: -6, y: 0.7, z: 6 }))
+  if (!ruined) {
+    for (const [hx, hz] of [[-12, 9], [12, -10], [9, 12]]) walls.push(part(cone(1.8, 2.6, 6), 0xd4b25a, { x: hx, y: 1.3, z: hz }))
+  }
+  // Defences once it has a lord.
+  if (owned && c.tier >= 2) {
+    const n = 16
+    for (let k = 0; k < n; k++) {
+      const a0 = (k / n) * Math.PI * 2
+      const a1 = ((k + 1) / n) * Math.PI * 2
+      if (k === 0) continue // gate gap
+      const mx = (Math.cos(a0) + Math.cos(a1)) * 18.5
+      const mz = (Math.sin(a0) + Math.sin(a1)) * 18.5
+      walls.push(part(box(2 * 37 * Math.sin(Math.PI / n) + 0.6, 6, 2), 0xa39d90, { x: mx, y: 3, z: mz, ry: -(a0 + a1) / 2 + Math.PI / 2 }))
+    }
+    for (let k = 0; k < 4; k++) {
+      const a = (k / 4) * Math.PI * 2 + Math.PI / 4
+      walls.push(part(cyl(3, 3.4, 9, 8), 0x9a9486, { x: Math.cos(a) * 37, y: 4.5, z: Math.sin(a) * 37 }))
+      roofs.push(part(cone(3.8, 4, 8), 0xffffff, { x: Math.cos(a) * 37, y: 11, z: Math.sin(a) * 37 }))
+    }
+  } else if (owned) {
+    for (let k = 0; k < 46; k++) {
+      const a = (k / 46) * Math.PI * 2
+      if (Math.abs(Math.sin(a)) < 0.1 && Math.cos(a) > 0) continue
+      const h = 5 + (k % 3) * 0.4
+      walls.push(part(cyl(0.8, 1, h, 5), k % 2 ? 0x6b4a2a : 0x5a3d22, { x: Math.cos(a) * 37, y: h / 2, z: Math.sin(a) * 37 }))
+      walls.push(part(cone(0.8, 1.3, 5), 0x4a321c, { x: Math.cos(a) * 37, y: h + 0.6, z: Math.sin(a) * 37 }))
+    }
+  }
+  const group = new THREE.Group()
+  const wallMesh = new THREE.Mesh(merge(walls), stoneMat)
+  wallMesh.castShadow = true
+  wallMesh.receiveShadow = true
+  group.add(wallMesh)
+  // Roofs carry the lord's colour (thatch tinted toward it); free villages keep plain thatch.
+  const roofMat = applyVision(new THREE.MeshStandardMaterial({ color: owned ? color : '#ffffff', flatShading: true, roughness: 0.85, vertexColors: true }))
+  if (roofs.length) {
+    const roofMesh = new THREE.Mesh(merge(roofs), roofMat)
+    roofMesh.castShadow = true
+    group.add(roofMesh)
+  }
+  const flagGeo = new THREE.PlaneGeometry(6, 3.6, 6, 2)
+  flagGeo.translate(3, 0, 0)
+  const flagBase = Float32Array.from(flagGeo.attributes.position.array as Float32Array)
+  const flag = new THREE.Mesh(flagGeo, applyVision(new THREE.MeshStandardMaterial({ color, side: THREE.DoubleSide, roughness: 0.8 })))
+  flag.position.set(4.5, 20, -2)
+  flag.visible = owned
+  if (owned) group.add(new THREE.Mesh(merge([part(cyl(0.25, 0.25, 6, 5), 0x3b3027, { x: 4.5, y: 19 })]), stoneMat))
+  group.add(flag)
+  return { group, roofMat, flag, flagBase }
 }

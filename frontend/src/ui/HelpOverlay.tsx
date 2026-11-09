@@ -2,8 +2,9 @@ import { X } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { COLUMN, FORMATIONS, FORMATION_ORDER } from '../game/formations'
 import { OUTPOST_KINDS, OUTPOST_ORDER } from '../game/outposts'
+import { WORKS } from '../game/engine'
 import type { UnitType } from '../game/types'
-import { CounterWheel, OutpostArt } from './art'
+import { CounterWheel, OutpostArt, WorkArt } from './art'
 import { FormationIcon, SectionTitle, Tab, UnitGlyph } from './common'
 import { isTouchDevice } from './viewport'
 
@@ -16,6 +17,7 @@ const TOUCH: [string, string][] = [
   ['Long-press', 'Order the selected army to that spot or target'],
   ['🎯 Give an order', 'Then tap the target: ground, castle, enemy, or your army to merge'],
   ['☰', 'Realm, armies and the war overview'],
+  ['⋯ → Overhead view', 'Switch between overhead and tilted view'],
 ]
 
 const KEYS: [string, string][] = [
@@ -25,6 +27,7 @@ const KEYS: [string, string][] = [
   ['Wheel', 'Zoom (closer tilts the view)'],
   ['Q / E · middle-drag', 'Rotate'],
   ['C', 'Fly to your seat of power'],
+  ['V', 'Switch between overhead and tilted view'],
   ['F', 'Muster a new army'],
   ['Tab', 'Cycle through your armies'],
   ['L · H · Esc', 'Chronicle · this manual · deselect'],
@@ -98,7 +101,8 @@ function Basics() {
             ['⚔', 'Muster armies from castles: a commander, a mix of troops and a formation.'],
             ['🏰', 'Walls must be battered down before a garrison can be stormed. Engineers do it fastest.'],
             ['🔴', 'A pulsing red ring is an enemy Great Host gathering. Strike before it unites.'],
-            ['🤝', 'In Alliance War, summon your allies to muster with you and strike together.'],
+            ['🤝', 'In Alliance War, summon your allies to muster with you, or call for aid when a castle is threatened.'],
+            ['🛡', 'Station an army at a castle (yours or an ally\'s): it mans the walls when the castle is besieged.'],
           ].map(([icon, text]) => (
             <li key={text} className="flex gap-3">
               <span className="grid size-8 shrink-0 place-items-center rounded-full bg-black/30 text-[16px]">{icon}</span>
@@ -226,6 +230,79 @@ function Field() {
         </div>
         <p className="mt-2 text-[13px] text-ember-300/90">An empty outpost is burned by any enemy who stands on it for a few seconds. Keep one garrisoned.</p>
       </section>
+      <section>
+        <SectionTitle>Supply depots and supply lines</SectionTitle>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Card>
+            <div className="mb-1 font-display text-[15px] font-bold text-gold-100">📦 Quarters</div>
+            <p className="text-[13.5px] leading-snug text-ink-300">
+              Send armies into your depot (select an army, then tap the depot). Up to 900 soldiers wait inside, out of sight, with their commanders. Raise new armies from the depot as from a castle; only commanders quartered there, or a captain, can lead them. If enemies reach the gate, the garrison marches out to fight; if the depot falls, they retreat to your nearest castle.
+            </p>
+          </Card>
+          <Card>
+            <div className="mb-1 font-display text-[15px] font-bold text-gold-100">🛞 Wagon trains</div>
+            <p className="text-[13.5px] leading-snug text-ink-300">
+              Every depot draws on its stores; wagons from the nearest friendly castle refill them along a road shown as a dashed line. Wagons are unarmed: any enemy army that reaches them seizes them. As stores run down, the depot's supply reach shrinks, and empty, it supplies nobody. Cut enemy lines, guard your own.
+            </p>
+          </Card>
+        </div>
+      </section>
+      <section>
+        <SectionTitle>Engineers' works · need 10+ Engineers</SectionTitle>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {(['abatis', 'stakes', 'burn', 'repair'] as const).map((k) => {
+            const w = WORKS[k]
+            return (
+              <Card key={k}>
+                <div className="flex gap-3">
+                  <WorkArt job={k} size={112} />
+                  <div className="min-w-0">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="font-display text-[15px] font-bold text-gold-100">{w.name}</span>
+                      <span className="text-[13px] text-gold-300">{w.cost ? `${w.cost}g` : 'free'}</span>
+                    </div>
+                    <div className="text-[12px] font-bold text-gold-300/70">
+                      {w.engineers}+ Engineers · ~{w.seconds}s
+                    </div>
+                    <p className="mt-0.5 text-[13px] leading-snug text-ink-300">{w.description}</p>
+                  </div>
+                </div>
+              </Card>
+            )
+          })}
+        </div>
+      </section>
+      <section>
+        <SectionTitle>Villages, mines and scouts</SectionTitle>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Card>
+            <div className="mb-1 font-display text-[15px] font-bold text-gold-100">🏘 Villages</div>
+            <p className="text-[13.5px] leading-snug text-ink-300">
+              Free villages lie between the castles. Send envoys (an army nearby or a castle within reach) and pay their price: if they agree, it becomes your vassal. A vassal village runs itself: it raises its own militia, pays tribute by wagon to your nearest castle (raiders can seize the wagons), raises stone walls in time, and sends its militia to help a castle of yours under siege nearby. You cannot muster from it or send armies into it. Or plunder it: beat the militia for gold and captives, but the village burns for good and every other village grows warier of you.
+            </p>
+          </Card>
+          <Card>
+            <div className="mb-1 font-display text-[15px] font-bold text-gold-100">⛏ Mines & lumber camps</div>
+            <p className="text-[13.5px] leading-snug text-ink-300">
+              An army with 10+ engineers can work a mine or a forest camp for gold. Only the number of engineers matters (10 make about 1.2 gold/s, 40 about 3; mines pay 30% more). The gold goes home by wagon, which enemies can seize. Sites run dry and recover slowly when left alone.
+            </p>
+          </Card>
+          <Card>
+            <div className="mb-1 font-display text-[15px] font-bold text-gold-100">🔭 Scouts</div>
+            <p className="text-[13.5px] leading-snug text-ink-300">
+              Far from your forces, enemy numbers are only rumours (~…?). A party of 80 or fewer can scout: it rides out, sees what is near, and reports only if it gets home. Castles, outposts and armies that spot scouts send riders after them; captured scouts may give away where they came from. Rain, storms and forest cover help scouts; horsemen and watchtowers help spot them. Ambushers are only found up close.
+            </p>
+          </Card>
+        </div>
+      </section>
+      <section>
+        <Card>
+          <div className="mb-1 font-display text-[15px] font-bold text-gold-100">⚔ Striking from behind</div>
+          <p className="text-[13.5px] leading-snug text-ink-300">
+            Join a fight that is already under way from the far side of the enemy, behind the line your own troops are holding. For 8 seconds your army deals 25% more damage and its cavalry charges into their backs, where spear walls, schiltrons and palisades give no protection. The enemy's morale is shaken at once. Ordering an army to attack an enemy that is already fighting makes it swing around to the rear by itself. Enemies do the same to you.
+          </p>
+        </Card>
+      </section>
       <section className="grid gap-3 sm:grid-cols-2">
         <Card>
           <div className="mb-1 font-display text-[15px] font-bold text-gold-100">🌲 Ambush</div>
@@ -272,6 +349,10 @@ function Realm() {
         <Card>
           <div className="mb-1 font-display text-[15px] font-bold text-gold-100">🤝 Diplomacy</div>
           <p className="text-[13.5px] leading-snug text-ink-300">Buy free towns from their castle panel. In the War tab, buy a truce with an enemy lord, or in Alliance War bribe one to change sides. Lords under pressure are easier to turn.</p>
+        </Card>
+        <Card>
+          <div className="mb-1 font-display text-[15px] font-bold text-gold-100">♛ Realm rank</div>
+          <p className="text-[13.5px] leading-snug text-ink-300">Every realm has a rank, shown under its castles and outposts. It rises with total military strength (garrisons and armies) and falls after heavy losses. Each rank makes all of a realm's castles grander. The top rank depends on the map size.</p>
         </Card>
         <Card>
           <div className="mb-1 font-display text-[15px] font-bold text-gold-100">★ Commanders</div>

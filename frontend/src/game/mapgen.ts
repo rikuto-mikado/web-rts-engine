@@ -16,12 +16,12 @@ const REALMS = [
   'Emberfall', 'Wolfsbane', 'Seahaven', 'Dunmere', 'Caer Lys', 'Varnhall', 'Morwen', 'Tirath', 'Galdor', 'Brennoch',
 ]
 const TITLES = ['Kingdom of', 'Duchy of', 'County of', 'March of', 'Principality of', 'Barony of', 'Earldom of']
-const PREFIX = [
+export const PREFIX = [
   'Ash', 'Black', 'Bright', 'Cold', 'Dun', 'Elder', 'Fair', 'Frost', 'Gold', 'Grey', 'High', 'Iron', 'Kings', 'Long', 'Mist', 'North',
   'Oak', 'Raven', 'Red', 'Rose', 'Silver', 'Stone', 'Storm', 'Thorn', 'West', 'Wolf', 'Wyrm', 'Amber', 'Dragon', 'Hawk', 'Lion',
   'Moon', 'Star', 'Sun', 'Winter', 'Ember', 'Glen', 'Hollow', 'Marsh', 'Pine', 'Crow', 'Elk', 'Bear', 'Swan',
 ]
-const SUFFIX = [
+export const SUFFIX = [
   'hold', 'keep', 'gate', 'ford', 'watch', 'fell', 'moor', 'haven', 'spire', 'crest', 'wall', 'burg', 'mere', 'vale', 'reach',
   'stead', 'wick', 'dale', 'rock', 'tower', 'barrow', 'helm', 'garde', 'bridge',
 ]
@@ -42,9 +42,10 @@ export interface MapOptions {
 
 /** Map-size presets. Medium is the original size; the others are rebalanced around it. */
 export const SIZE_PRESETS: Record<MapSize, { conquest: { map: number; castles: number; vassals: number; playerCastles: number; enemyLine: number }; alliance: { map: number; realms: number } }> = {
-  small: { conquest: { map: 2100, castles: 10, vassals: 1, playerCastles: 2, enemyLine: 0.52 }, alliance: { map: 3200, realms: 16 } },
-  medium: { conquest: { map: 2800, castles: 15, vassals: 2, playerCastles: 2, enemyLine: 0.52 }, alliance: { map: 4000, realms: 24 } },
-  large: { conquest: { map: 3700, castles: 24, vassals: 2, playerCastles: 3, enemyLine: 0.6 }, alliance: { map: 4800, realms: 32 } },
+  // Sides are 1.4× the original layouts: room for villages, mines and lumber camps between the castles.
+  small: { conquest: { map: 2940, castles: 10, vassals: 1, playerCastles: 2, enemyLine: 0.52 }, alliance: { map: 4480, realms: 16 } },
+  medium: { conquest: { map: 3920, castles: 15, vassals: 2, playerCastles: 2, enemyLine: 0.52 }, alliance: { map: 5600, realms: 24 } },
+  large: { conquest: { map: 5180, castles: 24, vassals: 2, playerCastles: 3, enemyLine: 0.6 }, alliance: { map: 6720, realms: 32 } },
 }
 
 export function generateMap(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: MapOptions = {}): GeneratedMap {
@@ -109,7 +110,7 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
 
   // --- Castle sites (Poisson-like rejection sampling) -----------------------
   const targetCastles = alliance ? Math.round(factionCount * 1.65 + 4) : preset.conquest.castles
-  const dmin = alliance ? (size * 0.62) / Math.sqrt(targetCastles) : Math.min(400, (size * 0.6) / Math.sqrt(targetCastles))
+  const dmin = alliance ? (size * 0.62) / Math.sqrt(targetCastles) : Math.min(560, (size * 0.6) / Math.sqrt(targetCastles))
   const sites: { x: number; z: number }[] = []
   const margin = 240
   for (let tries = 0; tries < 20000 && sites.length < targetCastles; tries++) {

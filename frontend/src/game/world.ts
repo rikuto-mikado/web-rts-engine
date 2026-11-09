@@ -222,8 +222,33 @@ export class World {
     return this.forest[j * this.hRes + i]
   }
 
+  /** Bridges that have been burned (indices into `bridges`). Units cannot cross them. */
+  readonly broken = new Set<number>()
+
+  /** Burn or rebuild a bridge: updates the navigation grid around it. */
+  setBridgeBroken(index: number, broken: boolean) {
+    const b = this.bridges[index]
+    if (!b) return
+    if (broken) this.broken.add(index)
+    else this.broken.delete(index)
+    const R = this.navRes
+    const reach = b.length / 2 + 30
+    const [i0, j0] = this.navIndex(b.x - reach, b.z - reach)
+    const [i1, j1] = this.navIndex(b.x + reach, b.z + reach)
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const x = -this.half + (i + 0.5) * NAV_CELL
+        const z = -this.half + (j + 0.5) * NAV_CELL
+        this.navCost[j * R + i] = this.cellCost(x, z)
+      }
+    }
+    this.components = null
+  }
+
   bridgeAt(x: number, z: number, margin = 0): BridgeInfo | null {
-    for (const b of this.bridges) {
+    for (let k = 0; k < this.bridges.length; k++) {
+      if (this.broken.has(k)) continue
+      const b = this.bridges[k]
       const dx = x - b.x
       const dz = z - b.z
       const along = dx * b.dirX + dz * b.dirZ
@@ -414,6 +439,7 @@ export class World {
   }
 
   private components: Int32Array | null = null
+  private pf: { g: Float32Array; came: Int32Array; seen: Uint32Array; shut: Uint32Array; gen: number } | null = null
 
   /** True if a land route exists between the two points (flood-fill labels, computed once). */
   connected(ax: number, az: number, bx: number, bz: number): boolean {
@@ -454,17 +480,26 @@ export class World {
   findPath(sx: number, sz: number, tx: number, tz: number): [number, number][] {
     const [ex, ez] = this.nearestPassable(tx, tz)
     if (this.lineClear(sx, sz, ex, ez)) return [[ex, ez]]
+    // Unreachable (another island, a burned bridge): don't flood the whole map.
+    if (!this.connected(sx, sz, ex, ez)) return [[ex, ez]]
     const R = this.navRes
     const [si, sj] = this.navIndex(...this.nearestPassable(sx, sz))
     const [gi, gj] = this.navIndex(ex, ez)
     const start = sj * R + si
     const goal = gj * R + gi
     const N = R * R
-    const gScore = new Float32Array(N).fill(Infinity)
-    const came = new Int32Array(N).fill(-1)
-    const closed = new Uint8Array(N)
+    // Scratch buffers are reused between searches; a generation stamp marks which entries are live.
+    if (!this.pf || this.pf.g.length !== N) this.pf = { g: new Float32Array(N), came: new Int32Array(N), seen: new Uint32Array(N), shut: new Uint32Array(N), gen: 0 }
+    const pf = this.pf
+    const gen = ++pf.gen
+    const gScore = pf.g
+    const came = pf.came
+    const seen = pf.seen
+    const shut = pf.shut
     const heap = new MinHeap()
     gScore[start] = 0
+    came[start] = -1
+    seen[start] = gen
     heap.push(start, 0)
     const SQ2 = Math.SQRT2
     let found = false
@@ -474,8 +509,8 @@ export class World {
         found = true
         break
       }
-      if (closed[cur]) continue
-      closed[cur] = 1
+      if (shut[cur] === gen) continue
+      shut[cur] = gen
       const ci = cur % R
       const cj = (cur - ci) / R
       for (let dj = -1; dj <= 1; dj++) {
@@ -486,10 +521,11 @@ export class World {
           if (ni < 0 || nj < 0 || ni >= R || nj >= R) continue
           const nIdx = nj * R + ni
           const c = this.navCost[nIdx]
-          if (c <= 0 || closed[nIdx]) continue
+          if (c <= 0 || shut[nIdx] === gen) continue
           if (di && dj && (this.navCost[cj * R + ni] <= 0 || this.navCost[nj * R + ci] <= 0)) continue
           const g = gScore[cur] + c * (di && dj ? SQ2 : 1)
-          if (g < gScore[nIdx]) {
+          if (seen[nIdx] !== gen || g < gScore[nIdx]) {
+            seen[nIdx] = gen
             gScore[nIdx] = g
             came[nIdx] = cur
             const hx = Math.abs(ni - gi)
@@ -515,7 +551,8 @@ export class World {
     let k = 0
     while (k < cells.length) {
       let far = k
-      for (let m = cells.length - 1; m > k; m--) {
+      // Look a limited way ahead: long roads are smoothed in stretches, not all at once.
+      for (let m = Math.min(cells.length - 1, k + 48); m > k; m--) {
         if (this.lineClear(ax, az, cells[m][0], cells[m][1])) {
           far = m
           break

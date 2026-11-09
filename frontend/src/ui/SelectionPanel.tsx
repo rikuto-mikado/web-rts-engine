@@ -1,24 +1,25 @@
-import { CircleArrowUp, Castle as CastleIcon, Coins, Combine, Flag, Hammer, Handshake, House, Megaphone, Scissors, Shield, Swords, Tent, Undo2, Users, X } from 'lucide-react'
+import { CircleArrowUp, Castle as CastleIcon, Coins, Combine, Flag, Hammer, Handshake, House, Megaphone, Package, Scissors, Shield, Swords, Tent, Undo2, Users, X } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import {
   OUTPOST,
+  SCOUT,
+  WORKS,
   PLAYER,
   RECRUIT_TEMPLATES,
+  VILLAGE,
   capacityForTier,
   incomeForTier,
-  manpowerRegenForTier,
-  maxManpowerForTier,
-  upgradeCost,
   type GameEngine,
 } from '../game/engine'
 import { COLUMN, FORMATIONS, FORMATION_ORDER } from '../game/formations'
 import { OUTPOST_KINDS } from '../game/outposts'
+import { RESOURCE, RESOURCE_STOCK } from '../game/countryside'
 import { TRAIT_MAP } from '../game/traits'
 import { fmt, total, totalInt } from '../game/troops'
 import type { Army, Battle, Castle, Outpost } from '../game/types'
 import type { Selection } from '../render/GameRenderer'
 import { useViewport } from './viewport'
-import { OutpostArt } from './art'
+import { OutpostArt, WorkArt } from './art'
 import { PixelPortrait } from './PixelPortrait'
 import { Bar, FormationIcon, STATUS_TEXT, SectionTitle, Slider, StackBar, UnitGlyph, moraleColor, useEngine } from './common'
 
@@ -39,7 +40,17 @@ export function SelectionPanel({ engine, selection, onSelect, onFormArmy, toast 
     if (!a) return null
     return (
       <Shell onClose={close}>
-        {a.faction === PLAYER ? <PlayerArmy engine={engine} army={a} toast={toast} onSelect={onSelect} /> : <OtherArmy engine={engine} army={a} onSelect={onSelect} />}
+        {a.faction === PLAYER && !a.vassalOf ? <PlayerArmy engine={engine} army={a} toast={toast} onSelect={onSelect} /> : <OtherArmy engine={engine} army={a} onSelect={onSelect} />}
+        {a.aidFor && (
+          <p className="mt-3 text-[12.5px] leading-snug text-ink-400">
+            Sent by an ally to stand in {engine.castle((engine.state.aidCalls ?? []).find((c) => c.id === a.aidFor)?.castleId)?.name ?? 'a castle'} until the danger passes.
+          </p>
+        )}
+        {a.vassalOf && (
+          <p className="mt-3 text-[12.5px] leading-snug text-ink-400">
+            Militia of {engine.castle(a.vassalOf)?.name ?? 'a vassal village'}. They act on their own: they go to help a besieged castle nearby and head home when the fighting is over.
+          </p>
+        )}
       </Shell>
     )
   }
@@ -48,16 +59,48 @@ export function SelectionPanel({ engine, selection, onSelect, onFormArmy, toast 
     if (!o) return null
     return (
       <Shell onClose={close}>
-        <OutpostPanel engine={engine} outpost={o} onSelect={onSelect} />
+        <OutpostPanel engine={engine} outpost={o} onSelect={onSelect} onFormArmy={onFormArmy} toast={toast} />
+      </Shell>
+    )
+  }
+  if (selection.kind === 'site') {
+    const site = engine.site(selection.id)
+    if (!site) return null
+    return (
+      <Shell onClose={close}>
+        <SitePanel engine={engine} siteId={site.id} onSelect={onSelect} toast={toast} />
+      </Shell>
+    )
+  }
+  if (selection.kind === 'convoy') {
+    const w = engine.convoy(selection.id)
+    if (!w) return null
+    return (
+      <Shell onClose={close}>
+        <ConvoyPanel engine={engine} convoyId={w.id} onSelect={onSelect} toast={toast} />
       </Shell>
     )
   }
   const c = engine.castle(selection.id)
   if (!c) return null
+  if (c.village && !c.ruined && c.faction === PLAYER) {
+    return (
+      <Shell onClose={close}>
+        <VassalPanel engine={engine} castle={c} onSelect={onSelect} />
+      </Shell>
+    )
+  }
+  if (c.ruined || (c.village && c.faction === 'neutral')) {
+    return (
+      <Shell onClose={close}>
+        <VillagePanel engine={engine} castle={c} toast={toast} />
+      </Shell>
+    )
+  }
   return (
     <Shell onClose={close}>
       {c.faction === PLAYER ? (
-        <PlayerCastle engine={engine} castle={c} onFormArmy={onFormArmy} toast={toast} />
+        <PlayerCastle engine={engine} castle={c} onFormArmy={onFormArmy} toast={toast} onSelect={onSelect} />
       ) : (
         <OtherCastle engine={engine} castle={c} onFormArmy={onFormArmy} toast={toast} />
       )}
@@ -242,7 +285,7 @@ function ArmyHeader({ engine, army }: { engine: GameEngine; army: Army }) {
 
 function PlayerArmy({ engine, army, toast, onSelect }: { engine: GameEngine; army: Army; toast: (m: string) => void; onSelect: Props['onSelect'] }) {
   const battle = engine.battle(army.battleId)
-  const targets = engine.state.castles.filter((c) => engine.isHostile(c.faction, PLAYER)).sort((a, b) => Math.hypot(a.x - army.x, a.z - army.z) - Math.hypot(b.x - army.x, b.z - army.z))
+  const targets = engine.state.castles.filter((c) => engine.isHostile(c.faction, PLAYER) && !c.ruined && !(c.village && c.faction === 'neutral')).sort((a, b) => Math.hypot(a.x - army.x, a.z - army.z) - Math.hypot(b.x - army.x, b.z - army.z))
   const atCastle = engine.castleAt(army.x, army.z, 70)
   const friends = engine.state.armies
     .filter((a) => a.faction === PLAYER && a.id !== army.id && a.status !== 'retreating')
@@ -271,6 +314,20 @@ function PlayerArmy({ engine, army, toast, onSelect }: { engine: GameEngine; arm
         return `Stationed at ${engine.castle(o.castleId)?.name}`
       case 'reinforce':
         return `Joining ${engine.castle(o.castleId)?.name}'s garrison`
+      case 'garrison':
+        return `Quartering in ${engine.outpost(o.outpostId)?.name ?? 'a depot'}`
+      case 'raidConvoy':
+        return 'Riding down enemy wagons'
+      case 'work':
+        return `${WORKS[o.job].name} (${Math.round(o.progress * 100)}%)`
+      case 'gather': {
+        const site = engine.site(o.siteId)
+        return site ? `Working the ${site.kind === 'mine' ? 'mine' : 'forest'} (+${engine.gatherRate(army.id, site.id).toFixed(1)} gold/s)` : 'Working a site'
+      }
+      case 'scout': {
+        const t = engine.castle(o.targetId) ?? engine.army(o.targetId)
+        return o.phase === 'out' ? `Scouting ${t?.name ?? 'the enemy'}` : 'Riding home with the report'
+      }
       default:
         return 'Holding position'
     }
@@ -356,6 +413,8 @@ function PlayerArmy({ engine, army, toast, onSelect }: { engine: GameEngine; arm
           </button>
         </div>
         <BuildOutpostButton engine={engine} army={army} toast={toast} />
+        <WorksButton engine={engine} army={army} toast={toast} />
+        <ScoutBox engine={engine} army={army} toast={toast} />
       </section>
 
       <section className="mt-4">
@@ -438,10 +497,24 @@ function OtherArmy({ engine, army, onSelect }: { engine: GameEngine; army: Army;
   return (
     <div>
       <ArmyHeader engine={engine} army={army} />
-      <div className="mb-3">
-        <StackBar troops={army.troops} units={engine.unitList} />
-      </div>
-      <Composition engine={engine} troops={army.troops} />
+      {(() => {
+        const k = engine.knowledge(army.id)
+        if (!k.troops)
+          return (
+            <p className="mb-2 text-[12.5px] text-ink-400">
+              Roughly <KnownCount k={k} /> soldiers, by rumour. Bring an army close or send scouts to learn more.
+            </p>
+          )
+        return (
+          <>
+            <div className="mb-3">
+              <StackBar troops={k.troops} units={engine.unitList} />
+            </div>
+            <Composition engine={engine} troops={k.troops} />
+            {k.kind === 'scouted' && <p className="mt-1 text-[12px] text-ink-500">From a scouting report {Math.round(k.age / 60)} min ago (±{Math.round(k.error * 100)}%).</p>}
+          </>
+        )
+      })()}
       {battle && <BattleBox engine={engine} battle={battle} />}
       <div className={`mt-3 rounded-lg px-3 py-2 text-xs ${hostile ? 'bg-ember-700/15' : 'bg-teal-700/15'}`}>
         <span className="text-ink-400">Scouts report: </span>
@@ -506,12 +579,13 @@ function CastleHeader({ engine, castle }: { engine: GameEngine; castle: Castle }
   )
 }
 
-function PlayerCastle({ engine, castle, onFormArmy, toast }: { engine: GameEngine; castle: Castle; onFormArmy: Props['onFormArmy']; toast: (m: string) => void }) {
+function PlayerCastle({ engine, castle, onFormArmy, toast, onSelect }: { engine: GameEngine; castle: Castle; onFormArmy: Props['onFormArmy']; toast: (m: string) => void; onSelect: (s: Selection, focus?: boolean) => void }) {
   const [batch, setBatch] = useState(50)
   const n = total(castle.garrison)
-  const cap = capacityForTier(castle.tier)
+  const cap = engine.capacity(castle)
   const gold = engine.state.factions[PLAYER].gold
-  const upCost = upgradeCost(castle.tier)
+  const upCost = engine.upgradeCostOf(castle)
+  const maxTier = engine.maxTier(castle)
   return (
     <div>
       <CastleHeader engine={engine} castle={castle} />
@@ -524,17 +598,17 @@ function PlayerCastle({ engine, castle, onFormArmy, toast }: { engine: GameEngin
             <span className="text-ink-500">/{fmt(cap)}</span>
           </span>
         </div>
-        <div className="flex items-center gap-2" title={`Regrows ${manpowerRegenForTier(castle.tier).toFixed(1)}/s`}>
+        <div className="flex items-center gap-2" title={`Regrows ${engine.manpowerRegen(castle).toFixed(1)}/s`}>
           <span className="w-16 text-ink-400">Manpower</span>
-          <Bar value={castle.manpower} max={maxManpowerForTier(castle.tier)} color="#6fd08c" height={5} />
+          <Bar value={castle.manpower} max={engine.maxManpower(castle)} color="#6fd08c" height={5} />
           <span className="w-20 text-right tabular-nums">
             {fmt(castle.manpower)}
-            <span className="text-ink-500"> +{manpowerRegenForTier(castle.tier).toFixed(1)}/s</span>
+            <span className="text-ink-500"> +{engine.manpowerRegen(castle).toFixed(1)}/s</span>
           </span>
         </div>
         <div className="flex items-center gap-2">
           <span className="w-16 text-ink-400">Income</span>
-          <span className="flex-1 text-gold-300 tabular-nums">+{incomeForTier(castle.tier).toFixed(1)} gold/s</span>
+          <span className="flex-1 text-gold-300 tabular-nums">+{engine.castleIncome(castle).toFixed(1)} gold/s</span>
         </div>
       </div>
 
@@ -544,16 +618,25 @@ function PlayerCastle({ engine, castle, onFormArmy, toast }: { engine: GameEngin
         </button>
         <button
           className="btn"
-          disabled={castle.tier >= 4 || gold < upCost || !!castle.battleId}
+          disabled={castle.tier >= maxTier || gold < upCost || !!castle.battleId}
           onClick={() => {
             const err = engine.upgradeCastle(castle.id)
             if (err) toast(err)
           }}
-          title={castle.tier >= 4 ? 'Already a citadel' : `Tier ${castle.tier + 1}: walls ${Math.round(castle.maxWalls)}→ more, +${(incomeForTier(castle.tier + 1) - incomeForTier(castle.tier)).toFixed(0)} gold/s, +${capacityForTier(castle.tier + 1) - cap} capacity, faster manpower`}
+          title={
+            castle.village
+              ? castle.tier >= maxTier
+                ? 'Already walled in stone'
+                : 'Replace the palisade with a stone wall and towers: stronger walls, more room, a little more income'
+              : castle.tier >= maxTier
+                ? 'Already a citadel'
+                : `Tier ${castle.tier + 1}: stronger walls, +${(incomeForTier(castle.tier + 1) - incomeForTier(castle.tier)).toFixed(0)} gold/s, +${capacityForTier(castle.tier + 1) - cap} capacity, faster manpower`
+          }
         >
-          <CircleArrowUp size={14} /> {castle.tier >= 4 ? 'Max tier' : `Expand · ${fmt(upCost)}`}
+          <CircleArrowUp size={14} /> {castle.tier >= maxTier ? (castle.village ? 'Stone walls' : 'Max tier') : castle.village ? `Stone wall · ${fmt(upCost)}` : `Expand · ${fmt(upCost)}`}
         </button>
       </div>
+      <AidRow engine={engine} castle={castle} toast={toast} onSelect={onSelect} />
 
       <section className="mt-4">
         <SectionTitle
@@ -636,7 +719,7 @@ function PlayerCastle({ engine, castle, onFormArmy, toast }: { engine: GameEngin
 }
 
 function OtherCastle({ engine, castle, onFormArmy, toast }: { engine: GameEngine; castle: Castle; onFormArmy: Props['onFormArmy']; toast: (m: string) => void }) {
-  const known = engine.isVisible(castle.x, castle.z) || engine.relation(castle.faction) === 'ally'
+  const k = engine.knowledge(castle.id)
   const hostile = engine.isHostile(castle.faction, PLAYER)
   const mine = engine.state.armies.filter((a) => a.faction === PLAYER && a.status !== 'retreating')
   const call = engine.state.callToArms
@@ -648,13 +731,15 @@ function OtherCastle({ engine, castle, onFormArmy, toast }: { engine: GameEngine
         <span className="flex items-center gap-1.5 text-ink-400">
           <Users size={13} /> Garrison
         </span>
-        <span className="font-semibold tabular-nums">{fmt(total(castle.garrison))}</span>
+        <span className="font-semibold tabular-nums">
+          <KnownCount k={k} />
+        </span>
       </div>
-      {known && <Composition engine={engine} troops={castle.garrison} />}
+      {k.troops ? <Composition engine={engine} troops={k.troops} /> : <p className="text-[12.5px] text-ink-400">Only a rumour. Send scouts (a party of 80 or fewer) to learn its true strength and make-up.</p>}
       {hostile && (
         <>
           <div className="mt-2 flex items-center gap-1.5 text-[13px] text-ink-400">
-            <Coins size={12} /> Worth +{incomeForTier(castle.tier).toFixed(1)} gold/s if captured
+            <Coins size={12} /> Worth +{engine.castleIncome(castle).toFixed(1)} gold/s if captured
           </div>
           {castle.tier >= 2 && (
             <div className="mt-1 flex items-center gap-1.5 text-[13px] text-ink-400">
@@ -712,6 +797,59 @@ function OtherCastle({ engine, castle, onFormArmy, toast }: { engine: GameEngine
   )
 }
 
+/** Engineers' field works: obstacles to slow or stop the enemy, and burning or rebuilding bridges. */
+function WorksButton({ engine, army, toast }: { engine: GameEngine; army: Army; toast: (m: string) => void }) {
+  const [open, setOpen] = useState(false)
+  if ((army.troops.engineers ?? 0) < 10) return null
+  const working = army.order.type === 'work' ? army.order : null
+  if (working) {
+    return (
+      <div className="well mt-1.5 flex items-center gap-2 rounded-sm px-2.5 py-1.5 text-[13px]">
+        <Hammer size={14} className="text-gold-300" />
+        <span className="flex-1">{WORKS[working.job].name}</span>
+        <span className="tabular-nums text-ink-300">{Math.round(working.progress * 100)}%</span>
+      </div>
+    )
+  }
+  const opts = engine.workOptions(army.id)
+  return (
+    <div className="mt-1.5">
+      <button className="btn w-full text-[13px]" onClick={() => setOpen((v) => !v)} title="Obstacles and bridges">
+        <Hammer size={14} /> Engineers' works
+      </button>
+      {open && (
+        <div className="mt-1.5 grid grid-cols-1 gap-1.5" ref={(el) => el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })}>
+          {opts.map((o) => {
+            const def = WORKS[o.job]
+            return (
+              <button
+                key={o.job}
+                disabled={!o.ok}
+                onClick={() => {
+                  const err = engine.startWork(army.id, o.job)
+                  if (err) toast(err)
+                  else setOpen(false)
+                }}
+                className={`well flex w-full items-stretch gap-2.5 rounded-sm p-1.5 text-left text-[13px] transition hover:brightness-125 ${o.ok ? '' : 'opacity-50 grayscale-[60%]'}`}
+              >
+                <WorkArt job={o.job} size={84} />
+                <span className="min-w-0 flex-1 py-0.5">
+                  <span className="flex justify-between gap-2 font-bold">
+                    <span className="text-gold-100">{def.name}</span>
+                    <span className="text-gold-300">{def.cost ? `${def.cost}g` : 'free'}</span>
+                  </span>
+                  <span className="block text-[11.5px] font-bold text-gold-300/70">{def.engineers}+ Engineers · ~{def.seconds}s</span>
+                  <span className={`mt-0.5 block text-[12px] leading-snug ${o.ok ? 'text-ink-300' : 'text-ember-300'}`}>{o.reason ?? def.description}</span>
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function BuildOutpostButton({ engine, army, toast }: { engine: GameEngine; army: Army; toast: (m: string) => void }) {
   const [open, setOpen] = useState(false)
   if (army.order.type === 'build') return null
@@ -755,7 +893,84 @@ function BuildOutpostButton({ engine, army, toast }: { engine: GameEngine; army:
   )
 }
 
-function OutpostPanel({ engine, outpost, onSelect }: { engine: GameEngine; outpost: Outpost; onSelect: Props['onSelect'] }) {
+/** A supply wagon train: where it comes from, where it goes, and a way to cut it off. */
+function ConvoyPanel({ engine, convoyId, onSelect, toast }: { engine: GameEngine; convoyId: string; onSelect: Props['onSelect']; toast: (m: string) => void }) {
+  const w = engine.convoy(convoyId)
+  if (!w) return null
+  const rel = engine.relation(w.faction)
+  const to = engine.outpost(w.outpostId)
+  const from = engine.castle(w.fromCastleId)
+  const hostile = engine.isHostile(w.faction, PLAYER)
+  const raiders = hostile
+    ? engine.state.armies
+        .filter((a) => a.faction === PLAYER && a.status !== 'retreating' && !a.battleId)
+        .map((a) => ({ a, d: Math.hypot(a.x - w.x, a.z - w.z) }))
+        .sort((x, y) => x.d - y.d)
+        .slice(0, 4)
+    : []
+  return (
+    <div>
+      <div className="flex items-center gap-3 pr-6">
+        <span className="grid size-12 place-items-center rounded-sm" style={{ background: `linear-gradient(160deg, ${engine.factionColor(w.faction)}, #111)` }}>
+          <Package size={22} />
+        </span>
+        <div className="min-w-0">
+          <h3 className="panel-title truncate">Supply wagons</h3>
+          <p className={`text-[13px] ${rel === 'self' ? 'text-royal-300' : rel === 'ally' ? 'text-teal-300' : 'text-ember-300'}`}>{rel === 'self' ? 'Your supply line' : engine.factionName(w.faction)}</p>
+        </div>
+      </div>
+      <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[13px]">
+        <dt className="text-ink-400">From</dt>
+        <dd>{from?.name ?? 'Unknown'}</dd>
+        <dt className="text-ink-400">To</dt>
+        <dd>{to?.name ?? 'Unknown'}</dd>
+        <dt className="text-ink-400">Load</dt>
+        <dd>+{w.cargo}% stores for the depot</dd>
+      </dl>
+      <p className="mt-3 text-[13px] leading-snug text-ink-400">
+        {hostile
+          ? 'Unarmed. Any army that reaches the wagons seizes them, and the depot they feed runs short of stores.'
+          : 'Unarmed. If enemies reach the wagons they seize them; keep the road clear.'}
+      </p>
+      {hostile && (
+        <section className="mt-3">
+          <SectionTitle>Seize the wagons</SectionTitle>
+          {raiders.length === 0 && <p className="text-[13px] text-ink-500">No free army to send.</p>}
+          <div className="space-y-1">
+            {raiders.map(({ a, d }) => (
+              <button
+                key={a.id}
+                className="well flex w-full items-center justify-between rounded-sm px-2.5 py-1.5 text-[13px] hover:brightness-125"
+                onClick={() => {
+                  engine.orderArmy(a.id, { type: 'raidConvoy', convoyId: w.id })
+                  toast(`${a.name} rides to seize the wagons.`)
+                  onSelect({ kind: 'army', id: a.id })
+                }}
+              >
+                <span>{a.name}</span>
+                <span className="text-ink-400 tabular-nums">{Math.round(d)}m</span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  )
+}
+
+function OutpostPanel({
+  engine,
+  outpost,
+  onSelect,
+  onFormArmy,
+  toast,
+}: {
+  engine: GameEngine
+  outpost: Outpost
+  onSelect: Props['onSelect']
+  onFormArmy: Props['onFormArmy']
+  toast: (m: string) => void
+}) {
   const rel = engine.relation(outpost.faction)
   const team = engine.team(outpost.faction)
   const here = engine.state.armies.filter((a) => engine.team(a.faction) === team && Math.hypot(a.x - outpost.x, a.z - outpost.z) < OUTPOST.radius)
@@ -800,12 +1015,13 @@ function OutpostPanel({ engine, outpost, onSelect }: { engine: GameEngine; outpo
           )}
           {kind.fireRange > 0 && <li>🏹 Shoots at enemies within {kind.fireRange}m</li>}
           {kind.hides && <li>🌲 Armies stationed here stay hidden and ambush</li>}
-          <li>📦 Supplies armies within {kind.supply}m</li>
+          <li>📦 Supplies armies within {Math.round(engine.outpostSupplyRange(outpost))}m</li>
           <li>❤ Armies here recover morale as in a castle</li>
           <li className="text-ember-300/90">🔥 Left empty, enemies burn it in {OUTPOST.razeSeconds}s</li>
         </ul>
         {!done && <p className="mt-1 text-[12px] text-ink-400">Effects begin once construction is finished.</p>}
       </section>
+      {outpost.kind === 'depot' && done && <DepotSection engine={engine} outpost={outpost} onFormArmy={onFormArmy} toast={toast} />}
       <section className="mt-4">
         <SectionTitle>Stationed here</SectionTitle>
         {here.length === 0 && <p className="text-[13px] text-ember-300">Nobody. The outpost is undefended.</p>}
@@ -823,6 +1039,440 @@ function OutpostPanel({ engine, outpost, onSelect }: { engine: GameEngine; outpo
           Dismantle
         </button>
       )}
+    </div>
+  )
+}
+
+/** Stores, quartered troops and commanders of a supply depot, and raising armies from it. */
+function DepotSection({ engine, outpost, onFormArmy, toast }: { engine: GameEngine; outpost: Outpost; onFormArmy: Props['onFormArmy']; toast: (m: string) => void }) {
+  const rel = engine.relation(outpost.faction)
+  const stock = Math.round(outpost.stock ?? 100)
+  const g = outpost.garrison ?? {}
+  const n = total(g)
+  const inbound = (engine.state.convoys ?? []).filter((w) => w.outpostId === outpost.id)
+  const cmds = (outpost.commanders ?? []).map((k) => engine.commanders.get(k)).filter((c): c is NonNullable<typeof c> => !!c)
+  const nearby =
+    rel === 'self'
+      ? engine.state.armies
+          .filter((a) => a.faction === PLAYER && a.status !== 'retreating' && !a.battleId)
+          .map((a) => ({ a, d: Math.hypot(a.x - outpost.x, a.z - outpost.z) }))
+          .filter(({ d }) => d < 1600)
+          .sort((x, y) => x.d - y.d)
+          .slice(0, 4)
+      : []
+  return (
+    <>
+      <section className="mt-4">
+        <SectionTitle right={<span className="text-[12px] text-ink-400">{inbound.length > 0 ? `${inbound.length} wagon train on the road` : 'no wagons on the road'}</span>}>Stores</SectionTitle>
+        <div className="flex items-center gap-2 text-[13px]">
+          <Bar value={stock} max={100} color={stock < 25 ? '#de5f45' : '#d1a73f'} height={6} />
+          <span className="w-10 text-right tabular-nums">{stock}%</span>
+        </div>
+        <p className="mt-1 text-[12px] leading-snug text-ink-400">
+          Wagons from the nearest friendly castle keep the stores full. As stores run down, the supply reach shrinks; empty, the depot supplies no one. Enemies who reach the wagons seize them.
+        </p>
+      </section>
+      {rel !== 'enemy' && (
+        <section className="mt-4">
+          <SectionTitle right={<span className="text-[12px] text-ink-400 tabular-nums">{fmt(n)} / 900</span>}>Quartered inside</SectionTitle>
+          {n < 1 ? (
+            <p className="text-[13px] text-ink-500">Nobody. Send an army in to quarter it here, out of sight.</p>
+          ) : (
+            <>
+              <StackBar troops={g} units={engine.unitList} height={6} />
+              <div className="mt-1.5 flex flex-wrap gap-x-3 text-[12.5px] text-ink-300 tabular-nums">
+                {engine.unitList
+                  .filter((u) => (g[u.key] ?? 0) >= 1)
+                  .map((u) => (
+                    <span key={u.key} className="flex items-center gap-1">
+                      <UnitGlyph unit={u.key} size={12} color={u.color} />
+                      {fmt(g[u.key])}
+                    </span>
+                  ))}
+              </div>
+            </>
+          )}
+          {cmds.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {cmds.map((c) => (
+                <span key={c.key} className="well flex items-center gap-1.5 rounded-sm py-0.5 pr-2 pl-0.5 text-[12.5px]">
+                  <PixelPortrait spec={c.portrait} size={22} />
+                  {c.name}
+                </span>
+              ))}
+            </div>
+          )}
+          {rel === 'self' && (
+            <>
+              <button className="btn btn-gold mt-2.5 w-full" disabled={n < 10} onClick={() => onFormArmy(outpost.id)}>
+                <Swords size={15} /> Raise an army here
+              </button>
+              <p className="mt-1 text-[12px] text-ink-400">Only commanders quartered in this depot (or a captain) can lead troops raised here. Enemies at the gate make the garrison march out; if the depot is lost, they fall back to your nearest castle.</p>
+            </>
+          )}
+        </section>
+      )}
+      {nearby.length > 0 && (
+        <section className="mt-4">
+          <SectionTitle>Send an army in</SectionTitle>
+          <div className="space-y-1">
+            {nearby.map(({ a, d }) => (
+              <button
+                key={a.id}
+                className="well flex w-full items-center justify-between rounded-sm px-2.5 py-1.5 text-[13px] hover:brightness-125"
+                onClick={() => {
+                  engine.orderArmy(a.id, { type: 'garrison', outpostId: outpost.id })
+                  toast(`${a.name} will quarter in ${outpost.name}.`)
+                }}
+              >
+                <span>{a.name}</span>
+                <span className="text-ink-400 tabular-nums">
+                  {fmt(total(a.troops))} · {Math.round(d)}m
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+    </>
+  )
+}
+
+function KnownCount({ k }: { k: ReturnType<GameEngine['knowledge']> }) {
+  if (k.kind === 'exact') return <>{fmt(Math.floor(k.total))}</>
+  if (k.kind === 'scouted')
+    return (
+      <span title={`Scouted ${Math.round(k.age / 60)} min ago`}>
+        {fmt(Math.round((k.total * (1 - k.error)) / 10) * 10)}–{fmt(Math.round((k.total * (1 + k.error)) / 10) * 10)}
+      </span>
+    )
+  return <span title="A rumour, off by up to a third">~{fmt(k.total)}?</span>
+}
+
+/** Scouting orders for a small party, or the state of a pursuit party. */
+function ScoutBox({ engine, army, toast }: { engine: GameEngine; army: Army; toast: (m: string) => void }) {
+  const [target, setTarget] = useState('')
+  if (army.pursuit) {
+    const scout = engine.army(army.pursuit.scoutId)
+    return (
+      <div className="well mt-1.5 rounded-sm px-3 py-2 text-[13px]">
+        <div className="text-ink-200">🏇 Chasing {scout ? scout.name : 'enemy scouts'}</div>
+        <button className="btn mt-1.5 w-full text-[13px]" onClick={() => engine.recallPursuit(army.id)}>
+          Call them back
+        </button>
+      </div>
+    )
+  }
+  if (army.order.type === 'scout') {
+    const o = army.order
+    const t = engine.castle(o.targetId) ?? engine.army(o.targetId) ?? engine.outpost(o.targetId)
+    return (
+      <div className="well mt-1.5 rounded-sm px-3 py-2 text-[13px] text-ink-200">
+        🔭 {o.phase === 'out' ? `Scouting ${t && 'name' in t ? t.name : 'the enemy'}` : 'Riding home with the report'}
+        {army.spottedBy && <span className="text-ember-300"> · spotted!</span>}
+        <div className="mt-0.5 text-[12px] text-ink-500">Seen so far: {Object.keys(army.scoutReport ?? {}).length} positions. The report only counts if they get home.</div>
+      </div>
+    )
+  }
+  if (total(army.troops) > SCOUT.maxSize) return null
+  const options = [
+    ...engine.state.castles
+      .filter((c) => !c.ruined && c.faction !== 'neutral' && engine.isHostile(c.faction, PLAYER))
+      .map((c) => ({ id: c.id, label: c.name, d: Math.hypot(c.x - army.x, c.z - army.z) })),
+    ...engine.state.armies
+      .filter((a) => engine.isHostile(a.faction, PLAYER) && a.order.type !== 'scout')
+      .map((a) => ({ id: a.id, label: `${a.name} (army)`, d: Math.hypot(a.x - army.x, a.z - army.z) })),
+  ]
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 10)
+  if (options.length === 0) return null
+  const pick = target || options[0].id
+  return (
+    <div className="mt-1.5 flex gap-1.5">
+      <select value={pick} onChange={(e) => setTarget(e.target.value)} className="well min-w-0 flex-1 rounded-sm px-2 py-1.5 text-[13px] outline-none">
+        {options.map((o) => (
+          <option key={o.id} value={o.id}>
+            {o.label} · {Math.round(o.d)}m
+          </option>
+        ))}
+      </select>
+      <button
+        className="btn shrink-0 text-[13px]"
+        title="Ride out, look around, and bring the report home. Enemies who spot the scouts send riders after them."
+        onClick={() => {
+          const err = engine.startScout(army.id, pick)
+          if (err) toast(err)
+        }}
+      >
+        🔭 Scout
+      </button>
+    </div>
+  )
+}
+
+/** Call on allied lords to send men to stand in this castle; shows who came. */
+function AidRow({ engine, castle, toast, onSelect }: { engine: GameEngine; castle: Castle; toast: (m: string) => void; onSelect: (s: Selection, focus?: boolean) => void }) {
+  const call = engine.aidCallAt(castle.id)
+  const allies = engine.aidAllies(PLAYER).length
+  if (allies === 0) return null
+  if (call) {
+    const helpers = call.armyIds.map((id) => engine.army(id)).filter((a): a is Army => !!a)
+    const men = helpers.reduce((s, a) => s + totalInt(a.troops), 0)
+    const left = Math.max(0, Math.ceil(call.until - engine.state.time))
+    return (
+      <div className="well mt-2 rounded-sm p-2 text-[12.5px]">
+        <div className="flex items-center gap-2">
+          <Handshake size={14} className="text-gold-300" />
+          <span className="flex-1 font-bold text-gold-200">Aid called</span>
+          <span className="text-ink-400 tabular-nums">{left}s left</span>
+        </div>
+        <p className="mt-1 text-ink-400">
+          {helpers.length ? `${helpers.length} allied ${helpers.length === 1 ? 'contingent' : 'contingents'} · ${fmt(men)} soldiers` : `${call.answered.length} of ${allies} allies have answered; none on the way yet`}
+        </p>
+        {helpers.length > 0 && (
+          <div className="mt-1 flex flex-wrap gap-1">
+            {helpers.map((a) => (
+              <button key={a.id} className="rounded-sm bg-white/5 px-1.5 py-0.5 text-[12px] text-ink-200 hover:bg-white/10" onClick={() => onSelect({ kind: 'army', id: a.id }, true)}>
+                {a.name} · {fmt(totalInt(a.troops))}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+  const err = engine.aidProblem(castle.id)
+  return (
+    <button
+      className="btn mt-1.5 w-full"
+      disabled={!!err}
+      title={err ?? 'Allied lords who are close, safe and have men to spare send them to stand in this castle until the danger passes.'}
+      onClick={() => {
+        const e = engine.callForAid(castle.id)
+        if (e) toast(e)
+      }}
+    >
+      <Handshake size={14} /> Call for aid{err && err.startsWith('Your allies were asked') ? ` · ${err.replace(/^.*wait /, '').replace('.', '')}` : ''}
+    </button>
+  )
+}
+
+/** One of the player's vassal villages: it runs itself, so this only reports. */
+function VassalPanel({ engine, castle, onSelect }: { engine: GameEngine; castle: Castle; onSelect: (s: Selection, focus?: boolean) => void }) {
+  const now = engine.state.time
+  const n = total(castle.garrison)
+  const cap = engine.capacity(castle)
+  const home = engine.nearestCastle(castle.x, castle.z, PLAYER, undefined, true)
+  const band = engine.army(castle.reliefArmyId)
+  const nextIn = Math.max(0, Math.ceil((castle.nextTributeAt ?? 0) - now))
+  const stoneIn = Math.max(0, Math.ceil(castle.lastCapturedAt + VILLAGE.stoneAfter - now))
+  const rate = engine.tributeRate(castle) * engine.incomeMult(PLAYER)
+  return (
+    <div>
+      <div className="flex items-center gap-3 pr-6">
+        <span className="grid size-12 place-items-center rounded-sm text-[24px]" style={{ background: 'linear-gradient(160deg, #4f6fae, #1d2a44)' }}>
+          🏘
+        </span>
+        <div className="min-w-0">
+          <h3 className="panel-title truncate">{castle.name}</h3>
+          <p className="text-[13px] text-ink-400">Vassal village · {castle.tier >= 2 ? 'stone walls' : 'palisade'}</p>
+        </div>
+      </div>
+      <p className="mt-3 text-[12.5px] leading-snug text-ink-400">
+        The village answers to you but runs its own affairs. It raises its own militia, pays tribute by wagon to your nearest castle, and sends men to help a castle of yours under siege nearby.
+      </p>
+      <div className="mt-3 space-y-1.5 text-[13px]">
+        <div className="flex items-center gap-2">
+          <span className="w-20 text-ink-400">Militia</span>
+          <div className="flex-1"><Bar value={n} max={cap} color="#7ea6e0" height={5} /></div>
+          <span className="tabular-nums">{fmt(n)} / {fmt(cap)}</span>
+        </div>
+        {castle.maxWalls > 0 && (
+          <div className="flex items-center gap-2">
+            <span className="w-20 text-ink-400">Walls</span>
+            <div className="flex-1"><Bar value={castle.walls} max={castle.maxWalls} color="#c9b48a" height={5} /></div>
+            <span className="tabular-nums">{Math.round((castle.walls / castle.maxWalls) * 100)}%</span>
+          </div>
+        )}
+        <div className="flex items-center gap-2">
+          <span className="w-20 text-ink-400">Tribute</span>
+          <span className="flex-1 text-gold-300 tabular-nums">+{rate.toFixed(1)} gold/s</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="w-20 text-ink-400">Next wagon</span>
+          <span className="flex-1 tabular-nums">
+            {fmt(Math.round(castle.tribute ?? 0))} gold {castle.battleId ? '· held while under attack' : nextIn > 0 ? `· leaves in ${nextIn}s` : '· loading'}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="w-20 text-ink-400">Delivers to</span>
+          {home ? (
+            <button className="flex-1 truncate text-left text-gold-200 hover:underline" onClick={() => onSelect({ kind: 'castle', id: home.id }, true)}>{home.name}</button>
+          ) : (
+            <span className="flex-1 text-ink-400">your treasury</span>
+          )}
+        </div>
+        {castle.tier < 2 && (
+          <div className="flex items-center gap-2">
+            <span className="w-20 text-ink-400">Stone walls</span>
+            <span className="flex-1 tabular-nums">{castle.battleId ? 'work stopped by fighting' : `the villagers finish them in ${stoneIn}s`}</span>
+          </div>
+        )}
+      </div>
+      {band && (
+        <button className="btn mt-3 w-full" onClick={() => onSelect({ kind: 'army', id: band.id }, true)}>
+          {totalInt(band.troops)} militia out helping · show
+        </button>
+      )}
+      <p className="mt-3 text-[12px] leading-snug text-ink-400">Wagons can be raided on the road. Keep the way to your castle safe.</p>
+    </div>
+  )
+}
+
+/** A free village (win it over or plunder it) or the ruins of one. */
+function VillagePanel({ engine, castle, toast }: { engine: GameEngine; castle: Castle; toast: (m: string) => void }) {
+  const terms = engine.villageTerms(castle.id)
+  const mine = engine.state.armies
+    .filter((a) => a.faction === PLAYER && a.status !== 'retreating' && !a.battleId)
+    .map((a) => ({ a, d: Math.hypot(a.x - castle.x, a.z - castle.z) }))
+    .sort((x, y) => x.d - y.d)
+    .slice(0, 4)
+  const infamy = engine.state.factions[PLAYER]?.infamy ?? 0
+  return (
+    <div>
+      <div className="flex items-center gap-3 pr-6">
+        <span className="grid size-12 place-items-center rounded-sm text-[24px]" style={{ background: castle.ruined ? '#2a2420' : 'linear-gradient(160deg, #8a7650, #2a2218)' }}>
+          {castle.ruined ? '🔥' : '🏘'}
+        </span>
+        <div className="min-w-0">
+          <h3 className="panel-title truncate">{castle.name}</h3>
+          <p className="text-[13px] text-ink-400">{castle.ruined ? 'Ruins of a plundered village' : 'Free village'}</p>
+        </div>
+      </div>
+      {castle.ruined ? (
+        <p className="mt-3 text-[13px] leading-snug text-ink-400">Burned and abandoned. Nobody will live here again, and it is of no use to anyone.</p>
+      ) : (
+        <>
+          <div className="mt-3 flex items-center justify-between text-[13px]">
+            <span className="text-ink-400">Militia</span>
+            <span className="tabular-nums">{fmt(total(castle.garrison))}</span>
+          </div>
+          <section className="mt-4">
+            <SectionTitle>Negotiate</SectionTitle>
+            <p className="text-[12.5px] leading-snug text-ink-400">
+              Offer coin and protection. If they agree, the village becomes your vassal: it keeps its militia, pays tribute by wagon to your nearest castle, and fights for you on its own. Higher rank and nearby castles make them cheaper and more willing; plundered villages make every village warier.
+            </p>
+            <div className="mt-2 grid grid-cols-2 gap-1.5 text-[13px]">
+              <div className="well rounded-sm px-2.5 py-1.5">
+                <div className="text-[11px] tracking-wider text-ink-400 uppercase">Price</div>
+                <div className="font-bold text-gold-300 tabular-nums">{fmt(terms.price)}g</div>
+              </div>
+              <div className="well rounded-sm px-2.5 py-1.5">
+                <div className="text-[11px] tracking-wider text-ink-400 uppercase">Chance</div>
+                <div className="font-bold tabular-nums">{Math.round(terms.chance * 100)}%</div>
+              </div>
+            </div>
+            <button
+              className="btn btn-gold mt-2 w-full"
+              disabled={!!terms.reason}
+              onClick={() => {
+                const err = engine.negotiateVillage(castle.id)
+                if (err) toast(err)
+              }}
+            >
+              <Handshake size={14} /> Send envoys
+            </button>
+            {terms.reason && <p className="mt-1 text-[12px] text-ember-300">{terms.reason}</p>}
+            <p className="mt-1 text-[12px] text-ink-500">If they refuse, 40% of the gifts are lost and they will not talk for a while.</p>
+          </section>
+          <section className="mt-4">
+            <SectionTitle>Plunder</SectionTitle>
+            <p className="text-[12.5px] leading-snug text-ink-400">
+              Beat the militia and take gold and captives at once. The village burns and can never be held. {infamy > 0 && <span className="text-ember-300">Villages already distrust you ({infamy} plundered).</span>}
+            </p>
+            <div className="mt-2 space-y-1">
+              {mine.length === 0 && <p className="text-[13px] text-ink-500">No army free to send.</p>}
+              {mine.map(({ a, d }) => (
+                <button
+                  key={a.id}
+                  className="btn btn-danger w-full justify-between px-3 text-[13px]"
+                  onClick={() => {
+                    engine.orderArmy(a.id, { type: 'attack', castleId: castle.id })
+                    toast(`${a.name} marches to plunder ${castle.name}.`)
+                  }}
+                >
+                  <span>Plunder with {a.name}</span>
+                  <span className="tabular-nums opacity-80">
+                    {fmt(totalInt(a.troops))} · {Math.round(d)}m
+                  </span>
+                </button>
+              ))}
+            </div>
+          </section>
+        </>
+      )}
+    </div>
+  )
+}
+
+/** A mine or lumber camp: who works it, how much is left, and who to send. */
+function SitePanel({ engine, siteId, onSelect, toast }: { engine: GameEngine; siteId: string; onSelect: Props['onSelect']; toast: (m: string) => void }) {
+  const site = engine.site(siteId)
+  if (!site) return null
+  const worker = engine.army(site.workerId)
+  const stock = Math.round((site.stock / RESOURCE_STOCK) * 100)
+  const crews = engine.state.armies
+    .filter((a) => a.faction === PLAYER && (a.troops.engineers ?? 0) >= RESOURCE.minEngineers && a.status !== 'retreating')
+    .map((a) => ({ a, d: Math.hypot(a.x - site.x, a.z - site.z) }))
+    .sort((x, y) => x.d - y.d)
+    .slice(0, 4)
+  return (
+    <div>
+      <div className="flex items-center gap-3 pr-6">
+        <span className="grid size-12 place-items-center rounded-sm text-[24px]" style={{ background: 'linear-gradient(160deg, #6f6a62, #1d1a17)' }}>
+          {site.kind === 'mine' ? '⛏' : '🪓'}
+        </span>
+        <div className="min-w-0">
+          <h3 className="panel-title truncate">{site.kind === 'mine' ? 'Mine' : 'Lumber camp'}</h3>
+          <p className="text-[13px] text-ink-400">{worker ? `Worked by ${worker.name}${worker.faction !== PLAYER ? ` (${engine.factionName(worker.faction)})` : ''}` : 'Nobody works it'}</p>
+        </div>
+      </div>
+      <div className="mt-3 flex items-center gap-2 text-[13px]">
+        <span className="w-16 text-ink-400">Left</span>
+        <Bar value={stock} max={100} color="#d1a73f" height={5} />
+        <span className="w-10 text-right tabular-nums">{stock}%</span>
+      </div>
+      <p className="mt-2 text-[12.5px] leading-snug text-ink-400">
+        Engineers working here earn gold: {RESOURCE.minEngineers} engineers make about {RESOURCE.rate(10, site.kind).toFixed(1)}/s, 40 about {RESOURCE.rate(40, site.kind).toFixed(1)}/s{site.kind === 'mine' ? ' (mines pay 30% more)' : ''}. Army size does not matter, only engineers. The gold goes home by wagon, and enemies can seize the wagons.
+      </p>
+      {worker && worker.faction !== PLAYER && engine.isHostile(worker.faction, PLAYER) && (
+        <p className="mt-2 text-[13px] text-ember-300">An enemy crew works it. Drive them off to take it over.</p>
+      )}
+      <section className="mt-4">
+        <SectionTitle>Send engineers</SectionTitle>
+        {crews.length === 0 && <p className="text-[13px] text-ink-500">No army with {RESOURCE.minEngineers}+ engineers.</p>}
+        <div className="space-y-1">
+          {crews.map(({ a, d }) => (
+            <button
+              key={a.id}
+              className="well flex w-full items-center justify-between rounded-sm px-2.5 py-1.5 text-[13px] hover:brightness-125"
+              onClick={() => {
+                const err = engine.startGather(a.id, site.id)
+                if (err) toast(err)
+                else {
+                  toast(`${a.name} goes to work the ${site.kind === 'mine' ? 'mine' : 'forest'}.`)
+                  onSelect({ kind: 'army', id: a.id })
+                }
+              }}
+            >
+              <span>{a.name}</span>
+              <span className="text-ink-400 tabular-nums">
+                {Math.floor(a.troops.engineers ?? 0)} eng · +{RESOURCE.rate(a.troops.engineers ?? 0, site.kind).toFixed(1)}/s · {Math.round(d)}m
+              </span>
+            </button>
+          ))}
+        </div>
+      </section>
     </div>
   )
 }

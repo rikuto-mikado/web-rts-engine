@@ -38,13 +38,12 @@ npm run dev                  # http://localhost:5173 (proxies /api to :8000)
 
 | Mode | Map | Goal |
 |---|---|---|
-| **Conquest** | The hand-made *Ashen Marches*, or a random map | You against a coalition: take its capitals, keep yours |
+| **Conquest** | Random, in three sizes | You against a coalition: take its capitals, keep yours |
 | **Alliance War** | Random, 16 / 24 / 32 realms in two alliances | Your alliance takes the enemy High Seat |
-| **Great Siege** | A walled town: 6 gates, towers, 6 districts, citadel; camps on every side | You are one lord among many. Defenders hold the citadel 20 min; attackers take it |
 
 Every random map comes in three sizes (small / medium / large), each balanced
-separately with headless simulations. Random maps come in five types: Green Vales, Highland Passes, Frozen North,
-Sunscorched Steppe and Lakelands. The menu shows a live preview of the map.
+separately with headless simulations. Both modes share the same six map types: Green Vales, Highland Passes,
+Frozen North, Sunscorched Steppe, Autumn Weald and Ashen Marches. The menu shows a live preview of the map.
 
 Random maps derive entirely from the seed, so the same seed always gives the same world.
 Wars are played in one sitting and end in victory or defeat; there are no saves. The
@@ -73,6 +72,11 @@ backend records each match's result and battle reports.
   and follow their alliance leader's offensive (gold ring). On an enemy castle,
   *Summon allies* gathers allied contingents at one of your armies or castles,
   then everyone marches on the target together (or press *March now*).
+  On one of your own castles, *Call for aid* asks allied lords who are close,
+  safe and have men to spare to send them to stand in it until the danger
+  passes. AI lords call for aid too: answer from the War tab (*Send*). Armies
+  stationed at a castle (yours or an ally's) fight from its walls when it is
+  besieged.
 - **Units**: Infantry (beat cavalry), Cavalry (beat archers and engineers),
   Archers (beat infantry), Engineers (build outposts, breach walls).
 - **Outposts** (need 15+ Engineers in the army): Field Camp, Watchtower (high
@@ -86,10 +90,33 @@ backend records each match's result and battle reports.
   first when an enemy blunders into it.
 - **Diplomacy**: buy free towns, buy truces, and in Alliance War bribe enemy
   lords to change sides.
-- **Castle splendour**: castles grow grander as their garrison reaches
-  1,000 / 1,500 / 2,000 / 3,000 / 4,000.
+- **Realm rank**: every realm's rank rises with its total strength (top rank
+  5 / 6 / 7 by map size) and is shown under its castles and outposts; all of a
+  realm's castles grow grander with each rank.
+- **Supply depots**: armies quarter inside (up to 900, out of sight) and new
+  armies can be raised there, led only by commanders quartered in that depot.
+  Wagon trains from the nearest friendly castle keep its stores full; enemies
+  can seize the wagons, and a depot's supply reach shrinks as stores run out.
+- **Engineers' works**: abatis (slows enemies), spike stakes (stops charges),
+  burning a bridge (closed for 5 minutes) and rebuilding it.
+- **Rear attacks**: joining a fight from behind the enemy's engaged line gives
+  a short damage bonus and a charge that no spear wall stops.
+- **Villages**: win free villages over with envoys and gold. A vassal village
+  runs itself: it raises its own militia, sends tribute wagons to its lord's
+  nearest castle, walls itself in stone in time and sends militia to help a
+  besieged castle nearby. Armies cannot be put into villages. In Alliance War
+  it serves whoever won it over. Or
+  plunder them for gold and captives, leaving ruins and a bad name.
+- **Mines and lumber camps**: armies with 10+ engineers earn gold there (the
+  rate grows with engineers, not army size); the gold travels home by wagon.
+- **Scouting**: enemy strength far from your forces is only a rumour. Small
+  parties (80 or fewer) scout and report if they make it home; whoever spots
+  them sends riders after them, and captured scouts can betray their castle.
+- **Maps** are 1.4× wider than before, leaving room for the countryside.
+- **Camera**: overhead or tilted view (V, or the button in the top bar);
+  touch screens start overhead.
 - **Commander growth**: at each rank a commander picks one of three traits.
-- **War honours**: in Alliance War and Great Siege every lord's kills and
+- **War honours**: in Alliance War every lord's kills and
   captures are ranked.
 - **Navigation**: the holdings bar (bottom) lists your castles and outposts;
   press **C** or the Home button to fly to your seat of power.

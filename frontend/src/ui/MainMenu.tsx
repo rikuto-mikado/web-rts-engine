@@ -1,12 +1,11 @@
-import { Castle as CastleIcon, Crown, Dices, Handshake, LoaderCircle, RotateCcw, ScrollText, Swords } from 'lucide-react'
+import { Crown, Dices, Handshake, LoaderCircle, RotateCcw, ScrollText, Swords } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { api } from '../api/client'
 import { GameEngine } from '../game/engine'
 import { BIOMES, MAP_TYPES, type MapType } from '../game/biomes'
 import { generateMap, type GeneratedMap } from '../game/mapgen'
-import { generateSiege } from '../game/siegegen'
 import { World } from '../game/world'
-import type { CastleDef, Difficulty, FactionDef, GameContent, GameMode, MapSize, SiegeSide } from '../game/types'
+import type { CastleDef, Difficulty, FactionDef, GameContent, GameMode, MapSize } from '../game/types'
 import type { Match } from './GameScreen'
 
 interface Props {
@@ -22,12 +21,11 @@ const DIFFS: { key: Difficulty; name: string; text: string }[] = [
   { key: 'hard', name: 'Warlord', text: 'Rich and relentless foes.' },
 ]
 
-type MenuMode = 'conquest' | 'alliance' | 'siege'
+type MenuMode = 'conquest' | 'alliance'
 
-const SIZE_HINT: Record<'survival' | 'alliance' | 'siege', Record<MapSize, string>> = {
+const SIZE_HINT: Record<'survival' | 'alliance', Record<MapSize, string>> = {
   survival: { small: '10 castles, a quick war (about 20 min).', medium: '15 castles, the standard war.', large: '24 castles, a long campaign. You start with 3.' },
   alliance: { small: '16 realms on a compact map.', medium: '24 realms.', large: '32 realms on a vast map.' },
-  siege: { small: '4 gates, 3 enemy camps, 15 minutes.', medium: '6 gates, 5 camps, 20 minutes.', large: '8 gates, 7 camps, 25 minutes.' },
 }
 
 const MODES: { key: MenuMode; name: string; icon: ReactNode; tagline: string; text: string }[] = [
@@ -36,7 +34,7 @@ const MODES: { key: MenuMode; name: string; icon: ReactNode; tagline: string; te
     name: 'Conquest',
     icon: <ScrollText size={22} />,
     tagline: 'You against a coalition',
-    text: 'Break an enemy coalition and take its capitals. Play the hand-crafted Ashen Marches or a freshly generated map.',
+    text: 'Break an enemy coalition and take its capitals. Every war is fought on a freshly generated map.',
   },
   {
     key: 'alliance',
@@ -45,50 +43,35 @@ const MODES: { key: MenuMode; name: string; icon: ReactNode; tagline: string; te
     tagline: '16 to 32 realms, two alliances',
     text: 'Fight beside a coalition of AI lords on a huge random map. Call your allies to arms and take the enemy High Seat.',
   },
-  {
-    key: 'siege',
-    name: 'Great Siege',
-    icon: <CastleIcon size={22} />,
-    tagline: 'One town, attacked from every side',
-    text: 'A close, intense battle for a walled town. You are one lord among many: defend the streets or storm them.',
-  },
 ]
 
 export function MainMenu({ content, error, onRetry, onStart }: Props) {
   const [menuMode, setMenuMode] = useState<MenuMode>('conquest')
-  const [mapChoice, setMapChoice] = useState<MapType | 'ashen'>('ashen')
-  // Conquest on the hand-made map is the "campaign" ruleset; on a random map it is "survival".
-  const mode: GameMode = menuMode === 'conquest' ? (mapChoice === 'ashen' ? 'campaign' : 'survival') : menuMode
-  const mapType: MapType = mapChoice === 'ashen' ? 'vales' : mapChoice
+  // Both modes offer the same six generated maps; Conquest uses the "survival" ruleset.
+  const [mapType, setMapChoice] = useState<MapType>('vales')
+  const mode: GameMode = menuMode === 'conquest' ? 'survival' : menuMode
   const [difficulty, setDifficulty] = useState<Difficulty>('normal')
   const [seed, setSeed] = useState(() => Math.floor(Math.random() * 99999))
   const [mapSize, setMapSize] = useState<MapSize>('medium')
   const [busy, setBusy] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
-  const [siegeSide, setSiegeSide] = useState<SiegeSide>('defend')
   const [preview, setPreview] = useState<{ key: string; map: GeneratedMap | null; world: World } | null>(null)
   const scenario = content?.scenarios[0]
-  const previewKey = mode === 'campaign' ? 'campaign' : mode === 'siege' ? `siege|${siegeSide}|${mapType}|${seed}|${difficulty}|${mapSize}` : `${mode}|${mapType}|${seed}|${mapSize}`
+  const previewKey = `${mode}|${mapType}|${seed}|${mapSize}`
 
   // Generate the map in the background so the player can see it before starting.
   useEffect(() => {
     if (!scenario) return
     const t = window.setTimeout(() => {
       try {
-        if (mode === 'campaign') setPreview({ key: previewKey, map: null, world: new World(scenario) })
-        else if (mode === 'siege') {
-          const map = generateSiege(siegeSide, seed, mapType, difficulty, mapSize)
-          setPreview({ key: previewKey, map, world: map.world })
-        } else {
-          const map = generateMap(mode, seed, { mapType, size: mapSize })
-          setPreview({ key: previewKey, map, world: map.world })
-        }
+        const map = generateMap(mode, seed, { mapType, size: mapSize })
+        setPreview({ key: previewKey, map, world: map.world })
       } catch (e) {
         setErr((e as Error).message)
       }
     }, 180)
     return () => window.clearTimeout(t)
-  }, [previewKey, mode, mapType, seed, mapSize, scenario, siegeSide, difficulty])
+  }, [previewKey, mode, mapType, seed, mapSize, scenario])
 
   const start = async () => {
     if (!content || !scenario) return
@@ -96,17 +79,13 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
     setErr(null)
     await new Promise((r) => setTimeout(r, 30))
     try {
-      let engine: GameEngine
-      if (mode === 'campaign') engine = GameEngine.newCampaign(content, scenario.key, difficulty)
-      else {
-        const cached = preview?.key === previewKey && preview.map ? preview.map : null
-        const map = cached ?? (mode === 'siege' ? generateSiege(siegeSide, seed, mapType, difficulty, mapSize) : generateMap(mode, seed, { mapType, size: mapSize }))
-        engine = GameEngine.create(content, map.scenario, map.rules, difficulty, map.world)
-      }
-      const defaultName = mode === 'campaign' ? 'The Ashen Marches' : mode === 'siege' ? engine.scenario.name : mode === 'alliance' ? `Alliance War · ${BIOMES[mapType].name}` : `Conquest · ${BIOMES[mapType].name}`
+      const cached = preview?.key === previewKey && preview.map ? preview.map : null
+      const map = cached ?? generateMap(mode, seed, { mapType, size: mapSize })
+      const engine = GameEngine.create(content, map.scenario, map.rules, difficulty, map.world)
+      const defaultName = `${mode === 'alliance' ? 'Alliance War' : 'Conquest'} · ${BIOMES[mapType].name}`
       const matchName = defaultName
       const record = await api
-        .createCampaign({ name: matchName, mode, seed: mode === 'campaign' ? null : seed, scenario: mode === 'campaign' ? scenario.key : null, difficulty, state: null })
+        .createCampaign({ name: matchName, mode, seed, scenario: null, difficulty, state: null })
         .catch(() => null)
       onStart({ id: record?.id ?? null, name: matchName, engine })
     } catch (e) {
@@ -155,7 +134,7 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
               <div className="panel flex flex-col rounded-md p-4 sm:p-6 lg:h-[680px]">
                 <h2 className="panel-title mb-4">Prepare for War</h2>
                 <Label>Game mode</Label>
-                <div className="grid gap-2 sm:grid-cols-3">
+                <div className="grid gap-2 sm:grid-cols-2">
                   {MODES.map((m) => {
                     const active = menuMode === m.key
                     return (
@@ -165,7 +144,6 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
                         tabIndex={0}
                         onClick={() => {
                           setMenuMode(m.key)
-                          if (m.key !== 'conquest' && mapChoice === 'ashen') setMapChoice('vales')
                         }}
                         className={`well flex cursor-pointer flex-col rounded-sm p-3 text-left transition sm:h-[150px] ${active ? 'outline outline-1 outline-gold-400 brightness-125' : 'hover:brightness-125'}`}
                       >
@@ -174,24 +152,7 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
                           <span className="font-display text-[15px] font-bold text-gold-100">{m.name}</span>
                         </div>
                         <div className="mt-1 text-[13px] font-bold text-gold-300/85">{m.tagline}</div>
-                        {m.key === 'siege' && active ? (
-                          <div className="mt-auto grid grid-cols-2 gap-1 pt-2">
-                            {(['defend', 'attack'] as const).map((k) => (
-                              <button
-                                key={k}
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  setSiegeSide(k)
-                                }}
-                                className={`btn h-8 min-h-0 px-1 text-[12px] ${siegeSide === k ? 'btn-gold' : ''}`}
-                              >
-                                {k === 'defend' ? 'Defend' : 'Attack'}
-                              </button>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="mt-1 line-clamp-3 text-[13px] leading-snug text-ink-400">{m.text}</div>
-                        )}
+                        <div className="mt-1 line-clamp-3 text-[13px] leading-snug text-ink-400">{m.text}</div>
                       </div>
                     )
                   })}
@@ -200,29 +161,13 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
                 <div className="scroll-thin mt-5 min-h-0 flex-1 overflow-y-auto pr-1">
                   <Label>Map</Label>
                   <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                    {menuMode === 'conquest' && (
-                      <button
-                        onClick={() => setMapChoice('ashen')}
-                        className={`well overflow-hidden rounded-sm text-left transition ${mapChoice === 'ashen' ? 'outline outline-1 outline-gold-400 brightness-125' : 'hover:brightness-125'}`}
-                      >
-                        <div className="flex h-6">
-                          {['#4f7a2e', '#3b7ea1', '#8f1d1d'].map((c, i) => (
-                            <span key={i} className="flex-1" style={{ background: c }} />
-                          ))}
-                        </div>
-                        <div className="px-2 py-1.5">
-                          <div className="text-[13px] leading-tight font-bold text-ink-100">The Ashen Marches</div>
-                          <div className="text-[12px] text-gold-300/80">Hand-crafted</div>
-                        </div>
-                      </button>
-                    )}
                     {MAP_TYPES.map((k) => {
                       const b = BIOMES[k]
                       return (
                         <button
                           key={k}
                           onClick={() => setMapChoice(k)}
-                          className={`well overflow-hidden rounded-sm text-left transition ${mapChoice === k ? 'outline outline-1 outline-gold-400 brightness-125' : 'hover:brightness-125'}`}
+                          className={`well overflow-hidden rounded-sm text-left transition ${mapType === k ? 'outline outline-1 outline-gold-400 brightness-125' : 'hover:brightness-125'}`}
                         >
                           <div className="flex h-6">
                             {b.swatch.map((c, i) => (
@@ -243,13 +188,13 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
                       <Label>Map size</Label>
                       <div className="grid grid-cols-3 gap-1.5">
                         {(['small', 'medium', 'large'] as const).map((z) => (
-                          <button key={z} disabled={mode === 'campaign'} onClick={() => setMapSize(z)} className={`btn capitalize ${mapSize === z && mode !== 'campaign' ? 'btn-gold' : ''}`}>
+                          <button key={z} onClick={() => setMapSize(z)} className={`btn capitalize ${mapSize === z ? 'btn-gold' : ''}`}>
                             {z}
                           </button>
                         ))}
                       </div>
                       <p className="mt-1 min-h-[2.6em] text-[13px] leading-snug text-ink-500">
-                        {mode === 'campaign' ? 'The hand-crafted map has a fixed size.' : SIZE_HINT[mode as 'survival' | 'alliance' | 'siege'][mapSize]}
+                        {SIZE_HINT[mode][mapSize]}
                       </p>
                     </div>
                     <div>
@@ -268,13 +213,13 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
 
                 <button className="btn btn-gold mt-4 w-full shrink-0 py-3.5 text-base" onClick={start} disabled={!!busy}>
                   {busy === 'new' ? <LoaderCircle size={18} className="animate-spin" /> : <Swords size={18} />}
-                  {busy === 'new' ? 'Raising the banners…' : mode === 'siege' ? (siegeSide === 'defend' ? 'Defend the Town' : 'Join the Assault') : 'Begin the War'}
+                  {busy === 'new' ? 'Raising the banners…' : 'Begin the War'}
                 </button>
                 {err && <p className="well mt-3 rounded-sm p-2 text-[13px] text-ember-300">{err}</p>}
               </div>
 
               <div className="panel flex flex-col rounded-md p-4 sm:p-6 lg:h-[680px]">
-                <h2 className="panel-title mb-3 truncate">{mode === 'campaign' ? 'The Ashen Marches' : mode === 'siege' && preview?.map ? preview.map.scenario.name : biome.name}</h2>
+                <h2 className="panel-title mb-3 truncate">{biome.name}</h2>
                 <div className="relative mx-auto aspect-square w-full max-w-[380px]">
                   {preview?.key === previewKey ? (
                     <MapPreview world={preview.world} castles={def?.castles ?? []} factions={def?.factions} />
@@ -284,17 +229,15 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
                     </div>
                   )}
                 </div>
-                {mode !== 'campaign' && (
-                  <button className="btn mx-auto mt-3" onClick={() => setSeed(Math.floor(Math.random() * 99999))}>
-                    <Dices size={15} /> A different map
-                  </button>
-                )}
-                <p className="mt-3 text-[14px] leading-snug text-ink-300">{mode === 'campaign' ? scenario.description : mode === 'siege' && preview?.map ? preview.map.scenario.description : biome.description}</p>
+                <button className="btn mx-auto mt-3" onClick={() => setSeed(Math.floor(Math.random() * 99999))}>
+                  <Dices size={15} /> A different map
+                </button>
+                <p className="mt-3 text-[14px] leading-snug text-ink-300">{biome.description}</p>
                 {def && (
                   <div className="mt-3 grid grid-cols-3 gap-1.5 text-center">
                     <MiniStat label="Castles" value={def.castles.length} />
                     <MiniStat label="Realms" value={(def.factions ?? []).filter((f) => f.team !== 'N').length || 2} />
-                    {mode === 'siege' ? <MiniStat label="Gates" value={def.castles.filter((c) => c.gate).length} /> : <MiniStat label="Bridges" value={def.bridges.length} />}
+                    <MiniStat label="Bridges" value={def.bridges.length} />
                   </div>
                 )}
                 <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1 text-[12px] text-ink-400">

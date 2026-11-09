@@ -1,7 +1,7 @@
 import { Castle as CastleIcon, ChevronsLeft, ChevronsRight, CircleAlert, Hammer, Handshake, Plus, Swords, Users } from 'lucide-react'
 import { useState } from 'react'
 import { useViewport } from './viewport'
-import { PLAYER, capacityForTier, type GameEngine } from '../game/engine'
+import { PLAYER, type GameEngine } from '../game/engine'
 import { FORMATIONS } from '../game/formations'
 import { fmt, total, totalInt } from '../game/troops'
 import type { Selection } from '../render/GameRenderer'
@@ -32,7 +32,7 @@ export function Sidebar({ engine, open, setOpen, selection, onSelect, onFormArmy
   const threats = Object.values(s.factions).filter((f) => f.host && f.host.phase !== 'idle' && engine.relation(f.id) === 'enemy')
 
   return (
-    <div className={`pointer-events-none absolute z-40 flex ${vp.compact ? 'inset-0' : 'top-[68px] bottom-3 left-3 z-20'}`}>
+    <div className={`pointer-events-none absolute z-40 flex ${vp.compact ? 'inset-0' : 'top-3 bottom-3 left-3 z-20'}`}>
       {vp.compact && open && <div className="pointer-events-auto absolute inset-0 bg-black/50" onClick={() => setOpen(false)} />}
       <aside
         className={`panel pointer-events-auto relative flex flex-col overflow-hidden transition-all duration-300 ${vp.compact ? 'safe-top h-full rounded-none' : 'rounded-md'} ${open ? (vp.compact ? 'w-[min(88vw,360px)] opacity-100' : 'w-[336px] opacity-100') : 'w-0 border-0 opacity-0'}`}
@@ -75,6 +75,7 @@ export function Sidebar({ engine, open, setOpen, selection, onSelect, onFormArmy
         })}
 
         <MusterCard engine={engine} onFocusPoint={onFocusPoint} />
+        <AidCard engine={engine} onFocusPoint={onFocusPoint} />
 
         <div className="scroll-thin min-w-[min(88vw,336px)] flex-1 overflow-y-auto p-3">
           {tab === 'realm' && <RealmTab engine={engine} selection={selection} onSelect={onSelect} />}
@@ -99,7 +100,7 @@ function MusterCard({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint
   const musters = engine.state.musters.filter((m) => m.team === 'A')
   const [joinArmy, setJoinArmy] = useState<Record<string, string>>({})
   if (musters.length === 0) return null
-  const mine = engine.state.armies.filter((a) => a.faction === PLAYER && !a.battleId && a.status !== 'retreating' && !engine.musterOf(a.id))
+  const mine = engine.state.armies.filter((a) => a.faction === PLAYER && !a.vassalOf && !a.battleId && a.status !== 'retreating' && !engine.musterOf(a.id))
   return (
     <div className="mx-2 mt-2 min-w-[min(84vw,320px)] space-y-1.5">
       {musters.map((m) => {
@@ -159,6 +160,75 @@ function MusterCard({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint
   )
 }
 
+/** Allied lords calling for aid: send one of your armies to stand in their castle. */
+function AidCard({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint: (x: number, z: number) => void }) {
+  const team = engine.team(PLAYER)
+  const [pickFor, setPickFor] = useState<Record<string, string>>({})
+  // Only calls your armies could reasonably answer: within reach of one of your castles, nearest first.
+  const homes = engine.state.castles.filter((c) => c.faction === PLAYER && !c.village)
+  const reach = engine.aidReach()
+  const near = (engine.state.aidCalls ?? [])
+    .filter((c) => c.team === team && c.faction !== PLAYER)
+    .map((call) => {
+      const c = engine.castle(call.castleId)
+      const d = c ? Math.min(...homes.map((h) => Math.hypot(h.x - c.x, h.z - c.z))) : Infinity
+      return { call, d }
+    })
+    .filter((x) => x.d <= reach)
+    .sort((x, y) => x.d - y.d)
+  const calls = near.slice(0, 3).map((x) => x.call)
+  const more = near.length - calls.length
+  if (calls.length === 0) return null
+  const mine = engine.state.armies.filter((a) => a.faction === PLAYER && !a.vassalOf && !a.battleId && a.status !== 'retreating' && !engine.musterOf(a.id))
+  return (
+    <div className="mx-2 mt-2 min-w-[min(84vw,320px)] space-y-1.5">
+      {calls.map((call) => {
+        const c = engine.castle(call.castleId)
+        if (!c) return null
+        const helpers = call.armyIds.map((id) => engine.army(id)).filter((a) => !!a)
+        const mineThere = engine.state.armies.filter((a) => a.faction === PLAYER && a.order.type === 'station' && a.order.castleId === c.id)
+        const left = Math.max(0, Math.ceil(call.until - engine.state.time))
+        const threat = engine.threatTo(c)
+        const pick = pickFor[call.id] ?? mine.find((a) => !mineThere.includes(a))?.id ?? ''
+        return (
+          <div key={call.id} className="rounded-sm border border-amber-400/40 bg-amber-700/15 p-2.5 text-[13px]">
+            <button className="flex w-full items-start gap-2 text-left" onClick={() => onFocusPoint(c.x, c.z)}>
+              <CircleAlert size={16} className="mt-0.5 shrink-0 text-amber-300" />
+              <div className="min-w-0 flex-1">
+                <div className="font-semibold text-amber-200">Aid needed · {c.name}</div>
+                <div className="text-[12px] text-ink-400">Called by {engine.factionName(call.faction)} · ≤{left}s</div>
+                <div className="text-ink-300">
+                  {threat > 0 ? `~${fmt(threat)} enemies near · ` : c.battleId ? 'Under siege · ' : ''}
+                  {helpers.length + mineThere.length} {helpers.length + mineThere.length === 1 ? 'contingent' : 'contingents'} standing by
+                </div>
+              </div>
+            </button>
+            {mine.length > 0 && (
+              <div className="mt-2 flex gap-1.5">
+                <select
+                  value={pick}
+                  onChange={(e) => setPickFor({ ...pickFor, [call.id]: e.target.value })}
+                  className="well min-w-0 flex-1 rounded-sm px-2 py-1 text-[12px] outline-none"
+                >
+                  {mine.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name} ({fmt(total(a.troops))})
+                    </option>
+                  ))}
+                </select>
+                <button className="btn py-1 text-[13px]" onClick={() => pick && engine.sendAid(call.id, pick)}>
+                  Send
+                </button>
+              </div>
+            )}
+          </div>
+        )
+      })}
+      {more > 0 && <p className="px-1 text-[12px] text-ink-400">+{more} more {more === 1 ? 'call' : 'calls'} for aid farther away</p>}
+    </div>
+  )
+}
+
 function RealmTab({ engine, selection, onSelect }: { engine: GameEngine; selection: Selection; onSelect: Props['onSelect'] }) {
   const s = engine.state
   const totals = engine.totals(PLAYER)
@@ -167,6 +237,7 @@ function RealmTab({ engine, selection, onSelect }: { engine: GameEngine; selecti
   const commanders = engine.content.commanders.filter((c) => s.commanders[c.key]?.owner === PLAYER)
   return (
     <div className="space-y-5">
+      <RankCard engine={engine} power={totals.totalPower} />
       <section>
         <SectionTitle>Total strength</SectionTitle>
         <div className="grid grid-cols-3 gap-1.5">
@@ -217,7 +288,7 @@ function RealmTab({ engine, selection, onSelect }: { engine: GameEngine; selecti
                   </span>
                 </div>
                 <div className="mt-1">
-                  <Bar value={n} max={capacityForTier(c.tier)} color="#5f93ec" height={2} />
+                  <Bar value={n} max={engine.capacity(c)} color="#5f93ec" height={2} />
                 </div>
               </button>
             )
@@ -336,7 +407,8 @@ function WarTab({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint: (x
             {f.leader && <span className="mr-1 text-gold-300">♛</span>}
             {fid === PLAYER ? `${f.name} (you)` : f.name}
           </span>
-          <span className="text-ink-400 tabular-nums">{castles.length}</span>
+          <span className="w-7 text-center text-[11px] font-bold text-gold-300 tabular-nums" title="Realm rank">{f.alive ? engine.rankOf(fid) : '–'}</span>
+          <span className="w-5 text-right text-ink-400 tabular-nums">{castles.length}</span>
           <span className="w-12 text-right text-ink-300 tabular-nums">~{fmt(Math.round(p / 50) * 50)}</span>
         </button>
         {f.alive && f.team === 'B' && (pact || bribe) && (
@@ -424,7 +496,7 @@ function WarTab({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint: (x
         </div>
       </section>
       <section>
-        <SectionTitle right={<span className="text-[12px] text-ink-500">castles · soldiers</span>}>Your alliance</SectionTitle>
+        <SectionTitle right={<span className="text-[12px] text-ink-500">rank · castles · soldiers</span>}>Your alliance</SectionTitle>
         <div>{realms.filter((f) => f.team === 'A').sort((a, b) => (a.id === PLAYER ? -1 : b.id === PLAYER ? 1 : 0)).map((f) => row(f.id))}</div>
       </section>
       <section>
@@ -435,6 +507,35 @@ function WarTab({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint: (x
         <div>{realms.filter((f) => f.team === 'B').map((f) => row(f.id))}</div>
       </section>
     </div>
+  )
+}
+
+/** Realm rank: a plain read of how strong the realm is, and how far to the next rank. */
+function RankCard({ engine, power }: { engine: GameEngine; power: number }) {
+  const rank = engine.rankOf(PLAYER)
+  const max = engine.maxRank
+  const lo = engine.rankThreshold(rank)
+  const hi = rank < max ? engine.rankThreshold(rank + 1) : null
+  const pct = hi ? Math.max(0, Math.min(1, (power - lo) / Math.max(1, hi - lo))) : 1
+  return (
+    <section className="well flex items-center gap-3 rounded-sm px-3 py-2.5">
+      <div className="grid size-12 shrink-0 place-items-center rounded-sm border border-gold-400/50 bg-black/30">
+        <div className="text-center leading-none">
+          <div className="text-[9px] tracking-[0.18em] text-gold-400">RANK</div>
+          <div className="font-display text-[22px] font-bold text-gold-200">{rank}</div>
+        </div>
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline justify-between text-[13px]">
+          <span className="font-bold text-ink-100">Realm rank {rank} of {max}</span>
+          <span className="text-ink-400 tabular-nums">{hi ? `${fmt(power)} / ${fmt(hi)}` : 'Highest'}</span>
+        </div>
+        <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/8">
+          <div className="h-full rounded-full bg-gradient-to-r from-gold-500 to-gold-300" style={{ width: `${pct * 100}%` }} />
+        </div>
+        <div className="mt-1 text-[12px] text-ink-500">{hi ? 'Grows with your total strength. Your castles grow grander with each rank.' : 'Your castles stand at their grandest.'}</div>
+      </div>
+    </section>
   )
 }
 

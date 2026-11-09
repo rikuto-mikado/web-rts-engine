@@ -1,4 +1,4 @@
-import { Castle, Coins, Crown, Ellipsis, Hourglass, Keyboard, LogOut, Menu, ScrollText, Swords, Users } from 'lucide-react'
+import { Coins, Crown, Ellipsis, Hourglass, Keyboard, LogOut, Menu, Rotate3d, ScrollText, Square, Swords, Users } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { PLAYER, type GameEngine } from '../game/engine'
 import { calendar, fmt, total } from '../game/troops'
@@ -12,13 +12,15 @@ interface Props {
   onToggleLog: () => void
   onHelp: () => void
   onMenu: () => void
+  overhead: boolean
+  onToggleView: () => void
   campaignName: string
 }
 
-const MODE_NAME = { campaign: 'Conquest', alliance: 'Alliance War', survival: 'Conquest', siege: 'Great Siege' }
+const MODE_NAME = { campaign: 'Conquest', alliance: 'Alliance War', survival: 'Conquest' }
 
 /** One information bar: realm status on the left, chronicle / manual / leave tucked at its end. */
-export function TopBar({ engine, onQuit, onToggleLog, onHelp, onMenu, campaignName }: Props) {
+export function TopBar({ engine, onQuit, onToggleLog, onHelp, onMenu, overhead, onToggleView, campaignName }: Props) {
   useEngine(engine)
   const vp = useViewport()
   const [more, setMore] = useState(false)
@@ -30,7 +32,7 @@ export function TopBar({ engine, onQuit, onToggleLog, onHelp, onMenu, campaignNa
   const share = A.power / Math.max(1, A.power + B.power)
   const left = s.rules.timeLimit ? Math.max(0, s.rules.timeLimit - s.time) : null
   const clock = left !== null ? `${Math.floor(left / 60)}:${String(Math.floor(left % 60)).padStart(2, '0')}` : null
-  const clockText = clock && (s.rules.siegeSide === 'defend' ? `Hold ${clock}` : `${clock} left`)
+  const clockText = clock && `${clock} left`
   const season = engine.season()
   const wx = s.weather.kind
   const wxIcon = wx === 'rain' ? '🌧' : wx === 'storm' ? '⛈' : wx === 'snow' ? '❄' : season === 'Winter' ? '🌨' : season === 'Autumn' ? '🍂' : season === 'Spring' ? '🌱' : '☀'
@@ -54,6 +56,7 @@ export function TopBar({ engine, onQuit, onToggleLog, onHelp, onMenu, campaignNa
           </button>
           <Res icon={<Coins size={15} className="text-gold-400" />} value={fmt(s.factions[PLAYER].gold)} sub={`${net >= 0 ? '+' : ''}${net.toFixed(0)}/s`} subClass={net >= 0 ? 'text-emerald-400' : 'text-ember-300'} />
           <Res icon={<Users size={15} className="text-ink-300" />} value={fmt(total(t.all))} sub={`${t.castles} castles`} />
+          <Res icon={<Crown size={15} className="text-gold-300" />} value={`R${engine.rankOf(PLAYER)}`} sub={`of ${engine.maxRank}`} title="Realm rank" />
           {vp.w >= 560 && weatherChip}
           {clockText ? (
             <div className={`ml-auto font-display text-[14px] font-bold tabular-nums ${left! < 120 ? 'animate-pulse text-ember-300' : 'text-gold-200'}`}>{clockText}</div>
@@ -71,6 +74,9 @@ export function TopBar({ engine, onQuit, onToggleLog, onHelp, onMenu, campaignNa
               <button className="btn justify-start" onClick={onHelp}>
                 <Keyboard size={15} /> Field manual
               </button>
+              <button className="btn justify-start" onClick={onToggleView}>
+                {overhead ? <Rotate3d size={15} /> : <Square size={15} />} {overhead ? 'Tilted view' : 'Overhead view'}
+              </button>
               <button className="btn btn-danger justify-start" onClick={onQuit}>
                 <LogOut size={15} /> Leave the war
               </button>
@@ -82,24 +88,17 @@ export function TopBar({ engine, onQuit, onToggleLog, onHelp, onMenu, campaignNa
   }
 
   return (
-    <div className="pointer-events-none absolute top-0 right-0 left-0 z-30 flex p-3">
-      <div className="panel pointer-events-auto flex h-12 items-center gap-4 rounded-md pr-2 pl-4">
-        <div className="flex items-center gap-2">
-          <Crown size={18} className="text-gold-300" />
-          <div className="leading-tight">
-            <div className="panel-title">{campaignName}</div>
-            <div className="text-[12px] text-ink-400">
-              {MODE_NAME[s.rules.mode]} · {s.difficulty}
-            </div>
-          </div>
-        </div>
-        <Divider />
+    // Right-aligned and clear of the sidebar column, so the sidebar can run the full height.
+    <div className="pointer-events-none absolute top-0 right-0 left-[392px] z-30 flex justify-end p-3">
+      <div className="panel pointer-events-auto flex h-12 min-w-0 items-center gap-4 rounded-md pr-2 pl-4" title={`${campaignName} · ${MODE_NAME[s.rules.mode]} · ${s.difficulty}`}>
         <Res icon={<Coins size={15} className="text-gold-400" />} value={fmt(s.factions[PLAYER].gold)} sub={`${net >= 0 ? '+' : ''}${net.toFixed(1)}/s`} subClass={net >= 0 ? 'text-emerald-400' : 'text-ember-300'} title={`Income +${t.income.toFixed(1)}/s · Army upkeep −${t.upkeep.toFixed(1)}/s`} />
         <Res icon={<Users size={15} className="text-ink-300" />} value={fmt(total(t.all))} sub={`${fmt(t.manpower)} manpower`} title="Soldiers (field + garrisons) and recruitable manpower" />
-        <Res icon={<Castle size={15} className="text-ink-300" />} value={String(t.castles)} sub="castles" />
-        <Res icon={<Swords size={15} className="text-ink-300" />} value={`${s.stats.battlesWon} / ${s.stats.battlesLost}`} sub="won / lost" />
+        <Res icon={<Crown size={15} className="text-gold-300" />} value={`Rank ${engine.rankOf(PLAYER)}`} sub={`of ${engine.maxRank} · ${t.castles} castles`} title="Realm rank: grows with your total strength" />
+        <div className="hidden 2xl:contents">
+          <Res icon={<Swords size={15} className="text-ink-300" />} value={`${s.stats.battlesWon} / ${s.stats.battlesLost}`} sub="won / lost" />
+        </div>
         <Divider />
-        <div className="w-36" title={`Your side ${fmt(A.power)} vs enemy ${fmt(B.power)}`}>
+        <div className="hidden w-36 xl:block" title={`Your side ${fmt(A.power)} vs enemy ${fmt(B.power)}`}>
           <div className="mb-1 flex justify-between text-[11px] tracking-wider text-ink-400 uppercase">
             <span>Allies {A.castles}</span>
             <span>Enemy {B.castles}</span>
@@ -121,6 +120,9 @@ export function TopBar({ engine, onQuit, onToggleLog, onHelp, onMenu, campaignNa
           </button>
           <button className="btn h-9 px-2.5" onClick={onHelp} title="Field manual (H)">
             <Keyboard size={15} />
+          </button>
+          <button className="btn h-9 px-2.5" onClick={onToggleView} title={overhead ? 'Switch to tilted view (V)' : 'Switch to overhead view (V)'}>
+            {overhead ? <Rotate3d size={15} /> : <Square size={15} />}
           </button>
           <button className="btn btn-danger h-9 px-2.5" onClick={onQuit} title="Leave the war">
             <LogOut size={15} />

@@ -8,8 +8,7 @@ export type Faction = string
 /** Alliance id: 'A' is the player's side, 'B' the enemy side, 'N' neutral. */
 export type Team = 'A' | 'B' | 'N'
 export type Difficulty = 'easy' | 'normal' | 'hard'
-export type GameMode = 'campaign' | 'alliance' | 'survival' | 'siege'
-export type SiegeSide = 'attack' | 'defend'
+export type GameMode = 'campaign' | 'alliance' | 'survival'
 export type FormationKey = 'line' | 'wedge' | 'square' | 'loose'
 export type MapSize = 'small' | 'medium' | 'large'
 
@@ -84,6 +83,8 @@ export interface CastleDef {
   tower?: boolean
   /** Siege mode: a town district strongpoint. */
   district?: boolean
+  /** A village: small, won over by negotiation or plundered. */
+  village?: boolean
   garrison: Troops
 }
 
@@ -145,9 +146,21 @@ export interface FactionState extends FactionDef {
     nextDecisionAt: number
     nextRaidAt: number
     nextMusterAt?: number
+    nextOutpostAt?: number
+    /** A castle our scouts have spied out (raids favour it); or one we learned of from captured scouts. */
+    knownTarget?: string | null
+    nextScoutAt?: number
+    /** Gold set aside for an outpost the lord wants to raise. */
+    outpostReserve?: number
+    /** An outpost the lord's engineers are on their way to raise. */
+    buildPlan?: { armyId: string; kind: 'camp' | 'watchtower' | 'lodge' | 'bridgefort' | 'depot'; x: number; z: number } | null
     retakeQueue: { castleId: string; at: number }[]
   }
   host: GreatHostState | null
+  /** Realm rank (1 = lowest), driven by total military strength. */
+  rank?: number
+  /** Villages plundered: other villages distrust the realm. */
+  infamy?: number
 }
 
 export interface Castle {
@@ -173,6 +186,43 @@ export interface Castle {
   autoRecruit: string | null
   /** Siege mode: a town district held as a strongpoint. */
   district: boolean
+  /** A village (tier 1 = palisade, 2 = stone wall once it is ours). */
+  village?: boolean
+  /** A plundered village: burned and abandoned, of no use to anyone. */
+  ruined?: boolean
+  /** Vassal villages: gold owed to the lord, shipped by wagon to the nearest castle. */
+  tribute?: number
+  nextTributeAt?: number
+  /** No new call for aid from this castle before this time. */
+  aidCooldownUntil?: number
+  /** The militia band this vassal village has out helping its lord, if any. */
+  reliefArmyId?: string | null
+  /** Negotiations broke down: no new envoys until this time. */
+  talksCooldown?: number
+}
+
+/** A forest to fell or a mine to dig. Engineers working it earn gold, sent home by wagon. */
+export interface ResourceSite {
+  id: string
+  kind: 'mine' | 'lumber'
+  x: number
+  z: number
+  /** Gold left to extract. Recovers slowly while nobody works it. */
+  stock: number
+  workerId: string | null
+  /** Gold extracted and waiting for a wagon. */
+  carry: number
+  nextWagonAt: number
+}
+
+/** What the player's scouts last learned about an enemy castle or army. */
+export interface Intel {
+  at: number
+  /** Soldiers counted (with the error the scouts could not avoid). */
+  total: number
+  troops: Troops
+  /** ± fraction the count may be off by. */
+  error: number
 }
 
 export type ArmyOrder =
@@ -185,6 +235,11 @@ export type ArmyOrder =
   | { type: 'join'; armyId: string } // march and merge into another army
   | { type: 'rally'; x: number; z: number; hostId: string }
   | { type: 'build'; outpostId: string } // stay and raise a field fortification
+  | { type: 'garrison'; outpostId: string } // march into a supply depot and quarter there
+  | { type: 'raidConvoy'; convoyId: string } // chase down an enemy supply train
+  | { type: 'work'; job: WorkJob; x: number; z: number; bridge: number | null; progress: number } // engineers' field works
+  | { type: 'gather'; siteId: string } // engineers work a mine or lumber camp
+  | { type: 'scout'; targetId: string; x: number; z: number; phase: 'out' | 'back' } // spy out an enemy position and bring the news home
 
 export type ArmyStatus = 'idle' | 'marching' | 'battle' | 'sieging' | 'retreating'
 
@@ -219,6 +274,20 @@ export interface Army {
   hiddenSince: number | null
   /** Within reach of a friendly castle, outpost or camp. */
   supplied: boolean
+  /** Struck an engaged enemy from behind: rear-attack bonus lasts until this time. */
+  flankUntil?: number
+  /** Hidden army uncovered by enemy scouts until this time. */
+  revealedUntil?: number
+  /** Scouts: what they have seen so far, delivered when they get home. */
+  scoutReport?: Record<string, Intel>
+  /** Already spotted by the enemy (only one pursuit per scouting party). */
+  spottedBy?: string | null
+  /** An allied contingent answering a call for aid (the call's id). */
+  aidFor?: string | null
+  /** Militia of a vassal village: they act on their own and go home when the fighting is done. */
+  vassalOf?: string | null
+  /** A pursuit party: the scouts it hunts, and the army or castle it came from. */
+  pursuit?: { scoutId: string; parentId: string; since: number } | null
 }
 
 export interface Battle {
@@ -254,6 +323,8 @@ export interface CommanderState {
   traits: string[]
   /** Pending choice of traits after a rank-up (player commanders only). */
   traitChoices: string[] | null
+  /** Quartered in this supply depot (only armies raised there can take them). */
+  stationedAt?: string | null
 }
 
 export type ChronicleKind = 'deploy' | 'battle' | 'victory' | 'defeat' | 'retreat' | 'capture' | 'lost' | 'warning' | 'info' | 'ally'
@@ -292,6 +363,66 @@ export interface Outpost {
   /** 0..1 progress of enemies burning it down while it stands undefended. */
   raze: number
   builtAt: number
+  /** Supply depots: troops quartered inside (out of sight, like a castle garrison). */
+  garrison?: Troops
+  /** Supply depots: commanders quartered inside; only they can lead armies raised here. */
+  commanders?: string[]
+  /** Supply depots: stores on hand (0–100). Wagons from friendly castles refill them. */
+  stock?: number
+  nextConvoyAt?: number
+  lowWarned?: boolean
+}
+
+export type WorkJob = 'abatis' | 'stakes' | 'burn' | 'repair'
+
+/** Field obstacles raised by engineers. */
+export interface Obstacle {
+  id: string
+  kind: 'abatis' | 'stakes'
+  faction: Faction
+  x: number
+  z: number
+  /** Game time when it rots or is cleared away. */
+  until: number
+}
+
+/**
+ * A wagon train. Supply wagons run from a castle to a depot; gold wagons run
+ * from a mine or lumber camp to a castle. Unarmed: any enemy army that
+ * reaches it seizes it (and keeps the gold).
+ */
+export interface Convoy {
+  id: string
+  faction: Faction
+  kind?: 'supply' | 'gold'
+  /** Supply wagons: the depot they feed ('' for gold wagons). */
+  outpostId: string
+  /** Supply wagons: the castle they left. Gold wagons: the castle they head for. */
+  fromCastleId: string
+  gold?: number
+  x: number
+  z: number
+  /** Remaining waypoints. */
+  path: [number, number][]
+  /** The whole road, for drawing the supply line. */
+  route: [number, number][]
+  cargo: number
+  heading: number
+}
+
+/** A call for aid: allies who can spare men send them to stand in the castle until the danger passes. */
+export interface AidCall {
+  id: string
+  castleId: string
+  faction: Faction
+  team: Team
+  startedAt: number
+  until: number
+  /** Lords who have already decided (yes or no). */
+  answered: Faction[]
+  armyIds: string[]
+  /** When the castle last stopped being in danger. */
+  quietSince: number | null
 }
 
 /** A player-led alliance muster: allies gather at a rally point, then attack together. */
@@ -327,14 +458,13 @@ export interface GameRules {
   timeLimit?: number
   /** Who wins when time runs out. */
   timeoutWinner?: 'A' | 'B'
-  siegeSide?: SiegeSide
   size?: MapSize
-  /** Deployment still pending (siege mode). */
-  deployPending?: boolean
 }
 
 export interface GameState {
   version: 2
+  /** Realm ranks: strength needed for rank 2, growth per rank, and the top rank in this war. */
+  ranks?: { base: number; growth: number; max: number }
   scenario: Scenario
   rules: GameRules
   difficulty: Difficulty
@@ -345,6 +475,13 @@ export interface GameState {
   armies: Army[]
   battles: Battle[]
   outposts: Outpost[]
+  convoys?: Convoy[]
+  obstacles?: Obstacle[]
+  sites?: ResourceSite[]
+  /** The player's scouting reports, by castle or army id. */
+  intel?: Record<string, Intel>
+  /** Burned bridges and when the locals will have them rebuilt. */
+  brokenBridges?: { index: number; until: number; by: Faction }[]
   commanders: Record<string, CommanderState>
   chronicle: ChronicleEntry[]
   explored: string // base64 of the explored grid
@@ -354,6 +491,8 @@ export interface GameState {
   callToArms: { castleId: string; until: number } | null
   /** Alliance musters under way (several at once, called by the player or AI lords). */
   musters: AllianceMuster[]
+  /** Calls for aid: allied lords may send troops to stand with a threatened castle. */
+  aidCalls?: AidCall[]
   /** Offensive target chosen by each alliance's leader; allied lords converge on it. */
   teamFocus: { A: { castleId: string; until: number } | null; B: { castleId: string; until: number } | null }
   weather: { kind: 'clear' | 'rain' | 'storm' | 'snow'; until: number }

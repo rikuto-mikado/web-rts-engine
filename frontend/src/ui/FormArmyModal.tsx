@@ -1,4 +1,4 @@
-import { Castle as CastleIcon, ChevronLeft, ChevronRight, Footprints, Hammer, Swords, X } from 'lucide-react'
+import { Castle as CastleIcon, Package, ChevronLeft, ChevronRight, Footprints, Hammer, Swords, X } from 'lucide-react'
 import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { PLAYER, WALL_K, type GameEngine } from '../game/engine'
 import { COLUMN, FORMATIONS, FORMATION_ORDER } from '../game/formations'
@@ -48,12 +48,23 @@ interface Props {
 export function FormArmyModal({ engine, initialCastleId, initialTargetId, onClose, onDeployed }: Props) {
   useEngine(engine)
   const s = engine.state
-  const castles = s.castles.filter((c) => c.faction === PLAYER)
-  const [castleId, setCastleId] = useState(initialCastleId && castles.some((c) => c.id === initialCastleId) ? initialCastleId : castles[0]?.id)
-  const castle = engine.castle(castleId)
-  const free = engine.freeCommanders(PLAYER)
-  const allCmd = engine.content.commanders.filter((c) => s.commanders[c.key]?.owner === PLAYER)
+  const castles = s.castles.filter((c) => c.faction === PLAYER && !c.village)
+  // Supply depots with troops quartered inside can raise armies too.
+  const depots = s.outposts.filter((o) => o.kind === 'depot' && o.faction === PLAYER && o.progress >= 1 && total(o.garrison ?? {}) >= 10)
+  const validSource = (id?: string) => !!id && (castles.some((c) => c.id === id) || depots.some((o) => o.id === id))
+  const [castleId, setCastleId] = useState(validSource(initialCastleId) ? initialCastleId : castles[0]?.id)
+  const depot = depots.find((o) => o.id === castleId)
+  const castleOnly = engine.castle(castleId)
+  const castle = castleOnly ?? (depot ? { id: depot.id, x: depot.x, z: depot.z, name: depot.name, garrison: depot.garrison ?? {} } : undefined)
+  const freeFor = (id?: string) => (id && depots.some((o) => o.id === id) ? engine.depotCommanders(id) : engine.freeCommanders(PLAYER))
+  const free = freeFor(castleId)
+  const allCmd = depot ? free : engine.content.commanders.filter((c) => s.commanders[c.key]?.owner === PLAYER && !s.commanders[c.key]?.stationedAt)
   const [commanderKey, setCommanderKey] = useState<string | null>(free[0]?.key ?? null)
+  const pickSource = (id: string) => {
+    setCastleId(id)
+    const f = freeFor(id)
+    if (!f.some((c) => c.key === commanderKey)) setCommanderKey(f[0]?.key ?? null)
+  }
   const cmd = commanderKey ? (engine.commanders.get(commanderKey) ?? null) : null
   const cmdLevel = commanderKey ? (s.commanders[commanderKey]?.level ?? 1) : 1
   const carousel = useRef<HTMLDivElement>(null)
@@ -98,7 +109,7 @@ export function FormArmyModal({ engine, initialCastleId, initialTargetId, onClos
   }, [troops, n, engine.unitList])
 
   const targets = s.castles
-    .filter((c) => engine.isHostile(c.faction, PLAYER))
+    .filter((c) => engine.isHostile(c.faction, PLAYER) && !c.ruined && !(c.village && c.faction === 'neutral'))
     .sort((a, b) => (castle ? Math.hypot(a.x - castle.x, a.z - castle.z) - Math.hypot(b.x - castle.x, b.z - castle.z) : 0))
 
   const deploy = () => {
@@ -124,7 +135,7 @@ export function FormArmyModal({ engine, initialCastleId, initialTargetId, onClos
             {castles.map((c) => (
               <button
                 key={c.id}
-                onClick={() => setCastleId(c.id)}
+                onClick={() => pickSource(c.id)}
                 className={`well flex items-center gap-1.5 rounded-sm px-2.5 py-1.5 text-[13px] transition ${c.id === castleId ? 'outline outline-1 outline-gold-400 brightness-125' : 'hover:brightness-125'}`}
               >
                 <CastleIcon size={13} className="text-royal-300" />
@@ -132,7 +143,20 @@ export function FormArmyModal({ engine, initialCastleId, initialTargetId, onClos
                 <span className="text-ink-400 tabular-nums">{fmt(total(c.garrison))}</span>
               </button>
             ))}
+            {depots.map((o) => (
+              <button
+                key={o.id}
+                onClick={() => pickSource(o.id)}
+                title="Supply depot: only commanders quartered here can lead"
+                className={`well flex items-center gap-1.5 rounded-sm px-2.5 py-1.5 text-[13px] transition ${o.id === castleId ? 'outline outline-1 outline-gold-400 brightness-125' : 'hover:brightness-125'}`}
+              >
+                <Package size={13} className="text-gold-300" />
+                <span className="font-bold">{o.name}</span>
+                <span className="text-ink-400 tabular-nums">{fmt(total(o.garrison ?? {}))}</span>
+              </button>
+            ))}
           </div>
+          {depot && <p className="mt-1.5 text-[12px] text-ink-500">Raising from a supply depot: only commanders quartered there, or a captain, can lead.</p>}
         </section>
   )
 

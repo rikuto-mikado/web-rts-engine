@@ -1,5 +1,5 @@
 import { Castle as CastleIcon, Crown, Swords, Tent } from 'lucide-react'
-import { PLAYER, capacityForTier, type GameEngine } from '../game/engine'
+import { PLAYER, type GameEngine } from '../game/engine'
 import { fmt, total } from '../game/troops'
 import type { Selection } from '../render/GameRenderer'
 import { useEngine } from './common'
@@ -30,7 +30,7 @@ export function HoldingsBar({ engine, selection, onSelect }: { engine: GameEngin
           const home = c.id === capId
           const sel = selection?.kind === 'castle' && selection.id === c.id
           const n = total(c.garrison)
-          const fill = Math.min(1, n / capacityForTier(c.tier))
+          const fill = Math.min(1, n / engine.capacity(c))
           return (
             <button
               key={c.id}

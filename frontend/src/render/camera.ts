@@ -5,8 +5,10 @@ import type { World } from '../game/world'
 export const MIN_DIST = 150
 
 /**
- * RTS camera: orbits a ground target. Zooming in lowers the pitch for a
- * more cinematic three-quarter view; zooming out looks more top-down.
+ * RTS camera: orbits a ground target. In the tilted view, zooming in lowers
+ * the pitch for a three-quarter look; the overhead view stays close to
+ * straight down at every zoom (easier to read on phones), while castles and
+ * soldiers still show their height through perspective.
  */
 export class RTSCamera {
   readonly camera: THREE.PerspectiveCamera
@@ -17,6 +19,8 @@ export class RTSCamera {
   private world: World
   readonly maxDist: number
   private keys = new Set<string>()
+  /** Near top-down view at every zoom level. */
+  overhead = false
 
   constructor(world: World, aspect: number) {
     this.world = world
@@ -26,7 +30,8 @@ export class RTSCamera {
 
   get pitch() {
     const t = (this.distance - MIN_DIST) / (1700 - MIN_DIST)
-    return lerp(0.5, 1.12, Math.pow(clamp(t, 0, 1), 0.7))
+    const k = Math.pow(clamp(t, 0, 1), 0.7)
+    return this.overhead ? lerp(1.08, 1.32, k) : lerp(0.5, 1.12, k)
   }
 
   jumpTo(x: number, z: number, distance?: number) {
@@ -53,10 +58,12 @@ export class RTSCamera {
   }
 
   panBy(dx: number, dz: number) {
-    this.goal.x += dx
-    this.goal.z += dz
-    this.target.x += dx
-    this.target.y += dz
+    // Stop at the edge of the map; never overshoot and spring back.
+    const lim = this.world.half - 80
+    this.goal.x = clamp(this.goal.x + dx, -lim, lim)
+    this.goal.z = clamp(this.goal.z + dz, -lim, lim)
+    this.target.x = clamp(this.target.x + dx, -lim, lim)
+    this.target.y = clamp(this.target.y + dz, -lim, lim)
   }
 
   rotateBy(a: number) {

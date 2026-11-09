@@ -447,6 +447,36 @@ input:not([type]) {
   color: var(--color-ink-200);
   font-variant-numeric: tabular-nums;
 }
+.castle-label.ruins-label {
+  opacity: 0.7;
+  filter: grayscale(0.8);
+}
+.castle-label.village-label .cl-name {
+  font-size: 11.5px;
+}
+.castle-label.site-label {
+  padding: 2px 7px;
+}
+.castle-label.site-label .cl-name {
+  font-size: 11px;
+  color: var(--color-ink-200);
+}
+.cl-rank {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--color-gold-300);
+  border: 1px solid rgb(233 200 105 / 0.45);
+  border-radius: 3px;
+  padding: 0 4px;
+  line-height: 16px;
+  background: rgb(0 0 0 / 0.25);
+}
+.cl-rank b {
+  font-size: 11.5px;
+  letter-spacing: 0;
+  color: #f6e3a6;
+}
 .cl-siege {
   color: #fff;
   background: var(--color-ember-500);
@@ -526,7 +556,7 @@ input:not([type]) {
 .al-status.battle {
   color: var(--color-ember-300);
 }
-.al-status.hidden {
+.al-status.stealth {
   color: #86efac;
 }
 .al-status.nosupply {

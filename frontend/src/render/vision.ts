@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { PAINT_CHUNK } from './paint'
 
 /**
  * Shared uniforms for the fog-of-war overlay. Any material passed to
@@ -10,9 +11,11 @@ export const visionUniforms = {
   uTime: { value: 0 },
   /** 0..1 snow cover on the ground and trees (winter). */
   uSnow: { value: 0 },
+  /** Tileable paint texture for the hand-painted ground (see paint.ts). */
+  uPaint: { value: null as THREE.Texture | null },
 }
 
-export function applyVision<T extends THREE.Material>(mat: T, extraFragment = '', snowy = false): T {
+export function applyVision<T extends THREE.Material>(mat: T, extraFragment = '', snowy = false, painted = false): T {
   if (snowy) {
     extraFragment += `
       {
@@ -26,6 +29,7 @@ export function applyVision<T extends THREE.Material>(mat: T, extraFragment = ''
     shader.uniforms.uMapHalf = visionUniforms.uMapHalf
     shader.uniforms.uTime = visionUniforms.uTime
     shader.uniforms.uSnow = visionUniforms.uSnow
+    shader.uniforms.uPaint = visionUniforms.uPaint
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec2 vVisUv;\nvarying vec3 vVisWorld;\nuniform float uMapHalf;')
       .replace(
@@ -42,19 +46,26 @@ export function applyVision<T extends THREE.Material>(mat: T, extraFragment = ''
     shader.fragmentShader = shader.fragmentShader
       .replace(
         '#include <common>',
-        '#include <common>\nvarying vec2 vVisUv;\nvarying vec3 vVisWorld;\nuniform sampler2D uVision;\nuniform float uTime;\nuniform float uSnow;',
+        '#include <common>\nvarying vec2 vVisUv;\nvarying vec3 vVisWorld;\nuniform sampler2D uVision;\nuniform float uTime;\nuniform float uSnow;\nuniform sampler2D uPaint;',
       )
+      .replace('#include <color_fragment>', painted ? `#include <color_fragment>\n${PAINT_CHUNK}` : '#include <color_fragment>')
       .replace(
         '#include <dithering_fragment>',
         `#include <dithering_fragment>
         ${extraFragment}
+        // Unexplored land lies under a drifting mist; only faint shapes show through.
         float vis = texture2D(uVision, vVisUv).r;
+        // Beyond the map edge is scenery, never fogged (and never stretched from the edge texels).
+        vec2 outUv = max(-vVisUv, vVisUv - 1.0);
+        vis = max(vis, smoothstep(0.0, 0.012, max(outUv.x, outUv.y)));
         float lum = dot(gl_FragColor.rgb, vec3(0.299, 0.587, 0.114));
-        vec3 grey = mix(vec3(lum), gl_FragColor.rgb, 0.3) * vec3(0.82, 0.87, 1.0);
-        float bright = vis < 0.41 ? mix(0.13, 0.52, vis / 0.41) : mix(0.52, 1.0, (vis - 0.41) / 0.59);
-        gl_FragColor.rgb = mix(grey, gl_FragColor.rgb, smoothstep(0.45, 0.95, vis)) * bright;`,
+        float drift = sin(vVisWorld.x * 0.006 + uTime * 0.12) * sin(vVisWorld.z * 0.007 - uTime * 0.09);
+        vec3 mist = vec3(0.70, 0.73, 0.76) * (0.95 + 0.05 * drift);
+        vec3 dim = mix(vec3(lum), gl_FragColor.rgb, 0.5) * 0.85;
+        vec3 hidden = mix(dim, mist, 0.32);
+        gl_FragColor.rgb = mix(hidden, gl_FragColor.rgb, smoothstep(0.1, 0.75, vis));`,
       )
   }
-  mat.customProgramCacheKey = () => `vision:${extraFragment.length}:${snowy}`
+  mat.customProgramCacheKey = () => `vision:${extraFragment.length}:${snowy}:${painted}`
   return mat
 }

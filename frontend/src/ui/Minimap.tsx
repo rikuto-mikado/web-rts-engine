@@ -73,10 +73,10 @@ export function Minimap({ engine, renderer }: { engine: GameEngine; renderer: Ga
       ctx.drawImage(bg, 0, 0)
       for (let k = 0; k < engine.visionTex.length; k++) {
         const v = engine.visionTex[k]
-        fimg.data[k * 4] = 8
-        fimg.data[k * 4 + 1] = 10
-        fimg.data[k * 4 + 2] = 14
-        fimg.data[k * 4 + 3] = v === 255 ? 0 : v > 0 ? 120 : 225
+        fimg.data[k * 4] = 150
+        fimg.data[k * 4 + 1] = 158
+        fimg.data[k * 4 + 2] = 166
+        fimg.data[k * 4 + 3] = Math.round(150 * (1 - v / 255))
       }
       fctx.putImageData(fimg, 0, 0)
       ctx.imageSmoothingEnabled = true
@@ -94,6 +94,7 @@ export function Minimap({ engine, renderer }: { engine: GameEngine; renderer: Ga
         ctx.stroke()
       }
       for (const c of engine.state.castles) {
+        if (c.faction !== 'player' && !engine.isExplored(c.x, c.z)) continue
         const x = toPx(c.x)
         const y = toPx(c.z)
         const r = Math.max(world.size > 3000 ? 2.6 : 3.5, (castleRadius(c.tier) / world.size) * SIZE * 1.3)

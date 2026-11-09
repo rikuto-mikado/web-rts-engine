@@ -22,7 +22,7 @@ export function buildTerrain(world: World): THREE.Mesh {
   }
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
   geo.computeVertexNormals()
-  const mat = applyVision(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.95, metalness: 0 }), '', true)
+  const mat = applyVision(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.95, metalness: 0 }), '', true, true)
   const mesh = new THREE.Mesh(geo, mat)
   mesh.receiveShadow = true
   mesh.name = 'terrain'
@@ -150,6 +150,11 @@ export function buildVegetation(world: World): THREE.Group {
         const tint = new THREE.Color().setHSL(B.treeHue + (rnd() - 0.5) * 0.06, 0.5, B.treeLight + rnd() * 0.18)
         const tc = new THREE.Color(1, 1, 1).lerp(tint, 0.35)
         if (B.treeFrost > 0) tc.lerp(new THREE.Color(1.6, 1.65, 1.75), B.treeFrost * (0.6 + rnd() * 0.4))
+        // Canopy override: autumn colours broadleaves only, scorched woods char every tree.
+        if (B.canopy && (!pine || B.key === 'ashen')) {
+          const m = B.canopy[Math.floor(rnd() * B.canopy.length)]
+          tc.setRGB(m[0], m[1], m[2])
+        }
         if (pine) {
           pines.push(tmp.matrix.clone())
           pineCol.push(tc)

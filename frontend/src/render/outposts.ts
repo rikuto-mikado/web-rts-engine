@@ -76,15 +76,53 @@ function bridgefortGeometry() {
   return merge(parts)
 }
 
+/** A walled supply depot: square stockade with a gate, a timber storehouse, a stable and wagons. */
 function depotGeometry() {
   const parts: THREE.BufferGeometry[] = []
-  for (const [x, z] of [[-10, -6], [9, 8], [-4, 12]]) parts.push(part(cone(5, 7, 6), 0xd8ccb0, { x, y: 3.5, z }))
-  for (let i = 0; i < 9; i++) parts.push(part(box(3, 3, 3), i % 2 ? 0x8a6a40 : 0x75572f, { x: 4 + (i % 3) * 3.2, y: 1.5 + Math.floor(i / 6) * 3, z: -8 + Math.floor((i % 6) / 3) * 3.2 }))
-  for (const [x, z, r] of [[-12, 8, 0.4], [13, -4, -0.8]] as const) {
-    parts.push(part(box(4, 2.5, 8), 0x6b4a2a, { x, y: 3, z, ry: r }))
-    parts.push(part(cyl(3.8, 3.8, 8, 6), 0xe0d6bd, { x, y: 4.6, z, rx: Math.PI / 2, ry: r, rz: Math.PI / 2, sy: 0.6 }))
-    for (const s of [-1, 1]) parts.push(part(cyl(1.4, 1.4, 0.6, 8), 0x4a3520, { x: x + Math.cos(-r) * s * 2.4, y: 1.4, z: z + Math.sin(-r) * s * 2.4, rz: Math.PI / 2, ry: r }))
+  const H = 26
+  // Square stockade, gap for the gate on the +x side.
+  for (let i = -H; i <= H; i += 2.6) {
+    for (const [x, z] of [[i, -H], [i, H], [-H, i], [H, i]] as const) {
+      if (x === H && Math.abs(z) < 6) continue
+      const h = 6.5 + ((Math.abs(i * 7) | 0) % 3) * 0.4
+      parts.push(part(cyl(0.9, 1.05, h, 5), (i * 10) % 2 ? 0x6b4a2a : 0x5a3d22, { x, y: h / 2, z }))
+      parts.push(part(cone(0.9, 1.4, 5), 0x4a321c, { x, y: h + 0.7, z }))
+    }
   }
+  // Gate towers.
+  for (const s of [-1, 1]) {
+    parts.push(part(box(4, 11, 4), 0x5a3d22, { x: H, y: 5.5, z: s * 8 }))
+    parts.push(part(cone(3.6, 3.5, 4), 0x3e2a18, { x: H, y: 12.6, z: s * 8, ry: Math.PI / 4 }))
+  }
+  // Storehouse: long timber hall on stone footing with a steep roof.
+  parts.push(part(box(24, 2, 13), 0x8f887a, { x: -8, y: 1, z: -9 }))
+  parts.push(part(box(22, 8, 11), 0x7a5532, { x: -8, y: 6, z: -9 }))
+  parts.push(part(cyl(0.01, 9.5, 8, 4), 0x5b3f26, { x: -8, y: 14, z: -9, ry: Math.PI / 4, sx: 1.7, sz: 0.85 }))
+  parts.push(part(box(4, 5, 0.6), 0x2a1d14, { x: -8, y: 4.5, z: -3.2 }))
+  // Stable and hay.
+  parts.push(part(box(10, 5, 8), 0x6b4a2a, { x: -13, y: 2.5, z: 13 }))
+  parts.push(part(box(11, 0.8, 9), 0x4a321c, { x: -13, y: 5.4, z: 13 }))
+  for (const [x, z] of [[-4, 15], [-1.5, 17]]) parts.push(part(cyl(2, 2, 2.6, 8), 0xd4b25a, { x, y: 1.3, z, rz: Math.PI / 2 }))
+  // Wagons by the gate.
+  for (const [x, z, r] of [[14, -14, 0.3], [16, 12, -0.4]] as const) {
+    parts.push(part(box(8, 2.4, 4), 0x6b4a2a, { x, y: 2.6, z, ry: r }))
+    parts.push(part(cyl(2.4, 2.4, 7.4, 8), 0xe8dfc6, { x, y: 4.2, z, ry: r, rz: Math.PI / 2, sy: 0.75 }))
+    for (const s of [-1, 1]) parts.push(part(cyl(1.3, 1.3, 0.6, 8), 0x3b2a18, { x: x - Math.sin(r) * s * 2.3, y: 1.3, z: z + Math.cos(r) * s * 2.3, rx: Math.PI / 2, ry: r }))
+  }
+  return merge(parts)
+}
+
+/** Crates, sacks and barrels: the stores on hand. Scaled by the depot's stock. */
+function storesGeometry() {
+  const parts: THREE.BufferGeometry[] = []
+  for (let i = 0; i < 12; i++) {
+    const x = 4 + (i % 4) * 3.3
+    const z = -2 + Math.floor(i / 4) * 3.3
+    parts.push(part(box(3, 3, 3), i % 3 ? 0x8a6a40 : 0x75572f, { x, y: 1.5, z }))
+  }
+  for (let i = 0; i < 6; i++) parts.push(part(box(3, 3, 3), 0x9a7a4c, { x: 5.6 + (i % 3) * 3.3, y: 4.5, z: -0.4 + Math.floor(i / 3) * 3.3 }))
+  for (let i = 0; i < 5; i++) parts.push(part(cyl(1.3, 1.3, 2.8, 8), 0x5e4126, { x: -2 - (i % 3) * 2.8, y: 1.4, z: 4 + Math.floor(i / 3) * 2.8 }))
+  for (let i = 0; i < 4; i++) parts.push(part(new THREE.SphereGeometry(1.5, 6, 4), 0xcdbf98, { x: 6 + i * 2.6, y: 1, z: 9, sy: 0.7 }))
   return merge(parts)
 }
 
@@ -110,6 +148,9 @@ class OutpostView {
     if (o.kind === 'watchtower') {
       pole.position.set(0, 38, 0)
       this.flag.position.set(3.5, 49, 0)
+    } else if (o.kind === 'depot') {
+      pole.position.set(-8, 16, -9)
+      this.flag.position.set(-4.5, 27, -9)
     }
     this.group.add(this.palisade, this.camp, pole, this.flag)
     this.group.position.set(o.x, engine.world.heightAt(o.x, o.z) - 0.5, o.z)
@@ -120,6 +161,12 @@ class OutpostView {
     const p = Math.max(0.08, o.progress)
     this.palisade.scale.set(1, p, 1)
     this.camp.visible = o.progress > 0.5
+    if (o.kind === 'depot') {
+      // The stores pile up and run down with the depot's stock.
+      const stock = (o.stock ?? 100) / 100
+      this.camp.visible = o.progress >= 1 && stock > 0.02
+      this.camp.scale.set(1, Math.max(0.15, stock), 1)
+    }
     this.flag.visible = o.progress >= 1
     this.flag.rotation.y = Math.sin(time * 2 + o.x) * 0.3
     // Burning: sink and darken a little.
@@ -138,7 +185,7 @@ export class OutpostRenderer {
       watchtower: [watchtowerGeometry(), empty],
       lodge: [lodgeGeometry(), empty],
       bridgefort: [bridgefortGeometry(), camp],
-      depot: [depotGeometry(), empty],
+      depot: [depotGeometry(), storesGeometry()],
     }
   })()
   private engine: GameEngine

@@ -2,18 +2,23 @@ import * as THREE from 'three'
 import { PLAYER, type GameEngine } from '../game/engine'
 import { FORMATIONS } from '../game/formations'
 import { clamp } from '../game/noise'
-import { fmt, total, totalInt } from '../game/troops'
+import { fmt, totalInt } from '../game/troops'
 import type { Army, Castle, GameEvent } from '../game/types'
 import { castleRadius } from '../game/world'
 import { ArmyRenderer } from './armies'
 import { RTSCamera } from './camera'
-import { CastleView, splendourLevel } from './castles'
+import { CastleView } from './castles'
 import { OutpostRenderer } from './outposts'
+import { ConvoyRenderer } from './convoys'
+import { ObstacleRenderer } from './obstacles'
+import { SiteRenderer } from './sites'
 import { ParticleSystem } from './particles'
 import { buildBridges, buildSkirt, buildTerrain, buildTown, buildVegetation, buildWalls, buildWater } from './terrain'
 import { visionUniforms } from './vision'
+import { makePaintTexture } from './paint'
+import { Diorama } from './postfx'
 
-export type Selection = { kind: 'army'; id: string } | { kind: 'castle'; id: string } | { kind: 'outpost'; id: string } | null
+export type Selection = { kind: 'army'; id: string } | { kind: 'castle'; id: string } | { kind: 'outpost'; id: string } | { kind: 'convoy'; id: string } | { kind: 'site'; id: string } | null
 export type PickTarget = Selection
 
 interface Label {
@@ -42,6 +47,12 @@ export class GameRenderer {
   private castles = new Map<string, CastleView>()
   private armies: ArmyRenderer
   private outposts: OutpostRenderer
+  private convoys: ConvoyRenderer
+  private diorama: Diorama | null = null
+  private obstacles: ObstacleRenderer
+  private sites: SiteRenderer
+  private bridgeGroup: THREE.Group
+  private bridgeDown = new Set<number>()
   private dust: ParticleSystem
   private glow: ParticleSystem
   private precip: ParticleSystem
@@ -85,12 +96,22 @@ export class GameRenderer {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
     this.renderer.toneMappingExposure = 1.0
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
+    visionUniforms.uPaint.value ??= makePaintTexture()
     host.appendChild(this.renderer.domElement)
     this.renderer.domElement.addEventListener('webglcontextlost', this.onContextLost)
     this.renderer.domElement.addEventListener('webglcontextrestored', this.onContextRestored)
     this.renderer.domElement.style.display = 'block'
 
     this.cam = new RTSCamera(world, host.clientWidth / Math.max(1, host.clientHeight))
+    // The diorama finish (tilt-shift and colour grade); phones skip the blur.
+    // If the post-processing cannot start here, fall back to the plain look rather than failing.
+    try {
+      this.diorama = new Diorama(this.renderer, this.scene, this.cam.camera, mobile)
+      this.diorama.setSize(host.clientWidth, host.clientHeight)
+    } catch (e) {
+      console.warn('Diorama effects unavailable, using the plain renderer.', e)
+      this.diorama = null
+    }
     this.densityScale = mobile ? 0.6 : 1
 
     const fogColor = new THREE.Color(world.biome.fog)
@@ -118,7 +139,8 @@ export class GameRenderer {
     this.scene.add(buildSkirt(world))
     this.scene.add(buildWater(world))
     this.scene.add(buildVegetation(world))
-    this.scene.add(buildBridges(world))
+    this.bridgeGroup = buildBridges(world)
+    this.scene.add(this.bridgeGroup)
     this.scene.add(buildWalls(world))
     this.scene.add(buildTown(world))
 
@@ -128,6 +150,12 @@ export class GameRenderer {
     this.scene.add(this.armies.group)
     this.outposts = new OutpostRenderer(engine)
     this.scene.add(this.outposts.group)
+    this.convoys = new ConvoyRenderer(engine)
+    this.scene.add(this.convoys.group)
+    this.obstacles = new ObstacleRenderer(engine)
+    this.scene.add(this.obstacles.group)
+    this.sites = new SiteRenderer(engine)
+    this.scene.add(this.sites.group)
 
     this.dust = new ParticleSystem(5000, false)
     this.glow = new ParticleSystem(3000, true)
@@ -162,7 +190,7 @@ export class GameRenderer {
       this.scene.remove(old.group)
       old.dispose()
     }
-    const grand = splendourLevel(total(c.garrison), old?.grand ?? 0)
+    const grand = this.engine.splendourOf(c)
     const v = new CastleView(c, this.engine.world, this.engine.factionColor(c.faction), grand)
     this.castles.set(c.id, v)
     this.scene.add(v.group)
@@ -173,6 +201,7 @@ export class GameRenderer {
     const h = this.host.clientHeight
     if (!w || !h) return
     this.renderer.setSize(w, h)
+    this.diorama?.setSize(w, h)
     const aspect = w / h
     this.cam.camera.aspect = aspect
     // Keep the horizontal view wide on tall (portrait) screens instead of
@@ -185,6 +214,11 @@ export class GameRenderer {
     if (this.bottomInset > 0) this.cam.camera.setViewOffset(w, h, 0, Math.round(this.bottomInset / 2), w, h)
     else this.cam.camera.clearViewOffset()
     this.cam.camera.updateProjectionMatrix()
+  }
+
+  /** Overhead (near top-down) or tilted camera. */
+  setOverhead(on: boolean) {
+    this.cam.overhead = on
   }
 
   private bottomInset = 0
@@ -214,6 +248,7 @@ export class GameRenderer {
     })
     for (const mat of materials) mat.dispose()
     this.visionTex.dispose()
+    this.diorama?.dispose()
     this.renderer.dispose()
     this.renderer.forceContextLoss()
     canvas.remove()
@@ -299,10 +334,15 @@ export class GameRenderer {
     if (best) return best
     const g = this.groundAt(clientX, clientY)
     if (g) {
+      const w = this.convoys.nearest(g.x, g.z, 30)
+      if (w) return { kind: 'convoy', id: w.id }
+      if (!this.engine.isExplored(g.x, g.z)) return null
       const c = this.engine.castleAt(g.x, g.z, 10)
       if (c) return { kind: 'castle', id: c.id }
       const o = this.engine.state.outposts.find((o) => Math.hypot(o.x - g.x, o.z - g.z) < 40)
       if (o) return { kind: 'outpost', id: o.id }
+      const site = (this.engine.state.sites ?? []).find((x) => Math.hypot(x.x - g.x, x.z - g.z) < 30)
+      if (site) return { kind: 'site', id: site.id }
     }
     return null
   }
@@ -372,14 +412,19 @@ export class GameRenderer {
     for (const c of engine.state.castles) {
       const v = this.castles.get(c.id)
       if (!v) continue
-      if (v.tier !== c.tier || (Math.floor(this.time * 2) % 3 === 0 && splendourLevel(total(c.garrison), v.grand) !== v.grand)) this.buildCastle(c)
-      this.castles.get(c.id)!.setColor(engine.factionColor(c.faction))
+      if (v.tier !== c.tier || engine.splendourOf(c) !== v.grand || v.ruined !== !!c.ruined || v.owned !== (c.faction !== 'neutral')) this.buildCastle(c)
+      const view = this.castles.get(c.id)!
+      if (!c.village || c.faction !== 'neutral') view.setColor(engine.factionColor(c.faction))
       v.animate(this.time + v.radius)
       this.castleEffects(c, v, dt)
     }
     this.armies.density = (this.cam.distance > 1500 ? 0.35 : this.cam.distance > 900 ? 0.6 : 1) * this.densityScale
     this.armies.update(dt, this.time)
     this.outposts.update(this.time)
+    this.convoys.update(this.time)
+    this.obstacles.update()
+    this.sites.update(this.time)
+    this.updateBridges()
     this.armyEffects(dt)
     this.consumeEvents()
 
@@ -394,7 +439,10 @@ export class GameRenderer {
     this.updateLabels(this.labelTick <= 0)
     if (this.labelTick <= 0) this.labelTick = 0.2
 
-    this.renderer.render(this.scene, this.cam.camera)
+    if (this.diorama) {
+      this.diorama.setZoom(this.cam.distance)
+      this.diorama.render()
+    } else this.renderer.render(this.scene, this.cam.camera)
   }
 
   /** Rain and snow around the view, darker skies in storms, snow settling in winter. */
@@ -433,8 +481,12 @@ export class GameRenderer {
   }
 
   private castleEffects(c: Castle, v: CastleView, dt: number) {
-    if (!this.engine.isVisible(c.x, c.z)) return
-    const dmg = 1 - c.walls / c.maxWalls
+    if (!this.engine.isExplored(c.x, c.z)) return
+    // Ruins smoulder a little; wall-less villages only smoke while fighting rages.
+    if (c.ruined) {
+      if (Math.random() > 0.6 * dt) return
+    } else if (c.maxWalls <= 0 && !c.battleId) return
+    const dmg = c.ruined ? 0.3 : c.maxWalls > 0 ? 1 - c.walls / c.maxWalls : 0.5
     const sieged = !!c.battleId
     if (dmg < 0.25 && !sieged) return
     const rate = (sieged ? 10 : 2) * dmg + (sieged ? 3 : 0)
@@ -479,6 +531,27 @@ export class GameRenderer {
         }
       }
     }
+  }
+
+  /** Burned bridges vanish in fire and smoke; rebuilt ones reappear. */
+  private updateBridges() {
+    const world = this.engine.world
+    world.bridges.forEach((b, i) => {
+      const mesh = this.bridgeGroup.children[i]
+      if (!mesh) return
+      const down = world.broken.has(i)
+      if (down && !this.bridgeDown.has(i)) {
+        this.bridgeDown.add(i)
+        for (let k = 0; k < 70; k++) {
+          const t = (Math.random() - 0.5) * b.length
+          const x = b.x + b.dirX * t
+          const z = b.z + b.dirZ * t
+          this.glow.spawn({ x, y: 4, z, vx: (Math.random() - 0.5) * 10, vy: 14 + Math.random() * 18, vz: (Math.random() - 0.5) * 10, gravity: -4, life: 0.8 + Math.random() * 0.9, size: 2.4, color: Math.random() < 0.5 ? 0xff8a3a : 0xffd27a })
+          this.dust.spawn({ x, y: 8, z, vx: (Math.random() - 0.5) * 6, vy: 10 + Math.random() * 8, vz: (Math.random() - 0.5) * 6, gravity: -3, life: 2.2 + Math.random(), size: 4, color: 0x3a342e, alpha: 0.6 })
+        }
+      } else if (!down && this.bridgeDown.has(i)) this.bridgeDown.delete(i)
+      mesh.visible = !down
+    })
   }
 
   private consumeEvents() {
@@ -682,24 +755,34 @@ export class GameRenderer {
       seen.add(id)
       const l = this.label(id, 'map-label castle-label')
       const p = this.toScreen(c.x, world.heightAt(c.x, c.z) + castleRadius(c.tier) * 1.25 + 18, c.z)
-      l.el.style.display = p.visible ? '' : 'none'
+      l.el.style.display = p.visible && (c.faction === PLAYER || engine.isExplored(c.x, c.z)) ? '' : 'none'
       l.el.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -100%) scale(${zoomFade})`
       if (refreshContent) {
-        const known = c.faction === 'player' || engine.isVisible(c.x, c.z)
-        const g = known ? fmt(totalInt(c.garrison)) : '?'
-        const walls = Math.round((c.walls / c.maxWalls) * 100)
+        const g = knownCount(engine, c.id)
+        const walls = c.maxWalls > 0 ? Math.round((c.walls / c.maxWalls) * 100) : 100
         const sel = this.selection?.kind === 'castle' && this.selection.id === c.id
-        const key = `${c.faction}|${g}|${walls}|${!!c.battleId}|${sel}|${c.tier}`
+        const rank = c.village && c.faction === 'neutral' ? 0 : engine.rankOf(c.faction)
+        const key = `${c.faction}|${g}|${walls}|${!!c.battleId}|${sel}|${c.tier}|${rank}|${!!c.ruined}`
         if (key !== l.key) {
           l.key = key
           l.el.dataset.rel = engine.relation(c.faction)
           const showRealm = engine.state.rules.mode !== 'campaign' && c.faction !== PLAYER
           l.el.classList.toggle('selected', sel)
+          l.el.classList.toggle('village-label', !!c.village)
+          l.el.classList.toggle('ruins-label', !!c.ruined)
+          if (c.ruined) {
+            l.el.innerHTML = `<div class="cl-name">🔥 ${escapeHtml(c.name)}</div><div class="cl-row"><span class="cl-gar">RUINS</span></div>`
+            continue
+          }
+          if (c.village && c.faction === 'neutral') {
+            l.el.innerHTML = `<div class="cl-name">🏘 ${escapeHtml(c.name)}</div><div class="cl-realm">Free village</div><div class="cl-row"><span class="cl-gar">militia ${g}</span>${c.battleId ? '<span class="cl-siege">RAID</span>' : ''}</div>`
+            continue
+          }
           l.el.innerHTML = `
-            ${c.faction === PLAYER ? `<span class="cl-home">${c.id === engine.state.factions[PLAYER]?.capitalId ? '♛ YOUR SEAT' : '⚑ YOUR CASTLE'}</span>` : ''}
+            ${c.faction === PLAYER ? `<span class="cl-home">${c.id === engine.state.factions[PLAYER]?.capitalId ? '♛ YOUR SEAT' : c.village ? '🏘 YOUR VILLAGE' : '⚑ YOUR CASTLE'}</span>` : ''}
             <div class="cl-name"><i class="cl-swatch" style="background:${engine.factionColor(c.faction)}"></i>${c.capital ? '<span class="cl-crown">♛</span>' : ''}${escapeHtml(c.name)}</div>
             ${showRealm ? `<div class="cl-realm">${escapeHtml(engine.factionName(c.faction))}</div>` : ''}
-            <div class="cl-row"><span class="cl-gar">⚔ ${g}</span>${c.battleId ? '<span class="cl-siege">SIEGE</span>' : ''}</div>
+            <div class="cl-row">${rank > 0 ? `<span class="cl-rank" title="Realm rank">RANK <b>${rank}</b></span>` : ''}<span class="cl-gar">⚔ ${g}</span>${c.battleId ? '<span class="cl-siege">SIEGE</span>' : ''}</div>
             ${walls < 100 ? `<div class="cl-walls"><i style="width:${walls}%"></i></div>` : ''}`
         }
       }
@@ -715,21 +798,21 @@ export class GameRenderer {
       l.el.style.display = p.visible ? '' : 'none'
       l.el.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -100%) scale(${zoomFade})`
       if (refreshContent) {
-        const n = totalInt(a.troops)
+        const n = knownCount(engine, a.id)
         const morale = Math.round(a.morale)
         const sel = this.selection?.kind === 'army' && this.selection.id === a.id
         const hidden = engine.isHidden(a)
-        const key = `${a.name}|${n}|${morale}|${a.status}|${sel}|${a.formation}|${a.column}|${hidden}|${a.supplied}`
+        const key = `${a.name}|${n}|${morale}|${a.status}|${sel}|${a.formation}|${a.column}|${hidden}|${a.supplied}|${a.order.type}|${a.spottedBy ?? ''}|${!!a.pursuit}`
         if (key !== l.key) {
           l.key = key
           l.el.dataset.rel = engine.relation(a.faction)
           l.el.style.borderLeftColor = engine.factionColor(a.faction)
           l.el.classList.toggle('selected', sel)
           l.el.innerHTML = `
-            <div class="al-top"><span class="al-name">${escapeHtml(a.name)}</span><span class="al-n">${fmt(n)}</span></div>
+            <div class="al-top"><span class="al-name">${escapeHtml(a.name)}</span><span class="al-n">${n}</span></div>
             ${a.faction === PLAYER ? `<div class="al-form">${a.column && a.status === 'marching' ? 'Column' : FORMATIONS[a.formation].short}</div>` : ''}
             <div class="al-morale"><i style="width:${morale}%"></i></div>
-            ${statusBadge(a)}${a.faction === PLAYER && hidden ? '<div class="al-status hidden">🌲 HIDDEN</div>' : ''}${a.faction === PLAYER && !a.supplied ? '<div class="al-status nosupply">⚠ NO SUPPLY</div>' : ''}`
+            ${statusBadge(a)}${a.faction === PLAYER && hidden ? '<div class="al-status stealth">🌲 HIDDEN</div>' : ''}${a.faction === PLAYER && !a.supplied ? '<div class="al-status nosupply">⚠ NO SUPPLY</div>' : ''}${a.order.type === 'scout' ? `<div class="al-status stealth">🔭 SCOUTING${a.spottedBy ? ' · SPOTTED' : ''}</div>` : ''}${a.pursuit ? '<div class="al-status retreat">🏇 PURSUIT</div>' : ''}${a.order.type === 'gather' ? '<div class="al-status stealth">⛏ WORKING</div>' : ''}`
         }
       }
     }
@@ -739,15 +822,47 @@ export class GameRenderer {
       seen.add(id)
       const l = this.label(id, 'map-label castle-label outpost-label')
       const p = this.toScreen(o.x, world.heightAt(o.x, o.z) + 40, o.z)
-      l.el.style.display = p.visible ? '' : 'none'
+      l.el.style.display = p.visible && (o.faction === PLAYER || engine.isExplored(o.x, o.z)) ? '' : 'none'
       l.el.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -100%) scale(${zoomFade * 0.9})`
       if (refreshContent) {
-        const state = o.raze > 0.02 ? `BURNING ${Math.round(o.raze * 100)}%` : o.progress < 1 ? `BUILDING ${Math.round(o.progress * 100)}%` : 'OUTPOST'
-        const key = `${o.faction}|${state}`
+        const depot = o.kind === 'depot' && o.progress >= 1
+        const quartered = depot ? totalInt(o.garrison ?? {}) : 0
+        const known = o.faction === PLAYER || engine.relation(o.faction) === 'ally'
+        const stock = Math.round(o.stock ?? 100)
+        const state =
+          o.raze > 0.02
+            ? `BURNING ${Math.round(o.raze * 100)}%`
+            : o.progress < 1
+              ? `BUILDING ${Math.round(o.progress * 100)}%`
+              : depot
+                ? `${known && quartered > 0 ? `⚔ ${fmt(quartered)} · ` : ''}STORES ${stock}%`
+                : 'OUTPOST'
+        const orank = engine.rankOf(o.faction)
+        const key = `${o.faction}|${state}|${orank}`
         if (key !== l.key) {
           l.key = key
           l.el.dataset.rel = engine.relation(o.faction)
-          l.el.innerHTML = `<div class="cl-name"><i class="cl-swatch" style="background:${engine.factionColor(o.faction)}"></i>⛫ ${escapeHtml(o.name)}</div><div class="cl-row"><span class="${o.raze > 0.02 ? 'cl-siege' : 'cl-gar'}">${state}</span></div>`
+          l.el.innerHTML = `<div class="cl-name"><i class="cl-swatch" style="background:${engine.factionColor(o.faction)}"></i>⛫ ${escapeHtml(o.name)}</div><div class="cl-row">${orank > 0 ? `<span class="cl-rank">RANK <b>${orank}</b></span>` : ''}<span class="${o.raze > 0.02 || (depot && stock < 25) ? 'cl-siege' : 'cl-gar'}">${state}</span></div>`
+        }
+      }
+    }
+
+    for (const s of engine.state.sites ?? []) {
+      const id = `r:${s.id}`
+      seen.add(id)
+      const l = this.label(id, 'map-label castle-label site-label')
+      const p = this.toScreen(s.x, world.heightAt(s.x, s.z) + 26, s.z)
+      l.el.style.display = p.visible && zoomFade > 0.55 && engine.isExplored(s.x, s.z) ? '' : 'none'
+      l.el.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -100%) scale(${zoomFade * 0.85})`
+      if (refreshContent) {
+        const w = engine.army(s.workerId)
+        const stock = Math.round((s.stock / 2600) * 100)
+        const state = w ? `${w.faction === PLAYER ? 'YOURS' : escapeHtml(engine.factionName(w.faction))} · +${engine.gatherRate(w.id, s.id).toFixed(1)}/s` : stock < 5 ? 'WORKED OUT' : 'UNWORKED'
+        const key = `${w?.faction ?? ''}|${state}`
+        if (key !== l.key) {
+          l.key = key
+          l.el.dataset.rel = w ? engine.relation(w.faction) : 'neutral'
+          l.el.innerHTML = `<div class="cl-name">${s.kind === 'mine' ? '⛏ Mine' : '🪓 Lumber camp'}</div><div class="cl-row"><span class="cl-gar">${state}</span></div>`
         }
       }
     }
@@ -758,6 +873,14 @@ export class GameRenderer {
       this.labels.delete(id)
     }
   }
+}
+
+/** Soldier count as the player knows it: exact, from a scouting report (≈), or a rumour (~…?). */
+function knownCount(engine: GameEngine, id: string): string {
+  const k = engine.knowledge(id)
+  if (k.kind === 'exact') return fmt(Math.floor(k.total))
+  if (k.kind === 'scouted') return `≈${fmt(Math.round(k.total / 10) * 10)}${k.age > 300 ? '·old' : ''}`
+  return `~${fmt(k.total)}?`
 }
 
 function statusBadge(a: Army): string {

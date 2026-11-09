@@ -1,5 +1,6 @@
 import type { GameEngine } from './engine'
-import { DIFFICULTY, PLAYER, capacityForTier } from './engine'
+import { DIFFICULTY, PLAYER } from './engine'
+import { OUTPOST_KINDS, type OutpostKind } from './outposts'
 import { mulberry32 } from './noise'
 import { floorTroops, power, scaleTroops, total, totalInt } from './troops'
 import type { Army, Castle, Faction, FactionState, Troops } from './types'
@@ -50,7 +51,7 @@ export class FactionAI {
     return this.s.castles.filter((c) => c.faction === this.id)
   }
   private myArmies(): Army[] {
-    return this.s.armies.filter((a) => a.faction === this.id)
+    return this.s.armies.filter((a) => a.faction === this.id && !a.vassalOf && !a.aidFor)
   }
   private personality() {
     return this.f.personality ?? 'balanced'
@@ -72,10 +73,19 @@ export class FactionAI {
     }
     this.recruit()
     this.answerMusters()
+    this.answerAidCalls()
+    this.requestAid()
     this.organizeMuster()
     this.chooseFocus()
+    this.buildOutposts()
+    this.courtVillages()
+    this.workSites()
+    this.sendScouts()
+    this.fieldWorks()
     this.tidyIdleArmies()
     this.relieveSieges()
+    this.raidConvoys()
+    this.strikeFromBehind()
     this.interceptInvaders()
     this.greatHost()
     this.raid()
@@ -87,11 +97,11 @@ export class FactionAI {
   private recruit() {
     const castles = this.myCastles().filter((c) => !c.battleId)
     if (castles.length === 0) return
-    const budget = this.f.gold * 0.5
+    const budget = Math.max(0, this.f.gold - (this.f.ai.outpostReserve ?? 0)) * 0.5
     const per = budget / castles.length
     const mix = MIXES[this.personality()] ?? MIXES.balanced
     for (const c of castles) {
-      if (capacityForTier(c.tier) - total(c.garrison) < 20) continue
+      if (this.engine.capacity(c) - total(c.garrison) < 20) continue
       this.engine.recruitMix(c.id, mix, per, this.id)
     }
   }
@@ -142,6 +152,11 @@ export class FactionAI {
       if (this.engine.musterOf(a.id)) continue
       // Raiders standing at an enemy outpost stay until it burns.
       if (this.s.outposts.some((o) => this.engine.isHostile(o.faction, this.id) && Math.hypot(o.x - a.x, o.z - a.z) < 80)) continue
+      // Armies holding one of our outposts are its garrison.
+      if (this.s.outposts.some((o) => o.faction === this.id && Math.hypot(o.x - a.x, o.z - a.z) < 90)) continue
+      if (this.f.ai.buildPlan?.armyId === a.id) continue
+      // Working a mine, scouting, or hunting scouts: leave them to it.
+      if (a.order.type === 'gather' || a.order.type === 'scout' || a.order.type === 'work' || a.pursuit) continue
       const here = this.engine.castleAt(a.x, a.z, 60)
       if (here && here.faction === this.id) {
         this.engine.garrisonArmy(a.id)
@@ -157,6 +172,284 @@ export class FactionAI {
         .filter((c) => c.faction !== 'neutral' && this.engine.team(c.faction) === this.team)
         .sort((x, y) => Math.hypot(x.x - a.x, x.z - a.z) - Math.hypot(y.x - a.x, y.z - a.z))[0]
       if (ally) this.engine.orderArmy(a.id, { type: 'station', castleId: ally.id })
+    }
+  }
+
+  // --- Outposts -----------------------------------------------------------------
+
+  /**
+   * Lords raise outposts toward the castle they mean to fight over: a bridge
+   * fort on a crossing, a forest lodge for ambushes, a watchtower on high
+   * ground, a supply depot when the march is long, otherwise a field camp.
+   * Engineers march out, build, and stay as the garrison (in a depot, they
+   * quarter inside).
+   */
+  private buildOutposts() {
+    const ai = this.f.ai
+    const plan = ai.buildPlan
+    if (plan) {
+      const a = this.engine.army(plan.armyId)
+      if (!a || a.status === 'retreating') {
+        ai.buildPlan = null
+        return
+      }
+      if (a.order.type === 'build') return
+      const site = this.s.outposts.find((o) => o.faction === this.id && Math.hypot(o.x - a.x, o.z - a.z) < 40)
+      if (site) {
+        if (site.progress >= 1) {
+          if (site.kind === 'depot') this.engine.orderArmy(a.id, { type: 'garrison', outpostId: site.id })
+          ai.buildPlan = null
+        }
+        return
+      }
+      if (Math.hypot(a.x - plan.x, a.z - plan.z) < 45 && a.status === 'idle') {
+        const err = this.engine.buildOutpost(a.id, plan.kind)
+        if (err) {
+          const alt = this.engine.outpostOptions(a.id).find((o) => o.ok)
+          if (!alt || this.engine.buildOutpost(a.id, alt.kind)) ai.buildPlan = null
+        }
+      }
+      return
+    }
+    if (this.s.time < (ai.nextOutpostAt ?? 120 + this.rnd() * 120)) return
+    ai.nextOutpostAt = this.s.time + 150 + this.rnd() * 150
+    const mine = this.s.outposts.filter((o) => o.faction === this.id)
+    if (mine.length >= 3) return
+    if (this.threatened()) return
+    // Where is the war for us? The alliance focus, else the nearest hostile castle.
+    const castles = this.myCastles().filter((c) => !c.battleId)
+    if (castles.length === 0) return
+    const focusId = this.s.teamFocus[this.team as 'A' | 'B']?.castleId
+    let target = focusId ? this.engine.castle(focusId) : undefined
+    if (!target || !this.engine.isHostile(target.faction, this.id)) {
+      let bd = 2600
+      target = undefined
+      for (const c of this.s.castles) {
+        if (!this.engine.isHostile(c.faction, this.id) || c.faction === 'neutral') continue
+        for (const m of castles) {
+          const d = Math.hypot(c.x - m.x, c.z - m.z)
+          if (d < bd) {
+            bd = d
+            target = c
+          }
+        }
+      }
+    }
+    if (!target) return
+    const t = target
+    const from = castles.sort((x, y) => Math.hypot(x.x - t.x, x.z - t.z) - Math.hypot(y.x - t.x, y.z - t.z))[0]
+    const span = Math.hypot(t.x - from.x, t.z - from.z)
+    if (span < 700) return
+    if (total(from.garrison) < 380) return
+    const w = this.engine.world
+    const long = span > this.engine.supplyRange(from) * 1.15
+    // Candidate spots along the road toward the target, plus nearby bridges.
+    const spots: { x: number; z: number; kinds: OutpostKind[] }[] = []
+    for (const b of w.bridges) {
+      const along = ((b.x - from.x) * (t.x - from.x) + (b.z - from.z) * (t.z - from.z)) / (span * span)
+      if (along < 0.2 || along > 0.75) continue
+      const px = from.x + (t.x - from.x) * along
+      const pz = from.z + (t.z - from.z) * along
+      if (Math.hypot(b.x - px, b.z - pz) > 300) continue
+      // Our side of the crossing.
+      const back = 90 / Math.max(1, Math.hypot(b.x - from.x, b.z - from.z))
+      spots.push({ x: b.x + (from.x - b.x) * back, z: b.z + (from.z - b.z) * back, kinds: ['bridgefort'] })
+    }
+    for (const f of [0.38, 0.48, 0.3, 0.56]) {
+      for (const off of [0, 120, -120]) {
+        const px = from.x + (t.x - from.x) * f + (-(t.z - from.z) / span) * off
+        const pz = from.z + (t.z - from.z) * f + ((t.x - from.x) / span) * off
+        const kinds: OutpostKind[] = long && !mine.some((o) => o.kind === 'depot') ? ['depot', 'camp'] : []
+        if (w.forestAt(px, pz) > 0.35) kinds.push('lodge')
+        if (w.heightAt(px, pz) > 32) kinds.push('watchtower')
+        kinds.push('camp')
+        spots.push({ x: px, z: pz, kinds })
+      }
+    }
+    for (const sp of spots) {
+      const kind = sp.kinds.find((k) => !this.engine.siteProblemAt(this.id, sp.x, sp.z, k))
+      if (!kind) continue
+      // Save up for the outpost and the engineers to build it.
+      const g = from.garrison
+      const needEng = Math.max(0, 24 - Math.floor(g.engineers ?? 0))
+      const cost = OUTPOST_KINDS[kind].cost + needEng * 25 + 40
+      if (this.f.gold < cost) {
+        ai.outpostReserve = cost
+        ai.nextOutpostAt = this.s.time + 15
+        return
+      }
+      if (needEng > 0) this.engine.recruitMix(from.id, { engineers: 1 }, needEng * 25 + 1, this.id)
+      ai.outpostReserve = 0
+      const eng = Math.floor(g.engineers ?? 0)
+      if (eng < 18) return
+      const troops: Troops = {
+        engineers: Math.min(eng, 30),
+        infantry: Math.min(Math.floor(g.infantry ?? 0), 110),
+        archers: Math.min(Math.floor(g.archers ?? 0), 40),
+      }
+      const lead = this.captain()
+      const res = this.engine.formArmy(from.id, this.id, troops, {
+        commanderKey: lead.commanderKey,
+        captainName: lead.captainName,
+        retreatAt: 0.5,
+        order: { type: 'move', x: sp.x, z: sp.z },
+        name: 'Pioneers',
+      })
+      if (typeof res === 'string') return
+      ai.buildPlan = { armyId: res.id, kind, x: sp.x, z: sp.z }
+      return
+    }
+  }
+
+  /**
+   * Engineers in the field: garrisons of our outposts throw up stakes (against
+   * horse) or an abatis when an enemy approaches, and a bridge on the road to
+   * one of our castles is burned in front of a strong enemy force.
+   */
+  private fieldWorks() {
+    const hostiles = this.s.armies.filter((h) => this.engine.isHostile(h.faction, this.id) && !this.engine.atPeace(this.id, h.faction) && h.status !== 'retreating')
+    if (hostiles.length === 0) return
+    const obstacles = this.s.obstacles ?? []
+    for (const a of this.myArmies()) {
+      if (a.battleId || a.status === 'retreating' || a.order.type === 'work' || a.order.type === 'build') continue
+      if ((a.troops.engineers ?? 0) < 10) continue
+      // 1. Burn a bridge in front of a threatening enemy.
+      for (const [i, b] of this.engine.world.bridges.entries()) {
+        if (this.engine.world.broken.has(i)) continue
+        if (Math.hypot(a.x - b.x, a.z - b.z) > 450) continue
+        const home = this.nearestOwn(b.x, b.z)
+        if (!home || Math.hypot(home.x - b.x, home.z - b.z) > 1000) continue
+        const threat = hostiles.find((h) => {
+          const dB = Math.hypot(h.x - b.x, h.z - b.z)
+          const dH = Math.hypot(h.x - home.x, h.z - home.z)
+          return dB < 600 && dH > Math.hypot(b.x - home.x, b.z - home.z) + 100 && this.engine.armyPower(h) > this.engine.garrisonPower(home) * 0.8
+        })
+        if (!threat || Math.hypot(a.x - home.x, a.z - home.z) > Math.hypot(threat.x - home.x, threat.z - home.z)) continue
+        if (Math.hypot(a.x - b.x, a.z - b.z) - b.length / 2 < 90) this.engine.startWork(a.id, 'burn')
+        else this.engine.orderArmy(a.id, { type: 'move', x: b.x, z: b.z })
+        return
+      }
+      // 2. Fortify an outpost we hold.
+      const post = this.s.outposts.find((o) => o.faction === this.id && o.progress >= 1 && Math.hypot(o.x - a.x, o.z - a.z) < 90)
+      if (!post || a.status !== 'idle') continue
+      const near = hostiles.filter((h) => Math.hypot(h.x - a.x, h.z - a.z) < 900)
+      if (near.length === 0) continue
+      if (obstacles.some((o) => o.faction === this.id && Math.hypot(o.x - a.x, o.z - a.z) < 140)) continue
+      const horse = near.reduce((s, h) => s + (h.troops.cavalry ?? 0), 0) / Math.max(1, near.reduce((s, h) => s + total(h.troops), 0))
+      this.engine.startWork(a.id, horse > 0.3 ? 'stakes' : 'abatis')
+    }
+  }
+
+  /**
+   * Free villages near our lands: win them over with coin, or (for an
+   * aggressive lord, or one short of gold) plunder them for loot and captives.
+   */
+  private courtVillages() {
+    const ai = this.f.ai as typeof this.f.ai & { nextVillageAt?: number }
+    if (this.s.time < (ai.nextVillageAt ?? 90 + this.rnd() * 120)) return
+    ai.nextVillageAt = this.s.time + 120 + this.rnd() * 140
+    if (this.threatened()) return
+    const mine = this.myCastles().filter((c) => !c.village && !c.battleId)
+    if (mine.length === 0) return
+    const free = this.s.castles
+      .filter((c) => c.village && c.faction === 'neutral' && !c.ruined && !c.battleId)
+      .map((c) => ({ c, d: Math.min(...mine.map((m) => Math.hypot(m.x - c.x, m.z - c.z))) }))
+      .filter((v) => v.d < this.engine.envoyReach())
+      .sort((a, b) => a.d - b.d)
+    if (free.length === 0) return
+    const { c } = free[0]
+    const p = this.personality()
+    const plunderBias = p === 'aggressive' ? 0.55 : p === 'balanced' ? 0.22 : 0.05
+    const terms = this.engine.villageTerms(c.id, this.id)
+    const canPay = !terms.reason && this.f.gold > terms.price + 60
+    if (canPay && this.rnd() > plunderBias) {
+      this.engine.negotiateVillage(c.id, this.id)
+      return
+    }
+    if (this.rnd() < plunderBias + (canPay ? 0 : 0.25)) {
+      const from = mine.sort((x, y) => Math.hypot(x.x - c.x, x.z - c.z) - Math.hypot(y.x - c.x, y.z - c.z))[0]
+      const need = total(c.garrison) * 2 + 60
+      const frac = Math.min(0.4, need / Math.max(1, total(from.garrison)))
+      if (total(from.garrison) * frac >= need * 0.9) this.send(from, frac, 'Raiders', { type: 'attack', castleId: c.id }, { keep: 250 })
+    }
+  }
+
+  /** Now and then, a few riders ride out to spy on a hostile castle before the lord strikes. */
+  private sendScouts() {
+    const ai = this.f.ai
+    if (this.s.time < (ai.nextScoutAt ?? 150 + this.rnd() * 200)) return
+    ai.nextScoutAt = this.s.time + 220 + this.rnd() * 200
+    if (this.myArmies().some((a) => a.order.type === 'scout')) return
+    const from = this.myCastles()
+      .filter((c) => !c.battleId && (c.garrison.cavalry ?? 0) >= 45)
+      .sort((x, y) => (y.garrison.cavalry ?? 0) - (x.garrison.cavalry ?? 0))[0]
+    if (!from) return
+    const target = this.s.castles
+      .filter((c) => !c.ruined && c.faction !== 'neutral' && this.engine.isHostile(c.faction, this.id) && !this.engine.atPeace(this.id, c.faction) && Math.hypot(c.x - from.x, c.z - from.z) < 2000)
+      .sort((x, y) => Math.hypot(x.x - from.x, x.z - from.z) - (x.faction === PLAYER ? 500 : 0) - (Math.hypot(y.x - from.x, y.z - from.z) - (y.faction === PLAYER ? 500 : 0)))[0]
+    if (!target) return
+    const n = Math.min(Math.floor(from.garrison.cavalry ?? 0) - 15, 25 + Math.floor(this.rnd() * 20))
+    if (n < 20) return
+    const res = this.engine.formArmy(from.id, this.id, { cavalry: n }, { captainName: 'Scout Captain', retreatAt: 0.4, name: 'Scouts' })
+    if (typeof res !== 'string') this.engine.startScout(res.id, target.id)
+  }
+
+  /** Send engineers to work a free mine or lumber camp near our lands (at most two parties). */
+  private workSites() {
+    const ai = this.f.ai as typeof this.f.ai & { nextSiteAt?: number }
+    if (this.s.time < (ai.nextSiteAt ?? 60 + this.rnd() * 120)) return
+    ai.nextSiteAt = this.s.time + 140 + this.rnd() * 120
+    if (this.threatened()) return
+    const working = this.myArmies().filter((a) => a.order.type === 'gather').length
+    if (working >= 2) return
+    const mine = this.myCastles().filter((c) => !c.battleId && !c.village)
+    if (mine.length === 0) return
+    const busy = new Set(this.s.armies.filter((a) => a.order.type === 'gather').map((a) => (a.order as { siteId: string }).siteId))
+    const options = (this.s.sites ?? [])
+      .filter((x) => !busy.has(x.id) && x.stock > 400)
+      .map((x) => {
+        const from = mine.sort((p, q) => Math.hypot(p.x - x.x, p.z - x.z) - Math.hypot(q.x - x.x, q.z - x.z))[0]
+        return { x, from, d: Math.hypot(from.x - x.x, from.z - x.z) }
+      })
+      .filter((o) => o.d < 1100)
+      .sort((p, q) => p.d - q.d - (p.x.kind === 'mine' ? 150 : 0) + (q.x.kind === 'mine' ? 150 : 0))
+    const pick = options[0]
+    if (!pick) return
+    const g = pick.from.garrison
+    if ((g.engineers ?? 0) < 22) {
+      if (this.f.gold < 700) return
+      this.engine.recruitMix(pick.from.id, { engineers: 1 }, (24 - Math.floor(g.engineers ?? 0)) * 25 + 1, this.id)
+    }
+    const eng = Math.floor(g.engineers ?? 0)
+    if (eng < 12) return
+    const lead = this.captain()
+    this.engine.formArmy(pick.from.id, this.id, { engineers: Math.min(eng, 30), infantry: Math.min(Math.floor(g.infantry ?? 0), 70), archers: Math.min(Math.floor(g.archers ?? 0), 20) }, {
+      commanderKey: null,
+      captainName: lead.captainName,
+      retreatAt: 0.5,
+      order: { type: 'gather', siteId: pick.x.id },
+      name: pick.x.kind === 'mine' ? 'Miners' : 'Woodcutters',
+    })
+  }
+
+  /** Free armies, or a small sally from a nearby castle, ride down enemy supply wagons. */
+  private raidConvoys() {
+    for (const w of this.s.convoys ?? []) {
+      if (!this.engine.isHostile(w.faction, this.id) || this.engine.atPeace(this.id, w.faction)) continue
+      const already = this.s.armies.some((a) => this.engine.team(a.faction) === this.team && a.order.type === 'raidConvoy' && a.order.convoyId === w.id)
+      if (already) continue
+      const free = this.myArmies().find(
+        (a) => !a.battleId && a.status !== 'retreating' && (a.order.type === 'hold' || a.order.type === 'station') && !this.engine.musterOf(a.id) && Math.hypot(a.x - w.x, a.z - w.z) < 700,
+      )
+      if (free) {
+        this.engine.orderArmy(free.id, { type: 'raidConvoy', convoyId: w.id })
+        continue
+      }
+      const near = this.myCastles().find((c) => !c.battleId && Math.hypot(c.x - w.x, c.z - w.z) < 650 && total(c.garrison) > 420)
+      if (near && this.rnd() < 0.6) {
+        const frac = Math.min(0.25, 130 / total(near.garrison))
+        this.send(near, frac, 'Wagon Raiders', { type: 'raidConvoy', convoyId: w.id }, { keep: 300 })
+      }
     }
   }
 
@@ -180,6 +473,44 @@ export class FactionAI {
       // Allies are a little more cautious about committing for someone else.
       if (c.faction !== this.id && this.rnd() < 0.35) continue
       this.send(donor, 0.6, 'Relief Column', { type: 'station', castleId: c.id }, { keep: 150 })
+    }
+  }
+
+  /**
+   * When an ally's line is locked in a field battle, a free army nearby swings
+   * round and hits the enemy from behind (the engine routes the approach).
+   */
+  private strikeFromBehind() {
+    for (const b of this.s.battles) {
+      if (b.kind !== 'field' || this.s.time - b.startedAt < 3) continue
+      const ours = b.sideA.team === this.team ? b.sideA : b.sideB.team === this.team ? b.sideB : null
+      if (!ours) continue
+      const theirs = ours === b.sideA ? b.sideB : b.sideA
+      const foes = theirs.armyIds.map((id) => this.engine.army(id)).filter((a): a is Army => !!a)
+      if (foes.length === 0) continue
+      const foePower = foes.reduce((s, a) => s + this.engine.armyPower(a), 0)
+      const ourPower = ours.armyIds.reduce((s, id) => {
+        const a = this.engine.army(id)
+        return s + (a ? this.engine.armyPower(a) : 0)
+      }, 0)
+      // Already winning comfortably: no need to commit more.
+      if (ourPower > foePower * 2.2) continue
+      const coming = this.s.armies.some((a) => this.engine.team(a.faction) === this.team && a.order.type === 'intercept' && foes.some((f) => f.id === (a.order as { armyId: string }).armyId))
+      if (coming) continue
+      const free = this.myArmies().filter(
+        (a) =>
+          !a.battleId &&
+          a.status !== 'retreating' &&
+          // Never strip a castle or gate of its guard to do it.
+          (a.order.type === 'hold' || a.order.type === 'move') &&
+          !this.engine.musterOf(a.id) &&
+          Math.hypot(a.x - b.x, a.z - b.z) < 900 &&
+          this.engine.armyPower(a) >= foePower * 0.2,
+      )
+      if (free.length === 0) continue
+      const army = free.sort((x, y) => Math.hypot(x.x - b.x, x.z - b.z) - Math.hypot(y.x - b.x, y.z - b.z))[0]
+      const target = foes.sort((x, y) => this.engine.armyPower(y) - this.engine.armyPower(x))[0]
+      this.engine.orderArmy(army.id, { type: 'intercept', armyId: target.id })
     }
   }
 
@@ -214,7 +545,8 @@ export class FactionAI {
 
   /** Soldiers a castle can send away and still hold. */
   private spare(c: Castle): number {
-    return total(c.garrison) - Math.max(250, capacityForTier(c.tier) * 0.35)
+    if (c.village) return 0 // vassal villages keep their militia
+    return total(c.garrison) - Math.max(250, this.engine.capacity(c) * 0.35)
   }
 
   /**
@@ -258,6 +590,66 @@ export class FactionAI {
   }
 
   /**
+   * When one of our castles faces more enemies than its garrison can hold,
+   * ask the allies for help (the same call the player can make).
+   */
+  private requestAid() {
+    if (this.id === PLAYER || this.engine.aidAllies(this.id).length === 0) return
+    for (const c of this.myCastles()) {
+      if (c.village || this.engine.aidProblem(c.id, this.id)) continue
+      const threat = this.engine.threatTo(c)
+      if (threat < 150 || threat < total(c.garrison) * 0.9) continue
+      this.engine.callForAid(c.id, this.id)
+    }
+  }
+
+  /**
+   * Calls for aid from allied castles: the same judgement as a muster. A lord
+   * who is close, safe, uncommitted and has men to spare sends them to stand
+   * in the castle; they go home when the call ends.
+   */
+  private answerAidCalls() {
+    if (this.id === PLAYER) return
+    for (const call of this.s.aidCalls ?? []) {
+      if (call.team !== this.team || call.faction === this.id || call.answered.includes(this.id)) continue
+      call.answered.push(this.id)
+      const target = this.engine.castle(call.castleId)
+      if (!target) continue
+      const loud = call.faction === PLAYER
+      const decline = (why: string) => {
+        if (loud) this.engine.log('ally', `${this.f.name} cannot send aid`, why)
+      }
+      if (this.engine.committedToMuster(this.id)) {
+        decline('Their troops are already marching for a muster.')
+        continue
+      }
+      if (this.threatened()) {
+        decline('Their own lands are under threat.')
+        continue
+      }
+      const src = this.nearestOwn(target.x, target.z, (c) => !c.battleId && !c.village)
+      if (!src || Math.hypot(src.x - target.x, src.z - target.z) > this.engine.aidReach()) continue // too far: quietly stay home
+      // Defensive help: a lord keeps less at home than for an attack (a fifth of capacity, at least 200).
+      const keep = Math.max(200, this.engine.capacity(src) * 0.2)
+      const spare = total(src.garrison) - keep
+      if (spare < 120) {
+        decline('They have no soldiers to spare.')
+        continue
+      }
+      const willing = this.personality() === 'defensive' ? 0.65 : this.personality() === 'aggressive' ? 0.8 : 0.85
+      if (this.rnd() > willing) {
+        decline('They will hold their own walls this time.')
+        continue
+      }
+      const frac = Math.min(0.5, spare / Math.max(1, total(src.garrison)))
+      const army = this.send(src, frac, `${this.f.name.split(' of ').pop()} Aid`, { type: 'station', castleId: target.id }, { keep })
+      if (!army) continue
+      this.engine.addAidContingent(call.id, army)
+      if (loud) this.engine.log('ally', `${this.f.name} sends aid`, `${totalInt(army.troops)} soldiers march from ${src.name} to stand in ${target.name}.`, src.x, src.z)
+    }
+  }
+
+  /**
    * Alliance War: a strong, safe lord may call a muster against a nearby
    * castle, but only when the alliance around it can clearly take it.
    */
@@ -274,6 +666,7 @@ export class FactionAI {
     let best: { c: Castle; d: number } | null = null
     for (const c of this.s.castles) {
       if (!this.engine.isHostile(c.faction, this.id) || live.some((m) => m.targetCastleId === c.id) || c.battleId) continue
+      if (c.ruined || c.faction === 'neutral') continue
       let d = Infinity
       for (const o of mine) d = Math.min(d, Math.hypot(o.x - c.x, o.z - c.z))
       if (d < 1300 && (!best || d < best.d)) best = { c, d }
@@ -312,7 +705,7 @@ export class FactionAI {
     if (ours.length === 0) return
     let best: { c: Castle; score: number } | null = null
     for (const c of this.s.castles) {
-      if (!this.engine.isHostile(c.faction, this.id)) continue
+      if (!this.engine.isHostile(c.faction, this.id) || c.ruined || (c.village && c.faction === 'neutral')) continue
       let near = Infinity
       for (const o of ours) near = Math.min(near, Math.hypot(o.x - c.x, o.z - c.z))
       const score = near + this.engine.garrisonPower(c) * 0.35 + (c.faction === 'neutral' ? -100 : 0)
@@ -331,8 +724,7 @@ export class FactionAI {
     const ai = this.f.ai
     if (this.s.time < ai.nextRaidAt) return
     const pmult = this.personality() === 'aggressive' ? 0.75 : this.personality() === 'defensive' ? 1.5 : 1
-    const siege = this.s.rules.mode === 'siege'
-    const base = siege ? 40 : this.hostileToPlayer ? DIFFICULTY[this.s.difficulty].raidEvery : 110
+    const base = this.hostileToPlayer ? DIFFICULTY[this.s.difficulty].raidEvery : 110
     ai.nextRaidAt = this.s.time + base * pmult * (0.75 + this.rnd() * 0.5)
     const sources = this.myCastles()
       .filter((c) => !c.battleId && total(c.garrison) > 350)
@@ -355,11 +747,13 @@ export class FactionAI {
     if (call && !this.engine.isHostile(call.faction, this.id)) call = undefined
     const reach = 1400
     const targets = this.s.castles
-      .filter((c) => this.engine.isHostile(c.faction, this.id) && !this.engine.atPeace(this.id, c.faction) && !(c.battleId && this.engine.battle(c.battleId)?.sideA.team !== this.team))
+      .filter((c) => !c.ruined && !(c.village && c.faction === 'neutral') && this.engine.isHostile(c.faction, this.id) && !this.engine.atPeace(this.id, c.faction) && !(c.battleId && this.engine.battle(c.battleId)?.sideA.team !== this.team))
       .map((c) => {
         const d = Math.hypot(c.x - src.x, c.z - src.z)
         let score = d * 0.9 + this.engine.garrisonPower(c) * 0.8 + (c.faction === 'neutral' ? 150 : 0)
         if (call && c.id === call.id) score -= 900
+        // Scouted (or betrayed by captured scouts): we know what we face there.
+        if (c.id === this.f.ai.knownTarget) score -= 500
         if (c.faction === PLAYER) score -= 120 // keep pressure on the human
         return { c, d, score }
       })
@@ -370,11 +764,9 @@ export class FactionAI {
     const need = this.engine.garrisonPower(pick.c) * 1.5
     const have = power(src.garrison, this.engine.units)
     const answering = !!call && pick.c.id === call.id
-    // Besiegers keep the pressure on in waves, whatever the odds.
-    const besieger = siege && this.myCastles().some((c) => c.staging)
     // Converging on a shared target: commit even if this lord alone could not take it.
-    if (!besieger && (answering ? have * 0.6 < need * 0.35 : have * 0.6 < need)) return
-    const frac = besieger ? 0.55 : answering ? 0.6 : Math.min(0.6, (need * 1.3) / have)
+    if (answering ? have * 0.6 < need * 0.35 : have * 0.6 < need) return
+    const frac = answering ? 0.6 : Math.min(0.6, (need * 1.3) / have)
     const army = this.send(src, frac, answering ? 'Allied Host' : this.team === 'B' ? 'Raiders' : 'Warband', { type: 'attack', castleId: pick.c.id }, { keep: 200 })
     if (!army) return
     if (pick.c.faction === PLAYER && this.engine.isVisible(src.x, src.z)) {
@@ -413,7 +805,7 @@ export class FactionAI {
 
   private pickHostTarget(fromX: number, fromZ: number): Castle | undefined {
     return this.s.castles
-      .filter((c) => this.engine.isHostile(c.faction, this.id) && c.faction !== 'neutral')
+      .filter((c) => this.engine.isHostile(c.faction, this.id) && c.faction !== 'neutral' && !c.ruined)
       .map((c) => {
         let score = Math.hypot(c.x - fromX, c.z - fromZ) + this.engine.garrisonPower(c) * 0.3
         if (c.faction === PLAYER) score -= 400

@@ -2,7 +2,6 @@ import { Skull, Trophy } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import { PLAYER, TICK, type GameEngine } from '../game/engine'
-import { useEngine } from './common'
 import { fmt } from '../game/troops'
 import type { ChronicleEntry } from '../game/types'
 import { GameRenderer, type Selection } from '../render/GameRenderer'
@@ -10,13 +9,13 @@ import { ChronicleLog, Toasts } from './Chronicle'
 import { FormArmyModal } from './FormArmyModal'
 import { HelpOverlay } from './HelpOverlay'
 import { HoldingsBar } from './HoldingsBar'
-import { SiegeDeployModal } from './SiegeDeployModal'
 import { TraitChoice } from './TraitChoice'
 import { Minimap } from './Minimap'
 import { SelectionPanel } from './SelectionPanel'
 import { Sidebar } from './Sidebar'
 import { TopBar } from './TopBar'
 import { useViewport } from './viewport'
+import { loadOverhead, saveOverhead } from './viewPref'
 
 export interface Match {
   /** Server-side record of this match (results and battle reports); null if it could not be created. */
@@ -47,6 +46,19 @@ export function GameScreen({ match, onExit }: Props) {
   const [gfxError, setGfxError] = useState<string | null>(null)
   const [gfxLost, setGfxLost] = useState(false)
   const lostRef = useRef(false)
+  const [overhead, setOverhead] = useState(loadOverhead)
+  const overheadRef = useRef(overhead)
+  const toggleView = useCallback(() => {
+    setOverhead((v) => {
+      const next = !v
+      overheadRef.current = next
+      saveOverhead(next)
+      return next
+    })
+  }, [])
+  useEffect(() => {
+    renderer?.setOverhead(overhead)
+  }, [renderer, overhead])
   const vp = useViewport()
   const [sidebarOpen, setSidebarOpen] = useState(() => !vp.compact)
   const [orderMode, setOrderMode] = useState(false)
@@ -115,6 +127,8 @@ export function GameScreen({ match, onExit }: Props) {
     let r: GameRenderer
     try {
       r = new GameRenderer(host, overlay, engine)
+      // Dev builds only: lets browser tests fast-forward the war.
+      if (import.meta.env.DEV) Object.assign(window, { __warbox: engine, __warboxRenderer: r })
     } catch (e) {
       setGfxError((e as Error).message || 'WebGL could not start.')
       return
@@ -123,6 +137,7 @@ export function GameScreen({ match, onExit }: Props) {
       lostRef.current = lost
       setGfxLost(lost)
     }
+    r.setOverhead(overheadRef.current)
     setRenderer(r)
     let raf = 0
     let last = performance.now()
@@ -133,7 +148,7 @@ export function GameScreen({ match, onExit }: Props) {
       const dt = Math.min(0.1, (now - last) / 1000)
       last = now
       // The war holds still while the graphics are being restored.
-      if (!lostRef.current && !modalRef.current && !engine.state.rules.deployPending && engine.state.status === 'active') {
+      if (!lostRef.current && !modalRef.current && engine.state.status === 'active') {
         acc += dt
         let steps = 0
         while (acc >= TICK && steps < 60) {
@@ -186,6 +201,10 @@ export function GameScreen({ match, onExit }: Props) {
       if (sel?.kind !== 'army') return false
       const army = engine.army(sel.id)
       if (!army || army.faction !== PLAYER) return false
+      if (army.vassalOf) {
+        toast('Village militia act on their own and cannot be given orders.')
+        return true
+      }
       if (army.status === 'retreating') {
         toast('This army is retreating and will not answer orders.')
         return true
@@ -206,6 +225,29 @@ export function GameScreen({ match, onExit }: Props) {
           return true
         }
       }
+      if (target?.kind === 'site') {
+        const site = engine.site(target.id)!
+        if ((army.troops.engineers ?? 0) >= 10) {
+          const err = engine.startGather(army.id, site.id)
+          if (err) toast(err)
+          else toast(`${army.name} goes to work the ${site.kind === 'mine' ? 'mine' : 'forest'}.`)
+        } else {
+          engine.orderArmy(army.id, { type: 'move', x: site.x, z: site.z })
+          toast('Only armies with 10+ engineers can work it.')
+        }
+        renderer.spawnClickMarker(site.x, site.z, 0x9cc0ff)
+        return true
+      }
+      if (target?.kind === 'castle' && engine.castle(target.id)?.village && engine.castle(target.id)?.faction === 'neutral') {
+        // Never plunder by accident: march up to the village and decide in its panel.
+        const c = engine.castle(target.id)!
+        const d = Math.hypot(army.x - c.x, army.z - c.z) || 1
+        const [x, z] = engine.world.nearestPassable(c.x + ((army.x - c.x) / d) * 95, c.z + ((army.z - c.z) / d) * 95)
+        engine.orderArmy(army.id, { type: 'move', x, z })
+        renderer.spawnClickMarker(c.x, c.z, 0xf5c542)
+        toast(c.ruined ? 'Only ruins are left here.' : `${army.name} marches to ${c.name}. Negotiate or plunder from the village panel.`)
+        return true
+      }
       if (target?.kind === 'castle') {
         const c = engine.castle(target.id)!
         const friendly = !engine.isHostile(c.faction, PLAYER)
@@ -213,8 +255,23 @@ export function GameScreen({ match, onExit }: Props) {
         renderer.spawnClickMarker(c.x, c.z, friendly ? 0x9cc0ff : 0xff5a3c)
         return true
       }
+      if (target?.kind === 'convoy') {
+        const w = engine.convoy(target.id)
+        if (w && engine.isHostile(w.faction, PLAYER)) {
+          engine.orderArmy(army.id, { type: 'raidConvoy', convoyId: w.id })
+          renderer.spawnClickMarker(w.x, w.z, 0xff5a3c)
+          toast(`${army.name} rides to seize the wagons.`)
+          return true
+        }
+      }
       if (target?.kind === 'outpost') {
         const o = engine.outpost(target.id)!
+        if (o.kind === 'depot' && o.faction === PLAYER && o.progress >= 1) {
+          engine.orderArmy(army.id, { type: 'garrison', outpostId: o.id })
+          renderer.spawnClickMarker(o.x, o.z, 0x9cc0ff)
+          toast(`${army.name} will quarter in ${o.name}.`)
+          return true
+        }
         engine.orderArmy(army.id, { type: 'move', x: o.x, z: o.z })
         renderer.spawnClickMarker(o.x, o.z, 0x9cc0ff)
         return true
@@ -260,7 +317,21 @@ export function GameScreen({ match, onExit }: Props) {
         }, 520)
       }
     }
+    // A drag must never outlive the button. The release can go missing (a hitch,
+    // a context menu, letting go outside the window), so any sign that no button
+    // is held any more ends it.
+    const endDrag = () => {
+      down = null
+      pinch = null
+      pointers.clear()
+      cancelLongPress()
+      host.style.cursor = 'default'
+    }
     const onMove = (e: PointerEvent) => {
+      if (e.pointerType === 'mouse' && down && e.buttons === 0) {
+        endDrag()
+        return
+      }
       if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
       if (pinch && pointers.size >= 2) {
         const now = pinchState()
@@ -326,10 +397,16 @@ export function GameScreen({ match, onExit }: Props) {
       const g = renderer.groundAt(e.clientX, e.clientY)
       renderer.cam.zoomBy(Math.exp(e.deltaY * 0.0012), g ?? undefined)
     }
+    const onLost = (e: PointerEvent) => {
+      if (e.pointerType === 'mouse' && down && e.buttons === 0) endDrag()
+    }
     host.addEventListener('pointerdown', onDown)
     host.addEventListener('pointermove', onMove)
     host.addEventListener('pointerup', onUp)
     host.addEventListener('pointercancel', onUp)
+    host.addEventListener('lostpointercapture', onLost)
+    window.addEventListener('blur', endDrag)
+    window.addEventListener('pointerup', onLost)
     host.addEventListener('contextmenu', onContext)
     host.addEventListener('wheel', onWheel, { passive: false })
     return () => {
@@ -338,6 +415,9 @@ export function GameScreen({ match, onExit }: Props) {
       host.removeEventListener('pointermove', onMove)
       host.removeEventListener('pointerup', onUp)
       host.removeEventListener('pointercancel', onUp)
+      host.removeEventListener('lostpointercapture', onLost)
+      window.removeEventListener('blur', endDrag)
+      window.removeEventListener('pointerup', onLost)
       host.removeEventListener('contextmenu', onContext)
       host.removeEventListener('wheel', onWheel)
     }
@@ -365,6 +445,10 @@ export function GameScreen({ match, onExit }: Props) {
         setShowHelp((v) => !v)
         return
       }
+      if (e.code === 'KeyV') {
+        toggleView()
+        return
+      }
       if (showHelp) return
       switch (e.code) {
         case 'KeyF':
@@ -379,7 +463,7 @@ export function GameScreen({ match, onExit }: Props) {
           return
         case 'Tab': {
           e.preventDefault()
-          const mine = engine.state.armies.filter((a) => a.faction === PLAYER)
+          const mine = engine.state.armies.filter((a) => a.faction === PLAYER && !a.vassalOf)
           if (mine.length === 0) return
           const i = selection?.kind === 'army' ? mine.findIndex((a) => a.id === selection.id) : -1
           select({ kind: 'army', id: mine[(i + 1) % mine.length].id }, true)
@@ -398,7 +482,7 @@ export function GameScreen({ match, onExit }: Props) {
       window.removeEventListener('keyup', onUp)
       window.removeEventListener('blur', onBlur)
     }
-  }, [renderer, engine, selection, formArmy, showLog, showHelp, confirmLeave, select])
+  }, [renderer, engine, selection, formArmy, showLog, showHelp, confirmLeave, select, toggleView])
 
   // Drop the selection when the selected army disappears.
   useEffect(() => {
@@ -437,6 +521,8 @@ export function GameScreen({ match, onExit }: Props) {
         onQuit={leave}
         onToggleLog={() => setShowLog((v) => !v)}
         onHelp={() => setShowHelp(true)}
+        overhead={overhead}
+        onToggleView={toggleView}
         onMenu={() => setSidebarOpen((v) => !v)}
         campaignName={match.name}
       />
@@ -506,7 +592,6 @@ export function GameScreen({ match, onExit }: Props) {
         </div>
       )}
 
-      <DeployGate engine={engine} />
 
       {gfxLost && !gfxError && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70">
@@ -594,8 +679,3 @@ function Stat({ label, value }: { label: string; value: string | number }) {
   )
 }
 
-/** Shows the siege planning screen until the player commits to a plan. */
-function DeployGate({ engine }: { engine: GameEngine }) {
-  useEngine(engine)
-  return engine.state.rules.deployPending ? <SiegeDeployModal engine={engine} /> : null
-}
