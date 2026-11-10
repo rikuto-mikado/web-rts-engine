@@ -1,13 +1,32 @@
-import { biomeOf, type Biome } from './biomes'
+import { CLIMATES, biomeOf, mapOf, zoneWeights, type Biome, type Climate, type ClimateRules, type MapDef } from './biomes'
 import { Simplex, clamp, lerp, smoothstep } from './noise'
 import type { Scenario, ScenarioDefinition } from './types'
 
 export const NAV_CELL = 20
 export const WATER_LEVEL = 0
 export const BRIDGE_DECK = 7
+/** Wading a ford: slow, and no charging or squares in the water. */
+export const FORD_SPEED = 0.6
+
+/** Castles are walled compounds about 3.5x the old footprint, with a gate on each side. */
+export const CASTLE_SCALE = 1.9
+/** Half-width of a gate passage through the walls. */
+export const GATE_HALF = 18
 
 export function castleRadius(tier: number): number {
-  return 34 + tier * 12
+  return (34 + tier * 12) * CASTLE_SCALE
+}
+/** Radius of the curtain wall (armies pass it only through the four gates). */
+export function wallRadius(tier: number): number {
+  return castleRadius(tier) * 0.78
+}
+/** Villages and other small holdings: open compounds about 40-50% of a tier-1 castle's area. */
+export function villageRadius(tier: number): number {
+  return 56 + (tier - 1) * 10
+}
+/** Footprint of any holding. */
+export function holdingRadius(c: { tier: number; village?: boolean }): number {
+  return c.village ? villageRadius(c.tier) : castleRadius(c.tier)
 }
 
 export interface BridgeInfo {
@@ -27,8 +46,19 @@ export class World {
   readonly size: number
   readonly half: number
   readonly def: ScenarioDefinition
-  readonly bridges: BridgeInfo[]
+  /** Bridges engineers have thrown across rivers during the game (indices are stable; demolished ones stay as `broken`). */
+  readonly bridges: BridgeInfo[] = []
+  /** Shallow fords where the map's rivers can be waded (slowly). They cannot be destroyed. */
+  readonly fords: BridgeInfo[]
+  /** The map's own bridges: built to last in the style of the land, and never burned. */
+  readonly stoneBridges: BridgeInfo[]
   readonly biome: Biome
+  /** The map's layout: three climate zones (see biomes.ts). */
+  readonly map: MapDef
+  private readonly climates: [Climate, Climate, Climate]
+  /** Zone weights per height cell (3 per cell, summing to 1). */
+  readonly zones: Float32Array
+  private zoneNoise: Simplex
 
   private noise: Simplex
   private detail: Simplex
@@ -48,15 +78,21 @@ export class World {
     this.half = this.size / 2
     this.def = scenario.definition
     this.biome = biomeOf(scenario.definition.biome)
+    this.map = mapOf(scenario.definition.biome)
+    this.climates = this.map.zones.map((k) => CLIMATES[k]) as [Climate, Climate, Climate]
+    this.zoneNoise = new Simplex(scenario.seed + 303)
     this.noise = new Simplex(scenario.seed)
     this.detail = new Simplex(scenario.seed + 17)
     this.forestNoise = new Simplex(scenario.seed + 101)
-    this.bridges = this.def.bridges.map((b) => this.buildBridge(b.x, b.z))
+    this.fords = this.def.bridges.filter((b) => b.ford).map((b) => this.spanAt(b.x, b.z))
+    this.stoneBridges = this.def.bridges.filter((b) => !b.ford).map((b) => this.spanAt(b.x, b.z))
 
-    this.cell = this.size <= 2600 ? 10 : 14
+    // Keep the terrain mesh under ~600 x 600 vertices on the biggest maps.
+    this.cell = this.size <= 2600 ? 10 : Math.max(14, Math.ceil(this.size / 600))
     this.hRes = Math.round(this.size / this.cell) + 1
     this.heights = new Float32Array(this.hRes * this.hRes)
     this.forest = new Float32Array(this.hRes * this.hRes)
+    this.zones = new Float32Array(this.hRes * this.hRes * 3)
     for (let j = 0; j < this.hRes; j++) {
       for (let i = 0; i < this.hRes; i++) {
         const x = -this.half + i * this.cell
@@ -69,10 +105,24 @@ export class World {
       for (let i = 0; i < this.hRes; i++) {
         const x = -this.half + i * this.cell
         const z = -this.half + j * this.cell
+        const n = this.zoneNoise.fbm(x * 0.0011, z * 0.0011, 3) * 1.6
+        const w = zoneWeights(this.map.key, x / this.half, z / this.half, n)
+        const sum = w[0] + w[1] + w[2] || 1
+        const k = (j * this.hRes + i) * 3
+        this.zones[k] = w[0] / sum
+        this.zones[k + 1] = w[1] / sum
+        this.zones[k + 2] = w[2] / sum
+      }
+    }
+    for (let j = 0; j < this.hRes; j++) {
+      for (let i = 0; i < this.hRes; i++) {
+        const x = -this.half + i * this.cell
+        const z = -this.half + j * this.cell
         this.forest[j * this.hRes + i] = this.computeForest(x, z, this.heights[j * this.hRes + i])
       }
     }
 
+    for (const c of this.def.castles) if (!c.village) this.walls.set(c.id, { x: c.x, z: c.z, r: wallRadius(c.tier) })
     this.navRes = Math.round(this.size / NAV_CELL)
     this.navCost = new Float32Array(this.navRes * this.navRes)
     this.buildNav()
@@ -143,8 +193,19 @@ export class World {
     for (const lake of this.def.lakes) {
       const d = Math.hypot(x - lake.x, z - lake.z) + this.detail.noise(x * 0.012, z * 0.012) * 14
       if (d < lake.r + 70) {
-        h = lerp(-8, h, smoothstep(lake.r * 0.6, lake.r + 70, d))
+        // Big waters (the sea) get a short, sharp shore instead of a shallow fade across half their size.
+        h = lerp(-8, h, smoothstep(Math.max(lake.r * 0.6, lake.r - 220), lake.r + 70, d))
       }
+    }
+
+    // Fords: a shallow, stony bed just under the surface.
+    for (const f of this.fords) {
+      const dx = x - f.x
+      const dz = z - f.z
+      const along = dx * f.dirX + dz * f.dirZ
+      const across = -dx * f.dirZ + dz * f.dirX
+      const t = Math.max(Math.abs(along) / (f.length / 2 + 10), Math.abs(across) / (f.width / 2 + 34))
+      if (t < 1) h = Math.max(h, lerp(-1.2, h, smoothstep(0.55, 1, t)))
     }
 
     // Raise the map edge into hills so the world feels bounded.
@@ -159,21 +220,27 @@ export class World {
     // No woods inside a fortress.
     for (const w of this.def.walls ?? []) if (Math.hypot(x - w.x, z - w.z) < w.r + 90) return 0
     let f = this.forestNoise.fbm(x * 0.0035, z * 0.0035, 3)
-    f = smoothstep(0.62 - this.def.forest_density * 0.55, 0.75 - this.def.forest_density * 0.5, f)
+    // Each climate is more or less wooded than the map as a whole.
+    const zi = this.zoneIndex(x, z)
+    const wood = this.zones[zi] * this.climates[0].forest + this.zones[zi + 1] * this.climates[1].forest + this.zones[zi + 2] * this.climates[2].forest
+    if (wood < 0.02) return 0
+    const density = clamp(this.def.forest_density * wood, 0, 0.98)
+    f = smoothstep(0.62 - density * 0.55, 0.75 - density * 0.5, f)
     if (f <= 0) return 0
     for (const c of this.def.castles) {
       const d = Math.hypot(x - c.x, z - c.z)
       const R = castleRadius(Math.min(4, c.tier + 1))
       f *= smoothstep(R * 1.4, R * 2.3, d)
     }
-    for (const b of this.bridges) {
+    for (const b of [...this.fords, ...this.stoneBridges]) {
       f *= smoothstep(60, 140, Math.hypot(x - b.x, z - b.z))
     }
     f *= smoothstep(4, 10, h)
     return f
   }
 
-  private buildBridge(bx: number, bz: number): BridgeInfo {
+  /** The span across the nearest river at a point (a ford strip or a bridge deck). */
+  spanAt(bx: number, bz: number): BridgeInfo {
     // Find river direction at the nearest segment; the deck spans perpendicular to it.
     let best = Infinity
     let dir = [1, 0]
@@ -245,7 +312,38 @@ export class World {
     this.components = null
   }
 
+  /** Throw a new bridge across the river at this point; returns its index. */
+  addBridge(x: number, z: number): number {
+    this.bridges.push(this.spanAt(x, z))
+    const index = this.bridges.length - 1
+    this.setBridgeBroken(index, false)
+    return index
+  }
+
+  fordAt(x: number, z: number, margin = 0): BridgeInfo | null {
+    for (const f of this.fords) {
+      const dx = x - f.x
+      const dz = z - f.z
+      const along = dx * f.dirX + dz * f.dirZ
+      const across = -dx * f.dirZ + dz * f.dirX
+      if (Math.abs(along) < f.length / 2 + margin && Math.abs(across) < f.width / 2 + 20 + margin) return f
+    }
+    return null
+  }
+
+  /** Every place an army can cross a river: fords and standing bridges. */
+  crossings(): BridgeInfo[] {
+    return [...this.fords, ...this.stoneBridges, ...this.bridges.filter((_, i) => !this.broken.has(i))]
+  }
+
   bridgeAt(x: number, z: number, margin = 0): BridgeInfo | null {
+    for (const b of this.stoneBridges) {
+      const dx = x - b.x
+      const dz = z - b.z
+      const along = dx * b.dirX + dz * b.dirZ
+      const across = -dx * b.dirZ + dz * b.dirX
+      if (Math.abs(along) < b.length / 2 + margin && Math.abs(across) < b.width / 2 + margin) return b
+    }
     for (let k = 0; k < this.bridges.length; k++) {
       if (this.broken.has(k)) continue
       const b = this.bridges[k]
@@ -275,9 +373,10 @@ export class World {
   /** Movement speed multiplier at a point. */
   speedAt(x: number, z: number): number {
     if (this.bridgeAt(x, z)) return 1
+    if (this.fordAt(x, z)) return FORD_SPEED
     const f = this.forestAt(x, z)
     const s = this.slopeAt(x, z)
-    return clamp(1 - f * 0.35 - s * 0.6, 0.45, 1.1)
+    return clamp(1 - f * 0.35 - s * 0.6, 0.45, 1.1) * this.rulesAt(x, z).speed
   }
 
   /** Defensive multiplier for troops standing here (forests and hills help). */
@@ -289,8 +388,56 @@ export class World {
   // Colours (used by terrain mesh and minimap)
   // -------------------------------------------------------------------------
 
+  /** Index of the zone weights for the height cell nearest a point. */
+  private zoneIndex(x: number, z: number): number {
+    const i = clamp(Math.round((x + this.half) / this.cell), 0, this.hRes - 1)
+    const j = clamp(Math.round((z + this.half) / this.cell), 0, this.hRes - 1)
+    return (j * this.hRes + i) * 3
+  }
+  /** Weights of the map's three climates at a point. */
+  zoneWeightsAt(x: number, z: number): [number, number, number] {
+    const k = this.zoneIndex(x, z)
+    return [this.zones[k], this.zones[k + 1], this.zones[k + 2]]
+  }
+  /** The climate that holds sway at a point. */
+  climateAt(x: number, z: number): Climate {
+    const k = this.zoneIndex(x, z)
+    const a = this.zones[k]
+    const b = this.zones[k + 1]
+    const c = this.zones[k + 2]
+    return a >= b && a >= c ? this.climates[0] : b >= c ? this.climates[1] : this.climates[2]
+  }
+  /** The local rules of the ground (supply, speed, mud, winter). */
+  rulesAt(x: number, z: number): ClimateRules {
+    return this.climateAt(x, z).rules
+  }
+  private pal = { grassA: [0, 0, 0], grassB: [0, 0, 0], forestFloor: [0, 0, 0], sand: [0, 0, 0], rock: [0, 0, 0], earth: [0, 0, 0], snowLine: 0, snowCover: 0 }
+  /** The three climates' palettes blended by their weights here. */
+  private paletteAt(x: number, z: number) {
+    const k = this.zoneIndex(x, z)
+    const w = [this.zones[k], this.zones[k + 1], this.zones[k + 2]]
+    const P = this.pal
+    for (const key of ['grassA', 'grassB', 'forestFloor', 'sand', 'rock', 'earth'] as const) {
+      const o = P[key]
+      o[0] = o[1] = o[2] = 0
+      for (let z2 = 0; z2 < 3; z2++) {
+        const src = this.climates[z2][key]
+        o[0] += src[0] * w[z2]
+        o[1] += src[1] * w[z2]
+        o[2] += src[2] * w[z2]
+      }
+    }
+    P.snowLine = 0
+    P.snowCover = 0
+    for (let z2 = 0; z2 < 3; z2++) {
+      P.snowLine += Math.min(400, this.climates[z2].snowLine) * w[z2]
+      P.snowCover += this.climates[z2].snowCover * w[z2]
+    }
+    return P
+  }
+
   colorAt(x: number, z: number, out: [number, number, number]): [number, number, number] {
-    const B = this.biome
+    const B = this.paletteAt(x, z)
     const h = this.heightAt(x, z)
     const slope = this.slopeAt(x, z)
     const n = this.detail.noise(x * 0.004, z * 0.004)
@@ -372,6 +519,52 @@ export class World {
     }
   }
 
+  /** Castle curtain walls (by castle id): impassable except at the four gates (N, E, S, W). */
+  readonly walls = new Map<string, { x: number; z: number; r: number }>()
+
+  /** On a castle's wall band, outside the gate passages? */
+  onCastleWall(x: number, z: number): boolean {
+    for (const w of this.walls.values()) {
+      const dx = x - w.x
+      const dz = z - w.z
+      if (Math.abs(dx) > w.r + 14 || Math.abs(dz) > w.r + 14) continue
+      const d = Math.hypot(dx, dz)
+      if (Math.abs(d - w.r) > 13) continue
+      if (Math.abs(dx) < GATE_HALF || Math.abs(dz) < GATE_HALF) continue // a gate passage
+      return true
+    }
+    return false
+  }
+
+  /** The gate of a castle nearest to a point (where armies come and go). */
+  gateOf(castleId: string, towardX: number, towardZ: number): [number, number] | null {
+    const w = this.walls.get(castleId)
+    if (!w) return null
+    const dx = towardX - w.x
+    const dz = towardZ - w.z
+    const r = w.r + 26
+    return Math.abs(dx) > Math.abs(dz) ? [w.x + Math.sign(dx || 1) * r, w.z] : [w.x, w.z + Math.sign(dz || 1) * r]
+  }
+
+  /** A castle grew (or a save restored its tier): move its walls and replan the cells around. */
+  setCastleTier(castleId: string, tier: number) {
+    const w = this.walls.get(castleId)
+    if (!w) return
+    const before = w.r
+    w.r = wallRadius(tier)
+    if (before === w.r || !this.navCost.length) return
+    const reach = Math.max(before, w.r) + 30
+    const [i0, j0] = this.navIndex(w.x - reach, w.z - reach)
+    const [i1, j1] = this.navIndex(w.x + reach, w.z + reach)
+    const R = this.navRes
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        this.navCost[j * R + i] = this.cellCost(-this.half + (i + 0.5) * NAV_CELL, -this.half + (j + 0.5) * NAV_CELL)
+      }
+    }
+    this.components = null
+  }
+
   /** True if the point lies on a curtain wall (outside its gate openings). */
   onWall(x: number, z: number, pad = 0): boolean {
     for (const w of this.def.walls ?? []) {
@@ -389,7 +582,9 @@ export class World {
     const edge = Math.max(Math.abs(x), Math.abs(z))
     if (edge > this.half - 60) return 0
     if (this.onWall(x, z, 4)) return 0
+    if (this.onCastleWall(x, z)) return 0
     if (this.bridgeAt(x, z, 6)) return 1
+    if (this.fordAt(x, z, 4)) return 2.2
     const h = this.heightAt(x, z)
     if (h < 2.5) return 0
     if (h > 125) return 0

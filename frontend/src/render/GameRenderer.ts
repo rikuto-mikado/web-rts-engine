@@ -4,7 +4,7 @@ import { FORMATIONS } from '../game/formations'
 import { clamp } from '../game/noise'
 import { fmt, totalInt } from '../game/troops'
 import type { Army, Castle, GameEvent } from '../game/types'
-import { castleRadius } from '../game/world'
+import { holdingRadius } from '../game/world'
 import { ArmyRenderer } from './armies'
 import { RTSCamera } from './camera'
 import { CastleView } from './castles'
@@ -13,7 +13,7 @@ import { ConvoyRenderer } from './convoys'
 import { ObstacleRenderer } from './obstacles'
 import { SiteRenderer } from './sites'
 import { ParticleSystem } from './particles'
-import { buildBridges, buildSkirt, buildTerrain, buildTown, buildVegetation, buildWalls, buildWater } from './terrain'
+import { bridgeMesh, buildBridges, buildFords, buildSkirt, buildStoneBridges, buildTerrain, buildTown, buildVegetation, buildWalls, buildWater } from './terrain'
 import { visionUniforms } from './vision'
 import { makePaintTexture } from './paint'
 import { Diorama } from './postfx'
@@ -141,6 +141,8 @@ export class GameRenderer {
     this.scene.add(buildVegetation(world))
     this.bridgeGroup = buildBridges(world)
     this.scene.add(this.bridgeGroup)
+    this.scene.add(buildFords(world))
+    this.scene.add(buildStoneBridges(world))
     this.scene.add(buildWalls(world))
     this.scene.add(buildTown(world))
 
@@ -533,9 +535,10 @@ export class GameRenderer {
     }
   }
 
-  /** Burned bridges vanish in fire and smoke; rebuilt ones reappear. */
+  /** New engineers' bridges appear; demolished ones go down in fire and smoke. */
   private updateBridges() {
     const world = this.engine.world
+    while (this.bridgeGroup.children.length < world.bridges.length) this.bridgeGroup.add(bridgeMesh(world.bridges[this.bridgeGroup.children.length]))
     world.bridges.forEach((b, i) => {
       const mesh = this.bridgeGroup.children[i]
       if (!mesh) return
@@ -557,6 +560,20 @@ export class GameRenderer {
   private consumeEvents() {
     const world = this.engine.world
     for (const ev of this.pendingEvents) {
+      if (ev.type === 'blast') {
+        // Pitch barrels go up: a fireball, sparks and a column of black smoke.
+        if (!this.engine.isVisible(ev.x, ev.z)) continue
+        const y0 = world.surfaceAt(ev.x, ev.z)
+        for (let k = 0; k < 140; k++) {
+          const a = Math.random() * Math.PI * 2
+          const r = Math.random() * 40
+          this.glow.spawn({ x: ev.x + Math.cos(a) * r, y: y0 + 3, z: ev.z + Math.sin(a) * r, vx: Math.cos(a) * (10 + Math.random() * 30), vy: 20 + Math.random() * 45, vz: Math.sin(a) * (10 + Math.random() * 30), gravity: 30, life: 0.6 + Math.random() * 0.9, size: 3 + Math.random() * 3, color: Math.random() < 0.5 ? 0xff7a2a : 0xffd27a })
+        }
+        for (let k = 0; k < 40; k++) {
+          this.dust.spawn({ x: ev.x + (Math.random() - 0.5) * 50, y: y0 + 6, z: ev.z + (Math.random() - 0.5) * 50, vx: (Math.random() - 0.5) * 6, vy: 12 + Math.random() * 10, vz: (Math.random() - 0.5) * 6, gravity: -2, life: 3 + Math.random() * 2, size: 10, grow: 8, drag: 0.5, color: 0x2a2420, alpha: 0.55 })
+        }
+        continue
+      }
       if (ev.type === 'hit') {
         if (!this.engine.isVisible(ev.x, ev.z)) continue
         const y = world.surfaceAt(ev.x, ev.z)
@@ -598,7 +615,7 @@ export class GameRenderer {
         const c = this.engine.castle(t.id)
         if (!c) return
         ring.position.set(c.x, this.engine.world.heightAt(c.x, c.z) + 1.5, c.z)
-        ring.scale.setScalar(castleRadius(c.tier) * 1.05)
+        ring.scale.setScalar(holdingRadius(c) * 1.05)
       } else {
         const o = this.engine.outpost(t.id)
         if (!o) return
@@ -663,15 +680,15 @@ export class GameRenderer {
       if (m.team !== 'A') continue
       if (m.phase === 'gathering') marks.push({ x: m.rallyX, z: m.rallyZ, r: 60, color: 0x4fd1c5 })
       const t = engine.castle(m.targetCastleId)
-      if (t) marks.push({ x: t.x, z: t.z, r: castleRadius(t.tier) * 1.7, color: 0x4fd1c5 })
+      if (t) marks.push({ x: t.x, z: t.z, r: holdingRadius(t) * 1.3, color: 0x4fd1c5 })
     }
     const now = engine.state.time
     const call = engine.state.callToArms
     const focusA = call && call.until > now ? call : engine.state.teamFocus.A && engine.state.teamFocus.A.until > now ? engine.state.teamFocus.A : null
     const fa = engine.castle(focusA?.castleId)
-    if (fa) marks.push({ x: fa.x, z: fa.z, r: castleRadius(fa.tier) * 1.5, color: 0xf5c542 })
+    if (fa) marks.push({ x: fa.x, z: fa.z, r: holdingRadius(fa) * 1.2, color: 0xf5c542 })
     const fb = engine.castle(engine.state.teamFocus.B?.castleId)
-    if (fb && engine.state.rules.mode === 'alliance' && engine.state.teamFocus.B!.until > now) marks.push({ x: fb.x, z: fb.z, r: castleRadius(fb.tier) * 1.5, color: 0xff4433 })
+    if (fb && engine.state.rules.mode === 'alliance' && engine.state.teamFocus.B!.until > now) marks.push({ x: fb.x, z: fb.z, r: holdingRadius(fb) * 1.2, color: 0xff4433 })
     while (this.markerPool.length < marks.length) {
       const g = new THREE.RingGeometry(0.88, 1, 56)
       g.rotateX(-Math.PI / 2)
@@ -754,7 +771,7 @@ export class GameRenderer {
       const id = `c:${c.id}`
       seen.add(id)
       const l = this.label(id, 'map-label castle-label')
-      const p = this.toScreen(c.x, world.heightAt(c.x, c.z) + castleRadius(c.tier) * 1.25 + 18, c.z)
+      const p = this.toScreen(c.x, world.heightAt(c.x, c.z) + (c.village ? holdingRadius(c) * 0.9 : 70 + c.tier * 12) + 18, c.z)
       l.el.style.display = p.visible && (c.faction === PLAYER || engine.isExplored(c.x, c.z)) ? '' : 'none'
       l.el.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -100%) scale(${zoomFade})`
       if (refreshContent) {

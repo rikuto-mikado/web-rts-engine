@@ -50,7 +50,7 @@ import type {
   Troops,
   UnitType,
 } from './types'
-import { World, castleRadius } from './world'
+import { World, holdingRadius, wallRadius, type BridgeInfo } from './world'
 
 export const TICK = 0.1
 const ENGAGE_DIST = 46
@@ -59,7 +59,12 @@ const CASUALTY_K = 0.026
 export const WALL_K = 0.12
 const FIELD_UPKEEP = 0.004
 /** The whole map is visible: planning and reading the war matter more than scouting. */
-export const FOG_OF_WAR = true
+/**
+ * No fog over the map: land, holdings, wagons and armies are visible to everyone.
+ * What stays hidden is local: troops lying hidden (woods, lodges) are invisible to
+ * the other side, player and AI alike, until someone comes close (see canSee).
+ */
+export const FOG_OF_WAR = false
 export const PLAYER = 'player'
 export const NEUTRAL = 'neutral'
 const HIDE_SECONDS = 8
@@ -82,19 +87,30 @@ export const DEPOT = {
   alarmDist: 170,
 }
 
-/** Engineers' field works: obstacles and bridges. */
+/** Engineers' field works: obstacles, traps and simple bridges. */
 export const WORKS: Record<WorkJob, { name: string; cost: number; engineers: number; seconds: number; description: string }> = {
-  abatis: { name: 'Abatis', cost: 120, engineers: 10, seconds: 10, description: 'Felled trees, branches outward. Enemies inside move at half speed until they hack a way through.' },
   stakes: { name: 'Spike stakes', cost: 90, engineers: 10, seconds: 8, description: 'Rows of sharpened stakes. Charges against troops standing among them fail.' },
-  burn: { name: 'Burn the bridge', cost: 0, engineers: 10, seconds: 18, description: 'Nobody crosses here until it is rebuilt. Locals rebuild it in 5 minutes.' },
-  repair: { name: 'Rebuild the bridge', cost: 200, engineers: 15, seconds: 40, description: 'Put a burned bridge back into service.' },
+  pit: { name: 'Mud pit & caltrops', cost: 100, engineers: 10, seconds: 8, description: 'A hidden trap: enemies only see it within 100m. Whoever blunders in is slowed to a crawl, cannot charge and takes 20% more losses.' },
+  barricade: { name: 'Road barricade', cost: 80, engineers: 10, seconds: 10, description: 'Logs and carts across the way. Enemy wagons cannot pass; enemy armies are held about 12 seconds hacking through. Friends pass freely.' },
+  pitch: { name: 'Pitch barrels', cost: 150, engineers: 15, seconds: 10, description: 'Buried barrels that burst into flame under the first enemy to step on them: few deaths, but a sharp blow to morale. Hidden; one use.' },
+  bridge: { name: 'Build a bridge', cost: 250, engineers: 15, seconds: 40, description: 'A simple timber bridge across the river here. Anyone may cross it, and enemy engineers can pull it down.' },
+  demolish: { name: 'Demolish the bridge', cost: 0, engineers: 10, seconds: 15, description: 'Pull down an engineers\' bridge. The river\'s fords cannot be destroyed.' },
 }
 export const OBSTACLE = {
-  abatis: { radius: 75, slow: 0.45, life: 300 },
   stakes: { radius: 65, life: 420 },
+  pit: { radius: 70, life: 300, slow: 0.35, taken: 1.2 },
+  barricade: { radius: 42, life: 600, hp: 12 },
+  pitch: { radius: 60, life: 600, blast: 120, morale: 18, losses: 0.05 },
+  /** Hidden traps show to an enemy army only this close. */
+  reveal: 100,
   maxPerFaction: 6,
-  bridgeDown: 300,
+  /** Engineers' bridges a realm may have standing at once. */
+  maxBridges: 4,
+  /** Widest river engineers can span. */
+  maxSpan: 300,
 }
+/** Sapping: 15+ engineers in a siege undermine the walls, stopping their repair for this long. */
+export const SAPPING = { engineers: 15, seconds: 180 }
 
 /** Villages: small holdings won by negotiation (or plundered). Index by tier: 1 = palisade, 2 = stone wall. */
 export const VILLAGE = {
@@ -119,6 +135,9 @@ export const VILLAGE = {
   envoyArmyReach: 420,
   envoyCastleReach: 1100,
 }
+
+/** Hidden troops: how close the other side must come to find them. */
+export const STEALTH = { uncover: 200, towerUncover: 400 }
 
 /** Calls for aid: allies send men to stand in a threatened castle. */
 export const AID = {
@@ -255,6 +274,8 @@ interface Force {
   castle: Castle | null
   /** Attacking from behind an enemy already locked in combat. */
   flank: boolean
+  /** Bogged in a mud pit or wading a ford: cannot charge, takes more losses. */
+  mired?: boolean
 }
 
 /** Transient (non-serialised) per-battle accumulators for visual effects. */
@@ -275,6 +296,12 @@ const DEFAULT_FACTIONS: FactionDef[] = [
 export class GameEngine {
   state: GameState
   readonly world: World
+  /** Castle spacing relative to the original maps (scales the AI's sense of 'near' and 'far'). */
+  spread = 1
+  /** Reach of envoys, calls for aid and village relief, by map size. */
+  reach = 1
+  /** Marching pace: armies and wagons move a little faster on widely spread maps, so wars do not drag. */
+  pace = 1
   readonly content: GameContent
   readonly scenario: Scenario
   readonly units: Map<string, UnitType>
@@ -304,6 +331,29 @@ export class GameEngine {
     this.state = state
     this.scenario = state.scenario
     this.world = world ?? new World(this.scenario)
+    // How spread out the castles are compared with the original layouts (about 680 between neighbours).
+    // AI judgement distances scale with it; reach (envoys, aid, relief) grows with the map's size.
+    {
+      const cs = state.castles.filter((c) => !c.village)
+      let acc = 0
+      for (const c of cs) {
+        let best = Infinity
+        for (const d of cs) if (d !== c) best = Math.min(best, Math.hypot(c.x - d.x, c.z - d.z))
+        if (best < Infinity) acc += best
+      }
+      this.spread = clamp(cs.length > 1 ? acc / cs.length / 680 : 1, 1, 2.5)
+      this.reach = clamp(this.world.size / 3000, 1, 3.5)
+      this.pace = Math.pow(this.spread, 0.6)
+    }
+    // Castles that grew since the map was made: their walls stand farther out.
+    for (const c of state.castles) if (!c.village) this.world.setCastleTier(c.id, c.tier)
+    // Engineers' bridges from a saved game (indices must line up with the save).
+    if (this.world.bridges.length === 0) {
+      for (const b of state.builtBridges ?? []) {
+        const i = this.world.addBridge(b.x, b.z)
+        if (b.broken) this.world.setBridgeBroken(i, true)
+      }
+    }
     this.unitList = content.unit_types
     this.units = new Map(content.unit_types.map((u) => [u.key, u]))
     this.commanders = new Map(content.commanders.map((c) => [c.key, c]))
@@ -410,7 +460,7 @@ export class GameEngine {
       obstacles: [],
       sites: country.sites,
       intel: {},
-      brokenBridges: [],
+      builtBridges: [],
       commanders,
       chronicle: [],
       explored: '',
@@ -518,7 +568,21 @@ export class GameEngine {
   }
   armySpeed(army: Army): number {
     const fm = army.column ? COLUMN.speed : FORMATIONS[army.formation].speed
-    return armySpeed(army.troops, this.units, this.commanderOf(army)) * fm * this.traitsOf(army).speed * this.climate().speed
+    return armySpeed(army.troops, this.units, this.commanderOf(army)) * fm * this.traitsOf(army).speed * this.groundSeasonSpeed(army.x, army.z) * this.pace
+  }
+  /** Season and weather slow-down where an army stands: geothermal ground shrugs off winter, ice makes it worse. */
+  groundSeasonSpeed(x: number, z: number): number {
+    const e = this.climate()
+    if (seasonAt(this.state.time) !== 'Winter') return e.speed
+    const w = this.world.rulesAt(x, z).winter
+    return w === 'immune' ? e.speed / 0.82 : w === 'harsh' ? e.speed * 0.85 : e.speed
+  }
+  /** Supply reach of a castle or depot standing here: deserts stretch it; winter shrinks it, more on ice, not at all on warm ground. */
+  groundSupply(x: number, z: number, seasonal: number): number {
+    const r = this.world.rulesAt(x, z)
+    let s = seasonal
+    if (seasonAt(this.state.time) === 'Winter') s = r.winter === 'immune' ? 1 : r.winter === 'harsh' ? seasonal * 0.8 : seasonal
+    return s * r.supply
   }
   traitsOf(army: Army): TraitMods {
     return army.commanderKey ? combineTraits(this.state.commanders[army.commanderKey]?.traits) : NO_TRAITS
@@ -559,12 +623,67 @@ export class GameEngine {
   }
   supplyRange(c: Castle): number {
     if (c.ruined) return 0
-    if (c.village) return 380
-    return 520 + c.tier * 90
+    if (c.village) return 380 * this.spread
+    return (520 + c.tier * 90) * this.spread
   }
 
   garrisonPower(c: Castle): number {
     return power(c.garrison, this.units) * (c.walls > 0 ? 1.6 : 1.15)
+  }
+
+  // -------------------------------------------------------------------------
+  // What each side can see and know (the same rules for the player and the AI)
+  // -------------------------------------------------------------------------
+
+  /** How close an army must come to be 'at' a friendly holding: inside the walls of a castle, beside a village. */
+  arriveDist(c: Castle): number {
+    return c.village || !this.world.walls.has(c.id) ? holdingRadius(c) + 30 : wallRadius(c.tier) * 0.45
+  }
+  /** Is this army inside the walls of a castle of its own side (and so out of sight)? */
+  insideWalls(a: Army): boolean {
+    for (const c of this.state.castles) {
+      if (c.village || this.team(c.faction) !== this.team(a.faction)) continue
+      const r = wallRadius(c.tier) - 10
+      if (Math.abs(c.x - a.x) < r && Math.abs(c.z - a.z) < r && Math.hypot(c.x - a.x, c.z - a.z) < r) return true
+    }
+    return false
+  }
+
+  /** Can this side see that army at all? Hidden troops show only to someone close by. */
+  canSee(team: Team, a: Army): boolean {
+    if (this.team(a.faction) === team || !this.isHidden(a)) return true
+    const r = STEALTH.uncover
+    for (const b of this.state.armies) if (this.team(b.faction) === team && Math.abs(b.x - a.x) < r && Math.abs(b.z - a.z) < r && Math.hypot(b.x - a.x, b.z - a.z) < r) return true
+    for (const c of this.state.castles) if (this.team(c.faction) === team && Math.hypot(c.x - a.x, c.z - a.z) < r + holdingRadius(c)) return true
+    for (const o of this.state.outposts) {
+      if (this.team(o.faction) !== team || o.progress < 1) continue
+      const reach = o.kind === 'watchtower' ? STEALTH.towerUncover : r
+      if (Math.hypot(o.x - a.x, o.z - a.z) < reach) return true
+    }
+    return false
+  }
+  /** Is this side close enough (450m) to count that force exactly? */
+  closeTo(team: Team, x: number, z: number): boolean {
+    const r = SCOUT.closeSight
+    for (const c of this.state.castles) if (this.team(c.faction) === team && Math.abs(c.x - x) < r && Math.hypot(c.x - x, c.z - z) < r) return true
+    for (const a of this.state.armies) if (this.team(a.faction) === team && Math.abs(a.x - x) < r && Math.hypot(a.x - x, a.z - z) < r) return true
+    return false
+  }
+  /** Rumour factor (about ±30%) a side has about a far-off force; changes every 90 s. */
+  rumour(team: Team, id: string): number {
+    let h = team.charCodeAt(0) * 7919
+    for (const ch of id) h = (h * 31 + ch.charCodeAt(0)) >>> 0
+    const bucket = Math.floor(this.state.time / 90)
+    return 1 + ((((h ^ (bucket * 2654435761)) >>> 0) % 1000) / 1000 - 0.5) * 0.6
+  }
+  /** An enemy army's strength as this side believes it (exact up close, a rumour farther off). */
+  perceivedArmyPower(team: Team, a: Army): number {
+    const p = this.armyPower(a)
+    return this.closeTo(team, a.x, a.z) ? p : p * this.rumour(team, a.id)
+  }
+  perceivedGarrisonPower(team: Team, c: Castle): number {
+    const p = this.garrisonPower(c)
+    return this.team(c.faction) === team || this.closeTo(team, c.x, c.z) ? p : p * this.rumour(team, c.id)
   }
   capacity(c: Castle) {
     return c.village ? VILLAGE.capacity[c.tier] ?? 300 : capacityForTier(c.tier)
@@ -627,7 +746,7 @@ export class GameEngine {
     const far = 82 + extra // larger than any castle radius + extra
     for (const c of this.state.castles) {
       if (Math.abs(c.x - x) > far || Math.abs(c.z - z) > far) continue
-      if (Math.hypot(c.x - x, c.z - z) < castleRadius(c.tier) + extra) return c
+      if (Math.hypot(c.x - x, c.z - z) < holdingRadius(c) + extra) return c
     }
     return undefined
   }
@@ -778,6 +897,14 @@ export class GameEngine {
     if (f.gold < cost) return `Needs ${cost} gold.`
     f.gold -= cost
     c.tier++
+    // The curtain wall moves out: anyone caught on the new line steps clear, and everyone replans.
+    this.world.setCastleTier(c.id, c.tier)
+    for (const a of this.state.armies) {
+      if (Math.hypot(a.x - c.x, a.z - c.z) > holdingRadius(c) + 40) continue
+      if (!this.world.isPassable(a.x, a.z)) [a.x, a.z] = this.world.nearestPassable(a.x, a.z)
+      a.path = []
+      a.pathTarget = null
+    }
     const newMax = c.village ? VILLAGE.walls[c.tier] : wallsForTier(c.tier)
     c.walls += newMax - c.maxWalls
     c.maxWalls = newMax
@@ -827,13 +954,23 @@ export class GameEngine {
     }
     for (const k in take) c.garrison[k] -= take[k]
     const name = opts.name ?? (faction === PLAYER ? this.playerArmyName(opts.commanderKey ?? null) : 'Warband')
-    const r = castleRadius(c.tier) + 34
     let ang = Math.atan2(-c.z, -c.x)
     if (opts.order && 'castleId' in opts.order) {
       const t = this.castle(opts.order.castleId)
       if (t) ang = Math.atan2(t.z - c.z, t.x - c.x)
     }
-    const [sx, sz] = this.world.nearestPassable(c.x + Math.cos(ang) * r, c.z + Math.sin(ang) * r)
+    // A walled castle: the army forms in the bailey and marches out through a gate.
+    // A village has no walls: they gather just outside it.
+    const walled = !c.village && this.world.walls.has(c.id)
+    const r = walled ? 0 : holdingRadius(c) + 34
+    const [sx, sz] = walled ? [c.x, c.z] : this.world.nearestPassable(c.x + Math.cos(ang) * r, c.z + Math.sin(ang) * r)
+    if (walled && !opts.order) {
+      const g = this.world.gateOf(c.id, c.x + Math.cos(ang) * 1000, c.z + Math.sin(ang) * 1000)
+      if (g) {
+        const [gx, gz] = this.world.nearestPassable(g[0] + Math.cos(ang) * 40, g[1] + Math.sin(ang) * 40)
+        opts = { ...opts, order: { type: 'move', x: gx, z: gz } }
+      }
+    }
     const army: Army = {
       id: this.newId('a'),
       name,
@@ -1038,18 +1175,33 @@ export class GameEngine {
 
   // --- Engineers' field works ---------------------------------------------------
 
-  /** Bridge (index) within reach of a point, intact or burned. */
-  bridgeNear(x: number, z: number, within = 90): { index: number; broken: boolean } | null {
-    let best: { index: number; broken: boolean } | null = null
+  /** An engineers' bridge (index) within reach of a point that is still standing. */
+  bridgeNear(x: number, z: number, within = 90): { index: number } | null {
+    let best: { index: number } | null = null
     let bd = within
     this.world.bridges.forEach((b, index) => {
+      if (this.world.broken.has(index)) return
       const d = Math.hypot(b.x - x, b.z - z) - b.length / 2
       if (d < bd) {
         bd = d
-        best = { index, broken: this.world.broken.has(index) }
+        best = { index }
       }
     })
     return best
+  }
+
+  /** Where a new bridge would go if engineers built one from here, or why they cannot. */
+  bridgeSite(x: number, z: number): { span: BridgeInfo; reason: string | null } | null {
+    if (!this.world.def.rivers.length) return null
+    const span = this.world.spanAt(x, z)
+    const reach = Math.hypot(span.x - x, span.z - z) - span.length / 2
+    if (reach > 90) return null
+    const ends = [1, -1].map((s) => [span.x + span.dirX * s * (span.length / 2 + 14), span.z + span.dirZ * s * (span.length / 2 + 14)])
+    let reason: string | null = null
+    if (span.length > OBSTACLE.maxSpan) reason = 'The river is too wide to bridge here.'
+    else if (this.world.crossings().some((c) => Math.hypot(c.x - span.x, c.z - span.z) < 160)) reason = 'There is already a crossing close by.'
+    else if (ends.some(([ex, ez]) => !this.world.isPassable(ex, ez) || this.world.heightAt(ex, ez) < 2.5)) reason = 'The banks here are too steep or wet.'
+    return { span, reason }
   }
 
   workOptions(armyId: string): { job: WorkJob; ok: boolean; reason: string | null }[] {
@@ -1058,19 +1210,24 @@ export class GameEngine {
     const f = this.faction(a.faction)
     const eng = a.troops.engineers ?? 0
     const bridge = this.bridgeNear(a.x, a.z)
+    const site = this.bridgeSite(a.x, a.z)
     const mine = (this.state.obstacles ?? []).filter((o) => o.faction === a.faction).length
-    const jobs: WorkJob[] = ['abatis', 'stakes', 'burn', 'repair']
+    const bridges = (this.state.builtBridges ?? []).filter((b) => b.faction === a.faction && !b.broken).length
+    const jobs: WorkJob[] = ['stakes', 'pit', 'barricade', 'pitch', 'bridge', 'demolish']
     return jobs.map((job) => {
       const w = WORKS[job]
+      const ground = job === 'stakes' || job === 'pit' || job === 'barricade' || job === 'pitch'
       let reason: string | null = null
       if (a.battleId || a.status === 'retreating') reason = 'Not while fighting or retreating.'
       else if (eng < w.engineers) reason = `Needs ${w.engineers}+ Engineers.`
       else if (f && f.gold < w.cost) reason = `Needs ${w.cost} gold.`
-      else if (job === 'burn' && (!bridge || bridge.broken)) reason = 'Stand at a bridge.'
-      else if (job === 'repair' && (!bridge || !bridge.broken)) reason = 'Stand at a burned bridge.'
-      else if ((job === 'abatis' || job === 'stakes') && mine >= OBSTACLE.maxPerFaction) reason = `At most ${OBSTACLE.maxPerFaction} obstacles.`
-      else if ((job === 'abatis' || job === 'stakes') && (this.world.bridgeAt(a.x, a.z, 10) || !this.world.isPassable(a.x, a.z))) reason = 'Not on a bridge or in water.'
-      else if ((job === 'abatis' || job === 'stakes') && this.castleAt(a.x, a.z, 40)) reason = 'Too close to a castle.'
+      else if (job === 'demolish' && !bridge) reason = 'Stand at an engineers\' bridge.'
+      else if (job === 'bridge' && !site) reason = 'Stand on a river bank.'
+      else if (job === 'bridge' && site?.reason) reason = site.reason
+      else if (job === 'bridge' && bridges >= OBSTACLE.maxBridges) reason = `At most ${OBSTACLE.maxBridges} bridges.`
+      else if (ground && mine >= OBSTACLE.maxPerFaction) reason = `At most ${OBSTACLE.maxPerFaction} works in the field.`
+      else if (ground && (this.world.bridgeAt(a.x, a.z, 10) || this.world.fordAt(a.x, a.z) || !this.world.isPassable(a.x, a.z))) reason = 'Not on a bridge or in water.'
+      else if (ground && this.castleAt(a.x, a.z, 40)) reason = 'Too close to a castle.'
       return { job, ok: !reason, reason }
     })
   }
@@ -1083,13 +1240,24 @@ export class GameEngine {
     const a = this.army(armyId)!
     const w = WORKS[job]
     this.state.factions[a.faction].gold -= w.cost
-    const bridge = job === 'burn' || job === 'repair' ? (this.bridgeNear(a.x, a.z)?.index ?? null) : null
-    const b = bridge !== null ? this.world.bridges[bridge] : null
-    // Burn from our end of the bridge; rebuild from where we stand.
-    const x = b ? b.x - Math.sign((b.x - a.x) * b.dirX + (b.z - a.z) * b.dirZ || 1) * b.dirX * (b.length / 2 + 14) : a.x
-    const z = b ? b.z - Math.sign((b.x - a.x) * b.dirX + (b.z - a.z) * b.dirZ || 1) * b.dirZ * (b.length / 2 + 14) : a.z
+    let x = a.x
+    let z = a.z
+    let bridge: number | null = null
+    let tx: number | undefined
+    let tz: number | undefined
+    // Work from our own end of the span (an existing bridge, or the one to be built).
+    const span = job === 'demolish' ? this.world.bridges[(bridge = this.bridgeNear(a.x, a.z)!.index)] : job === 'bridge' ? this.bridgeSite(a.x, a.z)!.span : null
+    if (span) {
+      const side = Math.sign((a.x - span.x) * span.dirX + (a.z - span.z) * span.dirZ) || 1
+      x = span.x + side * span.dirX * (span.length / 2 + 14)
+      z = span.z + side * span.dirZ * (span.length / 2 + 14)
+      if (job === 'bridge') {
+        tx = span.x
+        tz = span.z
+      }
+    }
     const [px, pz] = this.world.nearestPassable(x, z)
-    this.orderArmy(a.id, { type: 'work', job, x: px, z: pz, bridge, progress: 0 })
+    this.orderArmy(a.id, { type: 'work', job, x: px, z: pz, bridge, progress: 0, tx, tz })
     if (a.faction === PLAYER) this.log('deploy', `${a.name}: ${w.name.toLowerCase()}`, `The engineers set to work (about ${Math.round(this.workSeconds(a, job))}s).`, px, pz)
     this.notify()
     return null
@@ -1101,66 +1269,122 @@ export class GameEngine {
     return (WORKS[job].seconds / builder) * Math.max(0.5, 1 - extra * 0.01)
   }
 
-  private finishWork(a: Army, job: WorkJob, bridge: number | null) {
+  private finishWork(a: Army, job: WorkJob, bridge: number | null, tx?: number, tz?: number) {
     const w = WORKS[job]
-    if (job === 'abatis' || job === 'stakes') {
-      const obs: Obstacle = { id: this.newId('x'), kind: job, faction: a.faction, x: a.x, z: a.z, until: this.state.time + OBSTACLE[job].life }
-      ;(this.state.obstacles ??= []).push(obs)
-      if (a.faction === PLAYER) this.log('capture', `${w.name} raised`, w.description, a.x, a.z)
-    } else if (job === 'burn' && bridge !== null) {
-      this.breakBridge(bridge, a.faction)
-    } else if (job === 'repair' && bridge !== null) {
-      this.restoreBridge(bridge)
-      if (a.faction === PLAYER) this.log('capture', 'Bridge rebuilt', 'The crossing is open again.', a.x, a.z)
+    if (job === 'bridge') {
+      if (tx === undefined || tz === undefined) return
+      const site = this.bridgeSite(tx, tz)
+      if (!site || site.reason) {
+        if (a.faction === PLAYER) this.log('warning', 'The bridge could not be finished', site?.reason ?? 'The river moved on us.', a.x, a.z)
+        return
+      }
+      const index = this.world.addBridge(tx, tz)
+      ;(this.state.builtBridges ??= []).push({ index, x: tx, z: tz, faction: a.faction, broken: false })
+      this.replanAll()
+      if (a.faction === PLAYER) this.log('capture', 'Bridge built', 'A timber bridge spans the river. Anyone may use it, and enemy engineers can pull it down.', tx, tz)
+      return
     }
+    if (job === 'demolish') {
+      if (bridge !== null) this.demolishBridge(bridge, a.faction)
+      return
+    }
+    const life = OBSTACLE[job].life
+    const obs: Obstacle = { id: this.newId('x'), kind: job, faction: a.faction, x: a.x, z: a.z, until: this.state.time + life }
+    if (job === 'barricade') obs.hp = OBSTACLE.barricade.hp
+    ;(this.state.obstacles ??= []).push(obs)
+    if (a.faction === PLAYER) this.log('capture', `${w.name} ready`, w.description, a.x, a.z)
   }
 
-  private breakBridge(index: number, by: Faction) {
-    if (this.world.broken.has(index)) return
-    this.world.setBridgeBroken(index, true)
-    ;(this.state.brokenBridges ??= []).push({ index, until: this.state.time + OBSTACLE.bridgeDown, by })
-    const b = this.world.bridges[index]
-    // Anyone on the deck scrambles to the nearest bank; everyone replans.
+  /** Every army and wagon replans its road (a crossing appeared or vanished). */
+  private replanAll() {
     for (const a of this.state.armies) {
       if (!this.world.isPassable(a.x, a.z)) [a.x, a.z] = this.world.nearestPassable(a.x, a.z)
       a.path = []
       a.pathTarget = null
     }
     for (const w of this.state.convoys ?? []) {
+      if (!this.world.isPassable(w.x, w.z)) [w.x, w.z] = this.world.nearestPassable(w.x, w.z)
       w.path = this.world.findPath(w.x, w.z, w.route[w.route.length - 1][0], w.route[w.route.length - 1][1])
     }
-    const nearUs = this.state.castles.some((c) => c.faction === PLAYER && Math.hypot(c.x - b.x, c.z - b.z) < 1500)
-    if (by === PLAYER) this.log('victory', 'The bridge burns', 'No one crosses here for five minutes, unless engineers rebuild it.', b.x, b.z)
-    else if (nearUs) this.log('warning', 'A bridge is burned', `${this.factionName(by)} fired a crossing to bar the way.`, b.x, b.z)
   }
 
-  private restoreBridge(index: number) {
-    if (!this.world.broken.has(index)) return
-    this.world.setBridgeBroken(index, false)
-    this.state.brokenBridges = (this.state.brokenBridges ?? []).filter((x) => x.index !== index)
-    for (const a of this.state.armies) {
-      a.path = []
-      a.pathTarget = null
-    }
+  private demolishBridge(index: number, by: Faction) {
+    if (this.world.broken.has(index)) return
+    this.world.setBridgeBroken(index, true)
+    const rec = (this.state.builtBridges ?? []).find((b) => b.index === index)
+    if (rec) rec.broken = true
+    this.replanAll()
+    const b = this.world.bridges[index]
+    const nearUs = this.state.castles.some((c) => c.faction === PLAYER && Math.hypot(c.x - b.x, c.z - b.z) < 1500)
+    if (by === PLAYER) this.log('victory', 'The bridge comes down', 'The timbers are in the river. Only the fords remain.', b.x, b.z)
+    else if (nearUs || rec?.faction === PLAYER) this.log('warning', 'A bridge is pulled down', `${this.factionName(by)}'s engineers wrecked the crossing.`, b.x, b.z)
+  }
+
+  /** Can this side's armies see that trap? (Hidden traps show to enemies only up close, or once sprung.) */
+  obstacleSeenBy(o: Obstacle, team: Team): boolean {
+    if (o.kind !== 'pit' && o.kind !== 'pitch') return true
+    if (o.sprung || this.team(o.faction) === team) return true
+    const r = OBSTACLE.reveal
+    return this.state.armies.some((a) => this.team(a.faction) === team && Math.abs(a.x - o.x) < r && Math.abs(a.z - o.z) < r && Math.hypot(a.x - o.x, a.z - o.z) < r)
   }
 
   private updateWorks(dt: number) {
     const t = this.state.time
     const obs = this.state.obstacles
-    if (obs?.length) {
-      for (const o of obs) {
-        // Enemies inside an abatis hack their way through it.
-        if (o.kind !== 'abatis') continue
-        const inside = this.state.armies.some((a) => this.isHostile(a.faction, o.faction) && Math.hypot(a.x - o.x, a.z - o.z) < OBSTACLE.abatis.radius)
-        if (inside) o.until -= dt * 2
+    if (!obs?.length) return
+    for (const o of obs) {
+      if (o.until <= t) continue
+      if (o.kind === 'stakes') continue
+      const r = o.kind === 'pit' ? OBSTACLE.pit.radius : o.kind === 'pitch' ? OBSTACLE.pitch.radius : OBSTACLE.barricade.radius
+      const inside = this.state.armies.filter((a) => a.status !== 'retreating' && this.isHostile(a.faction, o.faction) && Math.abs(a.x - o.x) < r && Math.abs(a.z - o.z) < r && Math.hypot(a.x - o.x, a.z - o.z) < r)
+      if (inside.length === 0) continue
+      if (o.kind === 'pit' && !o.sprung) {
+        o.sprung = true
+        const victim = inside[0]
+        if (victim.faction === PLAYER) this.log('warning', `${victim.name} is caught in a trap`, 'Mud and caltrops: the army is bogged down and cannot charge.', o.x, o.z)
+        else if (o.faction === PLAYER) this.log('victory', 'The trap is sprung', `${victim.name} of ${this.factionName(victim.faction)} is stuck in the mud.`, o.x, o.z)
+      } else if (o.kind === 'pitch') {
+        this.blowPitch(o)
+      } else if (o.kind === 'barricade') {
+        // Every army at the barricade hacks at it; when it gives way, the road is open.
+        o.hp = (o.hp ?? OBSTACLE.barricade.hp) - dt * inside.length
+        if (o.hp <= 0) {
+          o.until = t
+          if (o.faction === PLAYER) this.log('warning', 'A barricade is torn down', `${inside[0].name} hacked through it.`, o.x, o.z)
+        }
       }
-      this.state.obstacles = obs.filter((o) => o.until > t)
     }
-    for (const b of [...(this.state.brokenBridges ?? [])]) if (b.until <= t) {
-      this.restoreBridge(b.index)
-      const br = this.world.bridges[b.index]
-      if (br && this.state.castles.some((c) => c.faction === PLAYER && Math.hypot(c.x - br.x, c.z - br.z) < 1500)) this.log('info', 'A bridge is rebuilt', 'Villagers have put the burned crossing back into service.', br.x, br.z)
+    this.state.obstacles = obs.filter((o) => o.until > t)
+  }
+
+  /** Pitch barrels go up: a few dead, a lot of panic. */
+  private blowPitch(o: Obstacle) {
+    o.until = this.state.time
+    this.events.push({ type: 'blast', x: o.x, z: o.z })
+    const R = OBSTACLE.pitch.blast
+    let hit = 0
+    for (const a of this.state.armies) {
+      if (!this.isHostile(a.faction, o.faction) || Math.hypot(a.x - o.x, a.z - o.z) > R) continue
+      for (const k in a.troops) a.troops[k] = Math.max(0, (a.troops[k] ?? 0) * (1 - OBSTACLE.pitch.losses))
+      const steady = 1 - Math.min(0.4, (this.commanderOf(a)?.morale_bonus ?? 0) / 75)
+      a.morale = Math.max(0, a.morale - OBSTACLE.pitch.morale * steady)
+      hit++
+      if (a.faction === PLAYER) this.log('warning', `${a.name} walks into fire`, 'Buried pitch barrels burst into flame. The ranks waver.', o.x, o.z)
     }
+    if (o.faction === PLAYER && hit) this.log('victory', 'The pitch barrels go up', `${hit} enemy ${hit === 1 ? 'army is' : 'armies are'} shaken by fire.`, o.x, o.z)
+  }
+
+  /** Inside an enemy's sprung mud pit, or wading a ford: no charge, no square, and more losses. */
+  private mired(a: Army): boolean {
+    if (this.world.fordAt(a.x, a.z) || this.world.rulesAt(a.x, a.z).mired) return true
+    const r = OBSTACLE.pit.radius
+    return (this.state.obstacles ?? []).some((o) => o.kind === 'pit' && o.sprung && this.isHostile(o.faction, a.faction) && Math.abs(o.x - a.x) < r && Math.abs(o.z - a.z) < r && Math.hypot(o.x - a.x, o.z - a.z) < r)
+  }
+
+  /** A hostile barricade blocks this wagon's road. */
+  private wagonBlocked(w: Convoy): boolean {
+    const r = OBSTACLE.barricade.radius + 8
+    return (this.state.obstacles ?? []).some((o) => o.kind === 'barricade' && this.isHostile(o.faction, w.faction) && Math.abs(o.x - w.x) < r && Math.abs(o.z - w.z) < r && Math.hypot(o.x - w.x, o.z - w.z) < r)
   }
 
   /** Friendly spike stakes at this point (charges fail against troops standing among them). */
@@ -1168,9 +1392,10 @@ export class GameEngine {
     return (this.state.obstacles ?? []).some((o) => o.kind === 'stakes' && this.team(o.faction) === team && Math.hypot(o.x - x, o.z - z) < OBSTACLE.stakes.radius)
   }
 
+
   /** Effective supply radius: a depot's reach shrinks as its stores run down, and fails when empty. */
   outpostSupplyRange(o: Outpost): number {
-    const base = OUTPOST_KINDS[o.kind].supply
+    const base = OUTPOST_KINDS[o.kind].supply * this.spread
     if (o.kind !== 'depot') return base
     const stock = o.stock ?? DEPOT.stockMax
     if (stock <= 0) return 0
@@ -1219,8 +1444,9 @@ export class GameEngine {
       }
       if (!src) continue
       const ang = Math.atan2(o.z - src.z, o.x - src.x)
-      const r = castleRadius(src.tier) + 20
-      const [sx, sz] = this.world.nearestPassable(src.x + Math.cos(ang) * r, src.z + Math.sin(ang) * r)
+      const g = this.world.gateOf(src.id, o.x, o.z)
+      const r = holdingRadius(src) + 20
+      const [sx, sz] = g ? this.world.nearestPassable(g[0], g[1]) : this.world.nearestPassable(src.x + Math.cos(ang) * r, src.z + Math.sin(ang) * r)
       const path = this.world.findPath(sx, sz, o.x, o.z)
       convoys.push({
         id: this.newId('w'),
@@ -1240,10 +1466,12 @@ export class GameEngine {
   private updateConvoys(dt: number) {
     const convoys = this.state.convoys
     if (!convoys?.length) return
-    const speed = DEPOT.speed * this.climate().speed
+    const speed = DEPOT.speed * this.climate().speed * this.pace
     for (const w of [...convoys]) {
+      // A hostile barricade on the road: the wagons stand and wait (easy pickings).
+      const blocked = this.wagonBlocked(w)
       if (w.kind === 'gold') {
-        this.updateGoldWagon(w, speed * dt)
+        this.updateGoldWagon(w, blocked ? 0 : speed * dt)
         continue
       }
       const o = this.outpost(w.outpostId)
@@ -1263,7 +1491,7 @@ export class GameEngine {
         else if (raider.faction === PLAYER) this.log('victory', 'Enemy wagons seized', `${raider.name} cut the supply line to ${o.name}.`, w.x, w.z)
         continue
       }
-      let step = speed * dt
+      let step = blocked ? 0 : speed * dt
       while (step > 0 && w.path.length) {
         const [px, pz] = w.path[0]
         const d = Math.hypot(px - w.x, pz - w.z)
@@ -1377,7 +1605,7 @@ export class GameEngine {
       .map((f) => f.id)
   }
   aidReach(): number {
-    return AID.reach * clamp(this.world.size / 3000, 1, 1.8)
+    return AID.reach * this.reach
   }
   /** Why this castle cannot call for aid right now, or null. */
   aidProblem(castleId: string, faction: Faction = PLAYER): string | null {
@@ -1416,10 +1644,11 @@ export class GameEngine {
   }
   /** Soldiers in hostile armies marching on this castle or standing close to it. */
   threatTo(c: Castle): number {
-    const r = AID.threat * clamp(this.world.size / 3000, 1, 1.8)
+    const r = AID.threat * this.reach
     let n = 0
     for (const a of this.state.armies) {
       if (!this.isHostile(a.faction, c.faction) || this.atPeace(a.faction, c.faction) || a.status === 'retreating') continue
+      if (!this.canSee(this.team(c.faction), a)) continue
       // Marching on this castle (a Great Host on the march counts), or simply close by.
       const coming = a.order.type === 'attack' && a.order.castleId === c.id
       if (coming || (Math.abs(a.x - c.x) < r && Math.abs(a.z - c.z) < r && Math.hypot(a.x - c.x, a.z - c.z) < r)) n += total(a.troops)
@@ -1535,7 +1764,7 @@ export class GameEngine {
       }
       if (c.battleId || total(c.garrison) < VILLAGE.reliefMin) continue
       let need: Castle | undefined
-      let bd = VILLAGE.reliefReach * clamp(this.world.size / 3000, 1, 1.8)
+      let bd = VILLAGE.reliefReach * this.reach
       for (const x of this.state.castles) {
         if (x.faction !== c.faction || x.village || !x.battleId) continue
         const d = Math.hypot(x.x - c.x, x.z - c.z)
@@ -1593,7 +1822,7 @@ export class GameEngine {
         step = 0
       }
     }
-    if (!w.path.length || Math.hypot(dest.x - w.x, dest.z - w.z) < castleRadius(dest.tier) + 25) {
+    if (!w.path.length || Math.hypot(dest.x - w.x, dest.z - w.z) < (dest.village ? holdingRadius(dest) + 25 : wallRadius(dest.tier) + 30)) {
       const f = this.state.factions[w.faction]
       if (f) f.gold += w.gold ?? 0
       this.state.convoys = this.state.convoys!.filter((x) => x.id !== w.id)
@@ -2087,7 +2316,7 @@ export class GameEngine {
 
   /** How far from one of your castles envoys can still reach a village (grows with the map). */
   envoyReach(): number {
-    return VILLAGE.envoyCastleReach * clamp(this.world.size / 3000, 1, 1.8)
+    return VILLAGE.envoyCastleReach * this.reach
   }
 
   /** Offer a free village protection and coin. On success it joins the realm, militia and all. */
@@ -2222,18 +2451,18 @@ export class GameEngine {
     const clim = this.climate()
     for (const a of this.state.armies) {
       const team = this.team(a.faction)
-      const reach = this.traitsOf(a).supply * clim.supply
+      const reach = this.traitsOf(a).supply
       let ok = false
       for (const c of this.state.castles) {
         if (this.team(c.faction) !== team || c.faction === NEUTRAL) continue
-        if (Math.hypot(c.x - a.x, c.z - a.z) < this.supplyRange(c) * reach) {
+        if (Math.hypot(c.x - a.x, c.z - a.z) < this.supplyRange(c) * reach * this.groundSupply(c.x, c.z, clim.supply)) {
           ok = true
           break
         }
       }
       if (!ok) {
         for (const o of this.state.outposts) {
-          if (o.progress >= 1 && this.team(o.faction) === team && Math.hypot(o.x - a.x, o.z - a.z) < this.outpostSupplyRange(o) * reach) {
+          if (o.progress >= 1 && this.team(o.faction) === team && Math.hypot(o.x - a.x, o.z - a.z) < this.outpostSupplyRange(o) * reach * this.groundSupply(o.x, o.z, clim.supply)) {
             ok = true
             break
           }
@@ -2383,7 +2612,7 @@ export class GameEngine {
     if (this.state.outposts.filter((o) => o.faction === faction).length >= OUTPOST.maxPerFaction) return `At most ${OUTPOST.maxPerFaction} outposts.`
     for (const c of this.state.castles) {
       const clear = c.village ? OUTPOST.villageClearance : OUTPOST.castleClearance
-      if (Math.hypot(c.x - x, c.z - z) - castleRadius(c.tier) < clear) return `Too close to ${c.name}.`
+      if (Math.hypot(c.x - x, c.z - z) - holdingRadius(c) < clear) return `Too close to ${c.name}.`
     }
     for (const r of this.state.sites ?? []) if (Math.hypot(r.x - x, r.z - z) < 60) return 'Too close to a mine or lumber camp.'
     if (this.state.outposts.some((o) => Math.hypot(o.x - x, o.z - z) < OUTPOST.spacing)) return 'Too close to another outpost.'
@@ -2400,7 +2629,7 @@ export class GameEngine {
       case 'lodge':
         return w.forestAt(x, z) > 0.3
       case 'bridgefort':
-        return w.bridges.some((b) => Math.hypot(b.x - x, b.z - z) < 170)
+        return w.crossings().some((b) => Math.hypot(b.x - x, b.z - z) < 170)
       default:
         return w.forestAt(x, z) < 0.5
     }
@@ -2528,7 +2757,7 @@ export class GameEngine {
       z = army.z
     } else if (castle && castle.faction === organizer) {
       const d = Math.hypot(target.x - castle.x, target.z - castle.z) || 1
-      const off = castleRadius(castle.tier) + 70
+      const off = holdingRadius(castle) + 70
       ;[x, z] = this.world.nearestPassable(castle.x + ((target.x - castle.x) / d) * off, castle.z + ((target.z - castle.z) / d) * off)
     } else return 'Choose one of your armies or castles as the rally point.'
     const t = this.state.time
@@ -2761,7 +2990,7 @@ export class GameEngine {
       }
       const mpBoost = clim.manpower
       c.manpower = Math.min(this.maxManpower(c), c.manpower + this.manpowerRegen(c) * mpBoost * dt)
-      if (!c.battleId && c.walls < c.maxWalls) c.walls = Math.min(c.maxWalls, c.walls + c.tier * 3 * dt)
+      if (!c.battleId && c.walls < c.maxWalls && (c.sappedUntil ?? 0) <= s.time) c.walls = Math.min(c.maxWalls, c.walls + c.tier * 3 * dt)
     }
     const soldiers = new Map<Faction, number>()
     for (const a of s.armies) soldiers.set(a.faction, (soldiers.get(a.faction) ?? 0) + total(a.troops))
@@ -2827,7 +3056,7 @@ export class GameEngine {
         a.pathTarget = null
       }
       const c = this.castle(a.homeCastleId)!
-      if (this.moveTowards(a, c.x, c.z, dt, castleRadius(c.tier) + 30, 1.1)) {
+      if (this.moveTowards(a, c.x, c.z, dt, this.arriveDist(c), 1.1)) {
         a.status = 'idle'
         a.order = { type: 'station', castleId: c.id }
         if (a.faction === PLAYER) this.log('retreat', `${a.name} reaches safety`, `The survivors regroup at ${c.name}.`, c.x, c.z)
@@ -2839,7 +3068,7 @@ export class GameEngine {
     for (const c of this.state.castles) {
       if (!c.gate || !this.isHostile(c.faction, a.faction)) continue
       if (Math.abs(c.x - a.x) > 120 || Math.abs(c.z - a.z) > 120) continue
-      if (Math.hypot(c.x - a.x, c.z - a.z) < castleRadius(c.tier) + 16) {
+      if (Math.hypot(c.x - a.x, c.z - a.z) < holdingRadius(c) + 16) {
         this.beginSiege(a, c)
         return
       }
@@ -2871,7 +3100,7 @@ export class GameEngine {
           a.order = { type: 'station', castleId: c.id }
           break
         }
-        if (this.moveTowards(a, c.x, c.z, dt, castleRadius(c.tier) + 28)) this.beginSiege(a, c)
+        if (this.moveTowards(a, c.x, c.z, dt, c.village ? holdingRadius(c) + 28 : wallRadius(c.tier) + 40)) this.beginSiege(a, c)
         break
       }
       case 'station':
@@ -2881,7 +3110,7 @@ export class GameEngine {
           a.order = { type: 'hold' }
           break
         }
-        if (this.moveTowards(a, c.x, c.z, dt, castleRadius(c.tier) + 30)) {
+        if (this.moveTowards(a, c.x, c.z, dt, this.isHostile(c.faction, a.faction) ? holdingRadius(c) + 30 : this.arriveDist(c))) {
           a.status = 'idle'
           if (o.type === 'reinforce' && c.faction === a.faction && c.village && a.vassalOf !== c.id) a.order = { type: 'station', castleId: c.id }
           else if (o.type === 'reinforce' && c.faction === a.faction) this.mergeIntoCastle(a, c)
@@ -2912,7 +3141,7 @@ export class GameEngine {
           o.progress += dt / this.workSeconds(a, o.job)
           if (o.progress >= 1) {
             a.order = { type: 'hold' }
-            this.finishWork(a, o.job, o.bridge)
+            this.finishWork(a, o.job, o.bridge, o.tx, o.tz)
           }
         }
         break
@@ -3015,7 +3244,8 @@ export class GameEngine {
       }
       case 'intercept': {
         const target = this.army(o.armyId)
-        if (!target || (a.faction === PLAYER && !this.isVisible(target.x, target.z))) {
+        // Anyone (player or AI) loses an enemy that slips into hiding out of reach.
+        if (!target || !this.canSee(this.team(a.faction), target)) {
           a.order = { type: 'hold' }
           a.status = 'idle'
           if (a.faction === PLAYER) this.log('info', `${a.name} lost the trail`, 'The enemy force slipped out of sight.', a.x, a.z)
@@ -3053,8 +3283,10 @@ export class GameEngine {
       if (this.isHostile(o.faction, a.faction) && Math.hypot(o.x - a.x, o.z - a.z) < k.zoc) zoc = Math.min(zoc, k.zocSlow)
     }
     for (const ob of this.state.obstacles ?? []) {
-      if (ob.kind !== 'abatis' || Math.abs(ob.x - a.x) > OBSTACLE.abatis.radius || Math.abs(ob.z - a.z) > OBSTACLE.abatis.radius) continue
-      if (this.isHostile(ob.faction, a.faction) && Math.hypot(ob.x - a.x, ob.z - a.z) < OBSTACLE.abatis.radius) zoc = Math.min(zoc, OBSTACLE.abatis.slow)
+      // A sprung mud pit bogs the enemy down; a barricade stops them until they hack through.
+      const r = ob.kind === 'pit' ? OBSTACLE.pit.radius : ob.kind === 'barricade' ? OBSTACLE.barricade.radius : 0
+      if (!r || (ob.kind === 'pit' && !ob.sprung) || Math.abs(ob.x - a.x) > r || Math.abs(ob.z - a.z) > r) continue
+      if (this.isHostile(ob.faction, a.faction) && Math.hypot(ob.x - a.x, ob.z - a.z) < r) zoc = Math.min(zoc, ob.kind === 'pit' ? OBSTACLE.pit.slow : 0)
     }
     let budget = this.armySpeed(a) * this.world.speedAt(a.x, a.z) * speedMult * zoc * dt
     while (budget > 0 && a.path.length > 0) {
@@ -3098,7 +3330,8 @@ export class GameEngine {
       if (a.order.type === 'scout') continue
       const team = this.team(a.faction)
       for (const b of this.state.battles) {
-        const near = b.kind === 'siege' ? castleRadius(this.castle(b.castleId)?.tier ?? 1) + 70 : JOIN_DIST
+        const sc = b.kind === 'siege' ? this.castle(b.castleId) : undefined
+        const near = sc ? holdingRadius(sc) + 70 : JOIN_DIST
         if (Math.abs(b.x - a.x) > near || Math.abs(b.z - a.z) > near) continue
         if (Math.hypot(b.x - a.x, b.z - a.z) > near) continue
         if (b.sideA.team === team) {
@@ -3365,8 +3598,10 @@ export class GameEngine {
       const camp = b.kind === 'field' ? this.outpostAt(a.x, a.z, this.team(a.faction), OUTPOST.radius + 30) : undefined
       // Troops stationed at a besieged castle man its walls alongside the garrison.
       const sc = b.kind === 'siege' && side === 'B' && a.order.type === 'station' && a.order.castleId === b.castleId ? this.castle(b.castleId) : undefined
-      const onWalls = !!sc && Math.hypot(a.x - sc.x, a.z - sc.z) < castleRadius(sc.tier) + 90
-      const fm = FORMATIONS[a.formation] ?? FORMATIONS.line
+      const onWalls = !!sc && Math.hypot(a.x - sc.x, a.z - sc.z) < holdingRadius(sc) + 90
+      const mired = b.kind === 'field' && this.mired(a)
+      // No square can be formed in the water or the mud.
+      const fm = mired && a.formation === 'square' ? FORMATIONS.line : (FORMATIONS[a.formation] ?? FORMATIONS.line)
       out.push({
         troops: a.troops,
         cmd: this.commanderOf(a),
@@ -3376,6 +3611,7 @@ export class GameEngine {
         // Palisades and walls break any charge against their defenders.
         formation: onWalls || (camp && OUTPOST_KINDS[camp.kind].braces) || (b.kind === 'field' && this.amongStakes(a.x, a.z, this.team(a.faction))) ? { ...fm, bracesCharge: true } : fm,
         inColumn: a.column && t - a.battleJoinedAt < COLUMN.reformSeconds,
+        mired,
         sheltered: !!camp || onWalls,
         traits: this.traitsOf(a),
         army: a,
@@ -3459,7 +3695,7 @@ export class GameEngine {
         }
         if (b.kind === 'field') {
           if (elapsed < 6) m *= u.category === 'ranged' ? 1.8 : u.category === 'cavalry' ? 0.6 : 0.35
-          else if (chargeWindow && !f.inColumn) {
+          else if (chargeWindow && !f.inColumn && !f.mired) {
             if (u.category === 'cavalry') extra = m * (0.5 * fm.charge + (fm.charge - 1))
             else if (u.category === 'infantry') extra = m * Math.max(0, 0.3 * (fm.charge - 1))
           }
@@ -3493,7 +3729,7 @@ export class GameEngine {
           (cavalry[j] ?? 0) * fm.cavalryTaken +
           (charge[j] ?? 0) * (fm.bracesCharge ? 0 : fm.cavalryTaken) +
           (rear[j] ?? 0)
-        let killed = (dmg * k * share * fm.taken * (f.cmd?.defense_mod ?? 1) * f.traits.taken) / f.terrainDef
+        let killed = (dmg * k * share * fm.taken * (f.cmd?.defense_mod ?? 1) * f.traits.taken * (f.mired ? OBSTACLE.pit.taken : 1)) / f.terrainDef
         if (f.inColumn) killed *= COLUMN.taken
         cas[idx][j] = Math.min(n, killed)
       })
@@ -3519,6 +3755,12 @@ export class GameEngine {
       let sp = 0
       for (const f of A) sp += siegePower(f.troops, this.units, f.cmd) * f.traits.siege
       sp *= this.climate().siege
+      // Sapping: enough engineers undermine the walls, and they will not mend for a while even if we fall back.
+      const sappers = A.reduce((n, f) => n + (f.troops.engineers ?? 0), 0)
+      if (sappers >= SAPPING.engineers) {
+        if ((castle.sappedUntil ?? 0) <= this.state.time && castle.faction === PLAYER) this.log('warning', `${castle.name} is being undermined`, 'Enemy sappers dig under the walls: they will not mend for three minutes.', castle.x, castle.z)
+        castle.sappedUntil = this.state.time + SAPPING.seconds
+      }
       const before = castle.walls
       castle.walls = Math.max(0, castle.walls - sp * WALL_K * dt)
       if (before > 0 && castle.walls <= 0) {
@@ -3616,7 +3858,7 @@ export class GameEngine {
       a.heading = Math.atan2(faceZ - a.z, faceX - a.x)
     }
     if (castle) {
-      const R = castleRadius(castle.tier) + 26
+      const R = (castle.village ? holdingRadius(castle) : wallRadius(castle.tier)) + 30
       for (const id of [...b.sideA.armyIds, ...b.sideB.armyIds]) {
         const a = this.army(id)
         if (!a) continue
@@ -3960,7 +4202,7 @@ export class GameEngine {
       }
     }
     // Sight grows with the map, so marching armies sweep wide lanes and leave no scattered fog pockets.
-    const f = clamp(this.world.size / 3000, 1, 2)
+    const f = this.reach
     for (const c of this.state.castles) {
       const rel = this.relation(c.faction)
       if (rel === 'self') stamp(c.x, c.z, (450 + c.tier * 70) * f)

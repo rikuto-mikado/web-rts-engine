@@ -66,4 +66,3 @@ class CampaignViewSet(
             enemy_losses=Sum("enemy_losses"),
         )
         return Response({k: v or 0 for k, v in agg.items()})
-

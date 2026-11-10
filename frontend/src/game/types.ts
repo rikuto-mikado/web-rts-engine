@@ -107,7 +107,8 @@ export interface ScenarioDefinition {
   factions?: FactionDef[]
   castles: CastleDef[]
   rivers: { width: number; points: [number, number][] }[]
-  bridges: { x: number; z: number }[]
+  /** River crossings: permanent bridges, or shallow fords where `ford` is set. */
+  bridges: { x: number; z: number; ford?: boolean }[]
   mountains: { x: number; z: number; r: number; h: number }[]
   lakes: { x: number; z: number; r: number }[]
   forest_density: number
@@ -193,6 +194,8 @@ export interface Castle {
   /** Vassal villages: gold owed to the lord, shipped by wagon to the nearest castle. */
   tribute?: number
   nextTributeAt?: number
+  /** Sapped: engineers have undermined the walls; they do not mend themselves until this time. */
+  sappedUntil?: number
   /** No new call for aid from this castle before this time. */
   aidCooldownUntil?: number
   /** The militia band this vassal village has out helping its lord, if any. */
@@ -237,7 +240,7 @@ export type ArmyOrder =
   | { type: 'build'; outpostId: string } // stay and raise a field fortification
   | { type: 'garrison'; outpostId: string } // march into a supply depot and quarter there
   | { type: 'raidConvoy'; convoyId: string } // chase down an enemy supply train
-  | { type: 'work'; job: WorkJob; x: number; z: number; bridge: number | null; progress: number } // engineers' field works
+  | { type: 'work'; job: WorkJob; x: number; z: number; bridge: number | null; progress: number; tx?: number; tz?: number } // engineers' field works (tx/tz: the river point a new bridge spans)
   | { type: 'gather'; siteId: string } // engineers work a mine or lumber camp
   | { type: 'scout'; targetId: string; x: number; z: number; phase: 'out' | 'back' } // spy out an enemy position and bring the news home
 
@@ -373,17 +376,21 @@ export interface Outpost {
   lowWarned?: boolean
 }
 
-export type WorkJob = 'abatis' | 'stakes' | 'burn' | 'repair'
+export type WorkJob = 'stakes' | 'pit' | 'barricade' | 'pitch' | 'bridge' | 'demolish'
 
 /** Field obstacles raised by engineers. */
 export interface Obstacle {
   id: string
-  kind: 'abatis' | 'stakes'
+  kind: 'stakes' | 'pit' | 'barricade' | 'pitch'
   faction: Faction
   x: number
   z: number
   /** Game time when it rots or is cleared away. */
   until: number
+  /** Hidden traps (pit, pitch): set off by the first enemy to step in. */
+  sprung?: boolean
+  /** Barricade: army-seconds of hacking left before it gives way. */
+  hp?: number
 }
 
 /**
@@ -480,8 +487,8 @@ export interface GameState {
   sites?: ResourceSite[]
   /** The player's scouting reports, by castle or army id. */
   intel?: Record<string, Intel>
-  /** Burned bridges and when the locals will have them rebuilt. */
-  brokenBridges?: { index: number; until: number; by: Faction }[]
+  /** Bridges engineers have built (in order: index = position in the world's bridge list). */
+  builtBridges?: { index: number; x: number; z: number; faction: Faction; broken: boolean }[]
   commanders: Record<string, CommanderState>
   chronicle: ChronicleEntry[]
   explored: string // base64 of the explored grid
@@ -520,6 +527,7 @@ export type GameEvent =
   | { type: 'castle_changed'; castleId: string }
   | { type: 'chronicle'; entry: ChronicleEntry }
   | { type: 'game_over'; status: 'victory' | 'defeat' }
+  | { type: 'blast'; x: number; z: number }
 
 export interface BattleReportPayload {
   game_time: number

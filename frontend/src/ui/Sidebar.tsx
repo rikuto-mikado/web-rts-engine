@@ -57,7 +57,7 @@ export function Sidebar({ engine, open, setOpen, selection, onSelect, onFormArmy
               key={f.id}
               className="mx-2 mt-2 flex min-w-[min(84vw,320px)] items-start gap-2 rounded-lg border border-ember-400/40 bg-ember-700/25 p-2.5 text-left text-xs hover:bg-ember-700/35"
               onClick={() => {
-                if (host && engine.isVisible(host.x, host.z)) onSelect({ kind: 'army', id: host.id }, true)
+                if (host && engine.canSee(engine.team(PLAYER), host)) onSelect({ kind: 'army', id: host.id }, true)
                 else onFocusPoint(h.rallyX, h.rallyZ)
               }}
             >

@@ -1,26 +1,9 @@
 import * as THREE from 'three'
-import { OBSTACLE, type GameEngine } from '../game/engine'
+import { OBSTACLE, PLAYER, type GameEngine } from '../game/engine'
 import { box, cone, cyl, merge, part } from './geo'
 import { applyVision } from './vision'
 
 const mat = applyVision(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.9 }))
-
-/** Felled trees laid in a ring, branches pointing outward. */
-function abatisGeometry() {
-  const parts: THREE.BufferGeometry[] = []
-  const R = OBSTACLE.abatis.radius * 0.8
-  for (let i = 0; i < 16; i++) {
-    const a = (i / 16) * Math.PI * 2
-    const x = Math.cos(a) * R
-    const z = Math.sin(a) * R
-    parts.push(part(cyl(0.9, 1.3, 16, 5), 0x5a3d22, { x, y: 1.2, z, rz: Math.PI / 2, ry: -a + Math.PI / 2 }))
-    for (let k = -1; k <= 1; k += 2) {
-      parts.push(part(cone(0.5, 7, 4), 0x4a321c, { x: x + Math.cos(a) * 3, y: 3, z: z + Math.sin(a) * 3, rz: -0.9 * k, ry: -a }))
-    }
-    parts.push(part(cone(2.6, 4, 5), 0x3c5a2a, { x: x + Math.cos(a) * 4, y: 2.4, z: z + Math.sin(a) * 4 }))
-  }
-  return merge(parts)
-}
 
 /** Rows of sharpened stakes leaning outward. */
 function stakesGeometry() {
@@ -38,10 +21,63 @@ function stakesGeometry() {
   return merge(parts)
 }
 
-/** Abatis and spike stakes, plus burned bridges (hidden, with fire when they go). */
+/** Churned mud with puddles, reeds and a scatter of caltrops. */
+function pitGeometry() {
+  const parts: THREE.BufferGeometry[] = []
+  const R = OBSTACLE.pit.radius * 0.7
+  // Several overlapping low blobs, so the edge is ragged rather than a disc.
+  for (let i = 0; i < 7; i++) {
+    const a = i * 0.9
+    const r = i === 0 ? 0 : R * 0.45
+    const s = i === 0 ? R * 0.7 : R * (0.32 + (i % 3) * 0.06)
+    parts.push(part(cyl(s, s * 1.08, 0.5, 9), i % 2 ? 0x6b5236 : 0x5f4a31, { x: Math.cos(a) * r, y: 0.2 + i * 0.02, z: Math.sin(a) * r }))
+  }
+  for (let i = 0; i < 7; i++) {
+    const a = i * 2.39
+    const r = R * (0.2 + ((i * 37) % 10) / 16)
+    parts.push(part(cyl(3 + (i % 3) * 1.6, 3.6 + (i % 3) * 1.6, 0.3, 8), 0x7d8f93, { x: Math.cos(a) * r, y: 0.5, z: Math.sin(a) * r }))
+  }
+  for (let i = 0; i < 36; i++) {
+    const a = i * 0.77
+    const r = R * (0.15 + ((i * 53) % 17) / 22)
+    parts.push(part(cone(0.35, 1.6, 3), 0x8a8a84, { x: Math.cos(a) * r, y: 1, z: Math.sin(a) * r, rx: (i % 5) * 0.4, rz: (i % 3) * 0.5 }))
+  }
+  for (let i = 0; i < 12; i++) {
+    const a = i * 0.52 + 1
+    parts.push(part(cyl(0.12, 0.2, 5, 3), 0x7f8a44, { x: Math.cos(a) * R * 0.9, y: 2.5, z: Math.sin(a) * R * 0.9, rz: 0.15 }))
+  }
+  return merge(parts)
+}
+
+/** Logs and an upturned cart across the road. */
+function barricadeGeometry() {
+  const parts: THREE.BufferGeometry[] = []
+  for (let i = 0; i < 4; i++) parts.push(part(cyl(1.4, 1.5, 34, 6), i % 2 ? 0x6b4a2a : 0x5a3d22, { y: 1.4 + (i > 1 ? 2.4 : 0), z: (i % 2) * 2.6 - 1.3, rz: Math.PI / 2, ry: (i - 1.5) * 0.06 }))
+  // Upturned cart on one end.
+  parts.push(part(box(10, 4, 7), 0x7a5a36, { x: 12, y: 5.5, z: 0, rz: 0.35 }))
+  for (const zz of [-4, 4]) parts.push(part(cyl(3, 3, 0.8, 10), 0x4a3420, { x: 15, y: 8, z: zz, rx: Math.PI / 2 }))
+  // Sharpened stakes along the front.
+  for (let x = -14; x <= 8; x += 3.5) parts.push(part(cyl(0.2, 0.5, 6, 4), 0x8a6a40, { x, y: 2.6, z: -4.2, rx: -0.6 }))
+  return merge(parts)
+}
+
+/** Half-buried pitch barrels under a scatter of straw. */
+function pitchGeometry() {
+  const parts: THREE.BufferGeometry[] = []
+  for (let i = 0; i < 7; i++) {
+    const a = i * 0.9
+    const r = i === 0 ? 0 : 7 + (i % 3) * 2
+    parts.push(part(cyl(2, 2.2, 3.2, 8), 0x2e2318, { x: Math.cos(a) * r, y: 0.8, z: Math.sin(a) * r }))
+    parts.push(part(cyl(2.05, 2.05, 0.4, 8), 0x4a4a48, { x: Math.cos(a) * r, y: 1.6, z: Math.sin(a) * r }))
+  }
+  parts.push(part(cyl(13, 14, 0.3, 12), 0xb39a5c, { y: 0.1 }))
+  return merge(parts)
+}
+
+/** Field works: stakes, traps and barricades. Hidden enemy traps stay invisible until found or sprung. */
 export class ObstacleRenderer {
   readonly group = new THREE.Group()
-  private geos = { abatis: abatisGeometry(), stakes: stakesGeometry() }
+  private geos = { stakes: stakesGeometry(), pit: pitGeometry(), barricade: barricadeGeometry(), pitch: pitchGeometry() }
   private meshes = new Map<string, THREE.Mesh>()
   private engine: GameEngine
   constructor(engine: GameEngine) {
@@ -49,21 +85,26 @@ export class ObstacleRenderer {
   }
   update() {
     const world = this.engine.world
+    const engine = this.engine
+    const team = engine.team(PLAYER)
     const seen = new Set<string>()
-    for (const o of this.engine.state.obstacles ?? []) {
+    for (const o of engine.state.obstacles ?? []) {
       seen.add(o.id)
       let m = this.meshes.get(o.id)
       if (!m) {
         m = new THREE.Mesh(this.geos[o.kind], mat)
-        m.castShadow = true
+        m.castShadow = o.kind !== 'pit'
+        m.receiveShadow = true
         m.position.set(o.x, world.heightAt(o.x, o.z), o.z)
         m.rotation.y = (o.x * 7 + o.z * 3) % 6.28
         this.group.add(m)
         this.meshes.set(o.id, m)
       }
+      m.visible = engine.obstacleSeenBy(o, team)
       // Fades into the ground over its last 30 seconds.
-      const left = o.until - this.engine.state.time
-      m.scale.set(1, Math.max(0.15, Math.min(1, left / 30)), 1)
+      const left = o.until - engine.state.time
+      const hp = o.kind === 'barricade' ? Math.max(0.35, (o.hp ?? OBSTACLE.barricade.hp) / OBSTACLE.barricade.hp) : 1
+      m.scale.set(1, Math.max(0.15, Math.min(1, left / 30)) * hp, 1)
     }
     for (const [id, m] of this.meshes) {
       if (seen.has(id)) continue

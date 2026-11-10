@@ -24,7 +24,7 @@ export class RTSCamera {
 
   constructor(world: World, aspect: number) {
     this.world = world
-    this.maxDist = clamp(world.size * 0.7, 1700, 3000)
+    this.maxDist = clamp(world.size * 0.55, 1700, 4800)
     this.camera = new THREE.PerspectiveCamera(42, aspect, 2, 12000)
   }
 

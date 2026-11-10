@@ -250,7 +250,7 @@ function Field() {
       <section>
         <SectionTitle>Engineers' works · need 10+ Engineers</SectionTitle>
         <div className="grid gap-2 sm:grid-cols-2">
-          {(['abatis', 'stakes', 'burn', 'repair'] as const).map((k) => {
+          {(['stakes', 'pit', 'barricade', 'pitch', 'bridge', 'demolish'] as const).map((k) => {
             const w = WORKS[k]
             return (
               <Card key={k}>
@@ -290,7 +290,7 @@ function Field() {
           <Card>
             <div className="mb-1 font-display text-[15px] font-bold text-gold-100">🔭 Scouts</div>
             <p className="text-[13.5px] leading-snug text-ink-300">
-              Far from your forces, enemy numbers are only rumours (~…?). A party of 80 or fewer can scout: it rides out, sees what is near, and reports only if it gets home. Castles, outposts and armies that spot scouts send riders after them; captured scouts may give away where they came from. Rain, storms and forest cover help scouts; horsemen and watchtowers help spot them. Ambushers are only found up close.
+              There is no fog: you and the AI lords see the whole map and every army on the march. What hides is local: troops waiting in woods or a Forest Lodge vanish from the other side's view (yours and the AI's alike) until someone comes within 200m (400m from a watchtower). Far from your forces (over 450m), enemy numbers are only rumours (~…?) and their leader and mix of troops are unknown; the AI judges your armies with the same error. A party of 80 or fewer can scout: it rides out, sees what is near, and reports only if it gets home. Castles, outposts and armies that spot scouts send riders after them; captured scouts may give away where they came from. Rain, storms and forest cover help scouts; horsemen and watchtowers help spot them. Ambushers are only found up close.
             </p>
           </Card>
         </div>

@@ -36,10 +36,10 @@ npm run dev                  # http://localhost:5173 (proxies /api to :8000)
 
 ## Game modes
 
-| Mode | Map | Goal |
-|---|---|---|
-| **Conquest** | Random, in three sizes | You against a coalition: take its capitals, keep yours |
-| **Alliance War** | Random, 16 / 24 / 32 realms in two alliances | Your alliance takes the enemy High Seat |
+| Mode             | Map                                          | Goal                                                   |
+| ---------------- | -------------------------------------------- | ------------------------------------------------------ |
+| **Conquest**     | Random, in three sizes                       | You against a coalition: take its capitals, keep yours |
+| **Alliance War** | Random, 16 / 24 / 32 realms in two alliances | Your alliance takes the enemy High Seat                |
 
 Every random map comes in three sizes (small / medium / large), each balanced
 separately with headless simulations. Both modes share the same six map types: Green Vales, Highland Passes,
@@ -51,14 +51,14 @@ backend records each match's result and battle reports.
 
 ## How to play
 
-| Input | Action |
-|---|---|
-| Left-click | Select an army or castle |
+| Input                       | Action                                                         |
+| --------------------------- | -------------------------------------------------------------- |
+| Left-click                  | Select an army or castle                                       |
 | Right-click (army selected) | Move · on enemy army: intercept · on castle: besiege / station |
-| Left-drag, WASD / arrows | Pan |
-| Wheel | Zoom (closer = lower, more cinematic angle) |
-| Q / E, middle-drag | Rotate |
-| F · Tab · L · Esc | Form army · cycle armies · chronicle · deselect |
+| Left-drag, WASD / arrows    | Pan                                                            |
+| Wheel                       | Zoom (closer = lower, more cinematic angle)                    |
+| Q / E, middle-drag          | Rotate                                                         |
+| F · Tab · L · Esc           | Form army · cycle armies · chronicle · deselect                |
 
 - **Formations**: Line (balanced), Wedge (huge charge, takes more losses),
   Schiltron (stops charges, -45% from cavalry, slow, weak to arrows), Skirmish
@@ -70,18 +70,18 @@ backend records each match's result and battle reports.
   income, manpower and garrison room). Auto-recruit keeps garrisons growing.
 - **Alliances**: AI lords recruit, raid, relieve allied castles (including yours)
   and follow their alliance leader's offensive (gold ring). On an enemy castle,
-  *Summon allies* gathers allied contingents at one of your armies or castles,
-  then everyone marches on the target together (or press *March now*).
-  On one of your own castles, *Call for aid* asks allied lords who are close,
+  _Summon allies_ gathers allied contingents at one of your armies or castles,
+  then everyone marches on the target together (or press _March now_).
+  On one of your own castles, _Call for aid_ asks allied lords who are close,
   safe and have men to spare to send them to stand in it until the danger
-  passes. AI lords call for aid too: answer from the War tab (*Send*). Armies
+  passes. AI lords call for aid too: answer from the War tab (_Send_). Armies
   stationed at a castle (yours or an ally's) fight from its walls when it is
   besieged.
 - **Units**: Infantry (beat cavalry), Cavalry (beat archers and engineers),
   Archers (beat infantry), Engineers (build outposts, breach walls).
 - **Outposts** (need 15+ Engineers in the army): Field Camp, Watchtower (high
   ground), Forest Lodge (forest; keeps armies hidden), Bridge Fort (by a
-  bridge) and Supply Depot. Leave one empty and raiders will burn it.
+  ford or bridge) and Supply Depot. Leave one empty and raiders will burn it.
 - **Supply**: armies far from friendly castles, outposts or camps lose men and
   morale.
 - **Seasons and weather**: winter slows marches and raises upkeep; rain and
@@ -97,8 +97,13 @@ backend records each match's result and battle reports.
   armies can be raised there, led only by commanders quartered in that depot.
   Wagon trains from the nearest friendly castle keep its stores full; enemies
   can seize the wagons, and a depot's supply reach shrinks as stores run out.
-- **Engineers' works**: abatis (slows enemies), spike stakes (stops charges),
-  burning a bridge (closed for 5 minutes) and rebuilding it.
+- **Rivers**: crossed at shallow fords (slow; no charging or squares in the
+  water, 20% more losses) or on bridges engineers build.
+- **Engineers' works**: spike stakes (stop charges), hidden mud pits (bog the
+  enemy down, no charge, more losses), road barricades (stop enemy wagons,
+  hold armies ~12 s), pitch barrels (hidden; a blow to morale), timber bridges
+  and pulling down enemy ones. 15+ engineers in a siege undermine the walls:
+  they stop mending for 3 minutes.
 - **Rear attacks**: joining a fight from behind the enemy's engaged line gives
   a short damage bonus and a charge that no spear wall stops.
 - **Villages**: win free villages over with envoys and gold. A vassal village
@@ -135,13 +140,13 @@ backend records each match's result and battle reports.
 
 ## API
 
-| Endpoint | Purpose |
-|---|---|
-| `GET /api/content/` | Unit types, commanders, scenarios |
-| `POST /api/campaigns/` | Record a new match (mode, seed, difficulty) |
-| `PATCH /api/campaigns/{id}/` | Record the final result and summary |
-| `GET/POST /api/campaigns/{id}/battle-reports/` | Battle history |
-| `GET /api/campaigns/{id}/stats/` | Aggregated battle statistics |
+| Endpoint                                       | Purpose                                     |
+| ---------------------------------------------- | ------------------------------------------- |
+| `GET /api/content/`                            | Unit types, commanders, scenarios           |
+| `POST /api/campaigns/`                         | Record a new match (mode, seed, difficulty) |
+| `PATCH /api/campaigns/{id}/`                   | Record the final result and summary         |
+| `GET/POST /api/campaigns/{id}/battle-reports/` | Battle history                              |
+| `GET /api/campaigns/{id}/stats/`               | Aggregated battle statistics                |
 
 ## Phones and tablets
 

@@ -214,9 +214,11 @@ function BattleBox({ engine, battle }: { engine: GameEngine; battle: Battle }) {
 }
 
 function ArmyHeader({ engine, army }: { engine: GameEngine; army: Army }) {
-  const cmd = engine.commanderOf(army)
-  const n = totalInt(army.troops)
   const rel = engine.relation(army.faction)
+  // Far-off enemies are known only by rumour: who leads them is a mystery until we get close or scout them.
+  const unknown = rel === 'enemy' && engine.knowledge(army.id).kind === 'rumour'
+  const cmd = unknown ? null : engine.commanderOf(army)
+  const n = totalInt(army.troops)
   return (
     <>
       <div className="flex items-center gap-3 pr-6">
@@ -230,7 +232,7 @@ function ArmyHeader({ engine, army }: { engine: GameEngine; army: Army }) {
         <div className="min-w-0">
           <h3 className="panel-title truncate">{army.name}</h3>
           <p className="truncate text-xs text-ink-300">
-            {cmd && cmd.name === army.name ? cmd.title : engine.armyLeader(army)}
+            {unknown ? 'Leader unknown' : cmd && cmd.name === army.name ? cmd.title : engine.armyLeader(army)}
             {cmd && cmd.name !== army.name && <span className="text-ink-500"> · {cmd.title}</span>}
           </p>
           {rel !== 'self' && (
@@ -265,20 +267,25 @@ function ArmyHeader({ engine, army }: { engine: GameEngine; army: Army }) {
         </div>
       )}
       <div className="mt-3 grid grid-cols-3 gap-1.5 text-center">
-        <Stat label="Soldiers" value={fmt(n)} />
-        <Stat label="Power" value={fmt(engine.armyPower(army))} accent />
+        <Stat label="Soldiers" value={unknown ? `~${fmt(engine.knowledge(army.id).total)}?` : fmt(n)} />
+        <Stat label="Power" value={unknown ? '?' : fmt(engine.armyPower(army))} accent />
         <Stat label="Status" value={STATUS_TEXT[army.status]} />
       </div>
-      <div className="mt-3 flex items-center gap-2 text-xs">
-        <span className="w-14 text-ink-400">Morale</span>
-        <Bar value={army.morale} max={100} color={moraleColor(army.morale)} height={5} />
-        <span className="w-8 text-right tabular-nums">{Math.round(army.morale)}</span>
-      </div>
-      <div className="mt-1 mb-3 flex items-center gap-2 text-xs">
-        <span className="w-14 text-ink-400">Strength</span>
-        <Bar value={n} max={army.initialTotal} color="#9cc0ff" height={5} />
-        <span className="w-8 text-right tabular-nums">{Math.round((n / Math.max(1, army.initialTotal)) * 100)}%</span>
-      </div>
+      {!unknown && (
+        <>
+          <div className="mt-3 flex items-center gap-2 text-xs">
+            <span className="w-14 text-ink-400">Morale</span>
+            <Bar value={army.morale} max={100} color={moraleColor(army.morale)} height={5} />
+            <span className="w-8 text-right tabular-nums">{Math.round(army.morale)}</span>
+          </div>
+          <div className="mt-1 mb-3 flex items-center gap-2 text-xs">
+            <span className="w-14 text-ink-400">Strength</span>
+            <Bar value={n} max={army.initialTotal} color="#9cc0ff" height={5} />
+            <span className="w-8 text-right tabular-nums">{Math.round((n / Math.max(1, army.initialTotal)) * 100)}%</span>
+          </div>
+        </>
+      )}
+      {unknown && <div className="mb-3" />}
     </>
   )
 }
@@ -574,6 +581,9 @@ function CastleHeader({ engine, castle }: { engine: GameEngine; castle: Castle }
         <Bar value={castle.walls} max={castle.maxWalls} color="#d9b44a" height={5} />
         <span className="w-10 text-right tabular-nums">{Math.round((castle.walls / castle.maxWalls) * 100)}%</span>
       </div>
+      {(castle.sappedUntil ?? 0) > engine.state.time && (
+        <p className="mt-1 text-[12px] text-ember-300">Undermined by sappers: the walls will not mend for {Math.ceil((castle.sappedUntil ?? 0) - engine.state.time)}s.</p>
+      )}
       {battle && <BattleBox engine={engine} battle={battle} />}
     </>
   )

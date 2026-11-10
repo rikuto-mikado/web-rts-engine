@@ -1,7 +1,7 @@
 import { mulberry32 } from './noise'
 import { PREFIX, SUFFIX } from './mapgen'
 import type { CastleDef, ResourceSite, Troops } from './types'
-import { castleRadius, type World } from './world'
+import { holdingRadius, type World } from './world'
 
 /**
  * The countryside between the castles: free villages (to win over or plunder)
@@ -14,7 +14,7 @@ export function generateCountryside(world: World, castles: CastleDef[], seed: nu
   const area = (world.size * world.size) / (3920 * 3920)
   const villageCount = Math.max(4, Math.round(10 * area))
   const siteCount = Math.max(4, Math.round(12 * area))
-  const taken: { x: number; z: number; r: number }[] = castles.map((c) => ({ x: c.x, z: c.z, r: castleRadius(c.tier) + 260 }))
+  const taken: { x: number; z: number; r: number }[] = castles.map((c) => ({ x: c.x, z: c.z, r: holdingRadius(c) + 260 }))
   const free = (x: number, z: number, r: number) => taken.every((t) => Math.hypot(t.x - x, t.z - z) > t.r + r)
   const names = new Set(castles.map((c) => c.name))
   const name = () => {
@@ -35,6 +35,8 @@ export function generateCountryside(world: World, castles: CastleDef[], seed: nu
     const z = (rnd() * 2 - 1) * (half - 260)
     if (!world.isPassable(x, z) || world.forestAt(x, z) > 0.45 || world.slopeAt(x, z) > 0.35 || world.bridgeAt(x, z, 60)) continue
     if (!free(x, z, 120)) continue
+    // Rich climates (coast, river jungle, golden plains) are thick with villages; deserts and mesas are not.
+    if (rnd() > Math.min(1, world.rulesAt(x, z).villages / 1.8)) continue
     const militia = 90 + Math.floor(rnd() * 120)
     const garrison: Troops = { infantry: Math.round(militia * 0.65), archers: Math.round(militia * 0.35), cavalry: 0, engineers: 0 }
     villages.push({
@@ -60,7 +62,9 @@ export function generateCountryside(world: World, castles: CastleDef[], seed: nu
     const high = world.heightAt(x, z) > 38 || world.slopeAt(x, z) > 0.3
     // Alternate kinds so both appear; mines on high ground, lumber camps in forest.
     const want = sites.length % 2 === 0 ? 'mine' : 'lumber'
-    if (want === 'mine' && !high) continue
+    const mines = world.rulesAt(x, z).mines
+    if (want === 'mine' && !high && mines < 1.5) continue
+    if (want === 'mine' && rnd() > Math.min(1, mines / 2.2)) continue
     if (want === 'lumber' && forest < 0.5) continue
     if (!free(x, z, 90)) continue
     sites.push({ id: `r${sites.length}`, kind: want, x: Math.round(x), z: Math.round(z), stock: RESOURCE_STOCK, workerId: null, carry: 0, nextWagonAt: 0 })

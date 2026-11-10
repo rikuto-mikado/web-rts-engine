@@ -1,10 +1,10 @@
 import { Map as MapIcon, X } from 'lucide-react'
 import { useEffect, useRef, useState, type PointerEvent } from 'react'
 import { useViewport } from './viewport'
-import type { GameEngine } from '../game/engine'
+import { PLAYER, type GameEngine } from '../game/engine'
 import { RELATION_COLOR } from './common'
 import { total } from '../game/troops'
-import { castleRadius } from '../game/world'
+import { holdingRadius } from '../game/world'
 import type { GameRenderer } from '../render/GameRenderer'
 
 const SIZE = 200
@@ -31,9 +31,10 @@ export function Minimap({ engine, renderer }: { engine: GameEngine; renderer: Ga
         world.colorAt(x, z, c)
         if (h < 0.5 && !world.bridgeAt(x, z)) {
           const w = world.biome.water
-          c[0] = ((w >> 16) & 255) / 255
-          c[1] = ((w >> 8) & 255) / 255
-          c[2] = (w & 255) / 255
+          const ford = world.fordAt(x, z) ? 0.45 : 0
+          c[0] = (((w >> 16) & 255) / 255) * (1 - ford) + 0.78 * ford
+          c[1] = (((w >> 8) & 255) / 255) * (1 - ford) + 0.72 * ford
+          c[2] = ((w & 255) / 255) * (1 - ford) + 0.55 * ford
         } else if (world.bridgeAt(x, z)) {
           c[0] = 0.55
           c[1] = 0.42
@@ -97,7 +98,7 @@ export function Minimap({ engine, renderer }: { engine: GameEngine; renderer: Ga
         if (c.faction !== 'player' && !engine.isExplored(c.x, c.z)) continue
         const x = toPx(c.x)
         const y = toPx(c.z)
-        const r = Math.max(world.size > 3000 ? 2.6 : 3.5, (castleRadius(c.tier) / world.size) * SIZE * 1.3)
+        const r = Math.max(world.size > 3000 ? 2.6 : 3.5, (holdingRadius(c) / world.size) * SIZE * 0.9)
         ctx.fillStyle = engine.factionColor(c.faction)
         ctx.strokeStyle = c.battleId && Math.floor(now / 300) % 2 ? '#fff' : RELATION_COLOR[engine.relation(c.faction)]
         ctx.lineWidth = 1.5
@@ -118,7 +119,7 @@ export function Minimap({ engine, renderer }: { engine: GameEngine; renderer: Ga
       }
       for (const a of engine.state.armies) {
         const rel = engine.relation(a.faction)
-        if (rel !== 'self' && !engine.isVisible(a.x, a.z)) continue
+        if (!engine.canSee(engine.team(PLAYER), a)) continue
         const x = toPx(a.x)
         const y = toPx(a.z)
         const r = (rel === 'self' ? 2 : 1.5) + Math.min(3, Math.sqrt(total(a.troops)) / 12)

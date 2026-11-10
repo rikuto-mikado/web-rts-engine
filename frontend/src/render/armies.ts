@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import type { GameEngine } from '../game/engine'
+import { PLAYER, type GameEngine } from '../game/engine'
 import { mulberry32 } from '../game/noise'
 import type { Army, FormationKey } from '../game/types'
 import { figureGeometries, figuresFor, type FigureKind } from './figures'
@@ -236,11 +236,9 @@ export class ArmyRenderer {
     for (const army of engine.state.armies) {
       const v = this.ensureVisual(army)
       v.alive = true
-      let visible = army.faction === 'player' || engine.isVisible(army.x, army.z)
-      if (visible && engine.relation(army.faction) === 'enemy' && engine.isHidden(army)) {
-        // Lying in ambush: only seen by troops right on top of it.
-        visible = engine.state.armies.some((p) => p.faction === 'player' && Math.abs(p.x - army.x) < 90 && Math.abs(p.z - army.z) < 90)
-      }
+      // No fog: every army is in view, except enemies lying hidden that none of ours is close to.
+      // Inside the walls of a castle of its own side, an army is out of sight (it marched in through a gate).
+      const visible = engine.canSee(engine.team(PLAYER), army) && !engine.insideWalls(army)
       v.seen = visible
       v.banner.visible = visible
       // Snap if the gap is large (e.g. first frame, after load).

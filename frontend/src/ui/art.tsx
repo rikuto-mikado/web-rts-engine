@@ -1,3 +1,4 @@
+import type { WorkJob } from '../game/types'
 import type { OutpostKind } from '../game/outposts'
 import type { UnitType } from '../game/types'
 import { UnitGlyph } from './common'
@@ -130,25 +131,8 @@ export function OutpostArt({ kind, size = 96 }: { kind: OutpostKind; size?: numb
 }
 
 /** Engineers' works: abatis, stakes, burning and rebuilding a bridge. */
-export function WorkArt({ job, size = 96 }: { job: 'abatis' | 'stakes' | 'burn' | 'repair'; size?: number }) {
+export function WorkArt({ job, size = 96 }: { job: WorkJob; size?: number }) {
   switch (job) {
-    case 'abatis':
-      return (
-        <Frame size={size}>
-          <rect y="44" width="96" height="20" fill={GRASS} />
-          {[14, 34, 54, 74].map((x, i) => (
-            <g key={x} transform={`translate(${x} 46) rotate(${i % 2 ? -12 : 10})`}>
-              <rect x="-11" y="-2" width="22" height="4" rx="2" fill={WOOD_D} />
-              <line x1="-6" y1="-1" x2="-11" y2="-10" stroke={WOOD} strokeWidth="1.4" />
-              <line x1="0" y1="-1" x2="2" y2="-12" stroke={WOOD} strokeWidth="1.4" />
-              <line x1="6" y1="-1" x2="11" y2="-9" stroke={WOOD} strokeWidth="1.4" />
-              <circle cx="-9" cy="-10" r="3" fill={PINE} />
-              <circle cx="3" cy="-12" r="3.4" fill={PINE_L} />
-              <circle cx="10" cy="-9" r="2.8" fill={PINE} />
-            </g>
-          ))}
-        </Frame>
-      )
     case 'stakes':
       return (
         <Frame size={size}>
@@ -161,32 +145,83 @@ export function WorkArt({ job, size = 96 }: { job: 'abatis' | 'stakes' | 'burn' 
           ))}
         </Frame>
       )
-    case 'burn':
+    case 'pit':
       return (
         <Frame size={size}>
-          <rect y="44" width="96" height="20" fill={GRASS} />
-          <path d="M0 50 Q30 46 50 51 T96 50 L96 58 Q60 61 40 57 T0 58Z" fill={WATER} />
-          <rect x="20" y="44" width="56" height="3" fill={WOOD_D} />
-          <rect x="30" y="47" width="2" height="7" fill={STONE_D} />
-          <rect x="62" y="47" width="2" height="7" fill={STONE_D} />
-          <path d="M34 44 Q38 30 44 38 Q46 24 52 36 Q56 28 60 44Z" fill="#f08a3a" />
-          <path d="M40 44 Q44 34 48 40 Q50 32 54 44Z" fill="#ffd27a" />
-          <circle cx="50" cy="16" r="7" fill="#4a4540" opacity="0.7" />
-          <circle cx="58" cy="10" r="5" fill="#4a4540" opacity="0.5" />
+          <rect y="40" width="96" height="24" fill={GRASS} />
+          <ellipse cx="48" cy="50" rx="36" ry="9" fill="#3b2e20" />
+          <ellipse cx="36" cy="49" rx="9" ry="2.5" fill="#4c5a5e" />
+          <ellipse cx="60" cy="52" rx="11" ry="2.6" fill="#4c5a5e" />
+          {[22, 30, 44, 52, 68, 74].map((x, i) => (
+            <polygon key={x} points={`${x},${51 - (i % 2) * 3} ${x + 2},${47 - (i % 2) * 3} ${x + 4},${51 - (i % 2) * 3}`} fill={STONE} />
+          ))}
+          {[14, 18, 80, 84].map((x) => (
+            <line key={x} x1={x} y1="48" x2={x + 1} y2="36" stroke="#6f7a3a" strokeWidth="1.4" />
+          ))}
+          <text x="48" y="28" textAnchor="middle" fontSize="13" fill={CANVAS} opacity="0.8">?</text>
         </Frame>
       )
-    case 'repair':
+    case 'barricade':
+      return (
+        <Frame size={size}>
+          <rect y="44" width="96" height="20" fill={GRASS} />
+          <rect y="48" width="96" height="9" fill="#9a8460" />
+          <rect x="14" y="40" width="52" height="5" rx="2.5" fill={WOOD_D} />
+          <rect x="16" y="35" width="48" height="5" rx="2.5" fill={WOOD} />
+          <rect x="18" y="30" width="44" height="5" rx="2.5" fill={WOOD_D} />
+          <g transform="rotate(-18 76 38)">
+            <rect x="64" y="30" width="22" height="10" fill={WOOD} />
+            <circle cx="68" cy="42" r="4.5" fill="none" stroke={WOOD_D} strokeWidth="2" />
+            <circle cx="82" cy="42" r="4.5" fill="none" stroke={WOOD_D} strokeWidth="2" />
+          </g>
+          {[18, 26, 34, 42, 50, 58].map((x) => (
+            <line key={x} x1={x} y1="46" x2={x - 5} y2="38" stroke={WOOD} strokeWidth="1.6" />
+          ))}
+        </Frame>
+      )
+    case 'pitch':
+      return (
+        <Frame size={size}>
+          <rect y="44" width="96" height="20" fill={GRASS} />
+          {[26, 44, 62].map((x, i) => (
+            <g key={x}>
+              <rect x={x - 7} y={36 + (i % 2) * 3} width="14" height="14" rx="3" fill="#2e2318" />
+              <rect x={x - 7} y={39 + (i % 2) * 3} width="14" height="1.6" fill={STONE_D} />
+              <rect x={x - 7} y={45 + (i % 2) * 3} width="14" height="1.6" fill={STONE_D} />
+            </g>
+          ))}
+          <path d="M70 36 Q74 22 80 30 Q82 16 88 28 Q90 34 86 38Z" fill="#f08a3a" />
+          <path d="M76 36 Q79 28 82 32 Q84 26 86 36Z" fill="#ffd27a" />
+          <circle cx="80" cy="12" r="6" fill="#3a342e" opacity="0.6" />
+        </Frame>
+      )
+    case 'bridge':
       return (
         <Frame size={size}>
           <rect y="44" width="96" height="20" fill={GRASS} />
           <path d="M0 50 Q30 46 50 51 T96 50 L96 58 Q60 61 40 57 T0 58Z" fill={WATER} />
-          <rect x="20" y="44" width="34" height="3" fill={WOOD} />
-          <rect x="30" y="47" width="2" height="7" fill={STONE_D} />
-          <rect x="62" y="47" width="2" height="7" fill={STONE_D} />
-          <rect x="56" y="38" width="14" height="3" fill={WOOD} transform="rotate(-18 63 40)" />
-          <circle cx="72" cy="30" r="3" fill={CANVAS} />
-          <rect x="70.5" y="33" width="3" height="9" fill="#2f4f8a" />
-          <line x1="74" y1="35" x2="80" y2="30" stroke={STONE} strokeWidth="1.5" />
+          <rect x="14" y="43" width="50" height="3" fill={WOOD} />
+          {[22, 38, 54].map((x) => (
+            <rect key={x} x={x} y="46" width="2" height="11" fill={WOOD_D} />
+          ))}
+          <line x1="14" y1="38" x2="64" y2="38" stroke={WOOD_D} strokeWidth="1" />
+          <rect x="66" y="40" width="16" height="3" fill={WOOD} transform="rotate(-14 74 41)" />
+          <circle cx="84" cy="30" r="3" fill={CANVAS} />
+          <rect x="82.5" y="33" width="3" height="9" fill="#2f4f8a" />
+        </Frame>
+      )
+    case 'demolish':
+      return (
+        <Frame size={size}>
+          <rect y="44" width="96" height="20" fill={GRASS} />
+          <path d="M0 50 Q30 46 50 51 T96 50 L96 58 Q60 61 40 57 T0 58Z" fill={WATER} />
+          <rect x="10" y="43" width="26" height="3" fill={WOOD} />
+          <rect x="58" y="43" width="28" height="3" fill={WOOD} />
+          <rect x="38" y="48" width="16" height="3" fill={WOOD_D} transform="rotate(24 46 49)" />
+          <rect x="22" y="46" width="2" height="11" fill={WOOD_D} />
+          <rect x="70" y="46" width="2" height="11" fill={WOOD_D} />
+          <circle cx="47" cy="30" r="5" fill="#4a4540" opacity="0.5" />
+          <line x1="40" y1="24" x2="54" y2="38" stroke={STONE} strokeWidth="2" />
         </Frame>
       )
   }

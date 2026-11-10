@@ -1,4 +1,4 @@
-import { BIOMES, type MapType } from './biomes'
+import { MAPS, type MapType } from './biomes'
 import { PLAYER } from './engine'
 import { mulberry32 } from './noise'
 import type { CastleDef, FactionDef, GameMode, GameRules, MapSize, Scenario, ScenarioDefinition, Team, Troops } from './types'
@@ -14,7 +14,8 @@ const REALMS = [
   'Ambergate', 'Stormhold', 'Westmarch', 'Eldermoor', 'Sablecrest', 'Wyrmfell', 'Goldhaven', 'Marrowind', 'Coldspire', 'Redfen',
   'Larkspur', 'Northwind', 'Hollowmere', 'Silverholm', 'Blackfen', 'Ashford', 'Kingsreach', 'Mistvale', 'Oakheart', 'Frostgard',
   'Emberfall', 'Wolfsbane', 'Seahaven', 'Dunmere', 'Caer Lys', 'Varnhall', 'Morwen', 'Tirath', 'Galdor', 'Brennoch',
-]
+  'Brackenford', 'Dunmarrow', 'Heronsgate', 'Vellmoor', 'Crowmere', 'Elmstead', 'Galewick', 'Saltmarsh', 'Thistledown', 'Wolfhollow',
+  'Brindlecombe', 'Morrowgate', 'Pinecrest', 'Rookhaven', 'Starfall', 'Underhill', 'Whitlow']
 const TITLES = ['Kingdom of', 'Duchy of', 'County of', 'March of', 'Principality of', 'Barony of', 'Earldom of']
 export const PREFIX = [
   'Ash', 'Black', 'Bright', 'Cold', 'Dun', 'Elder', 'Fair', 'Frost', 'Gold', 'Grey', 'High', 'Iron', 'Kings', 'Long', 'Mist', 'North',
@@ -42,10 +43,11 @@ export interface MapOptions {
 
 /** Map-size presets. Medium is the original size; the others are rebalanced around it. */
 export const SIZE_PRESETS: Record<MapSize, { conquest: { map: number; castles: number; vassals: number; playerCastles: number; enemyLine: number }; alliance: { map: number; realms: number } }> = {
-  // Sides are 1.4× the original layouts: room for villages, mines and lumber camps between the castles.
-  small: { conquest: { map: 2940, castles: 10, vassals: 1, playerCastles: 2, enemyLine: 0.52 }, alliance: { map: 4480, realms: 16 } },
-  medium: { conquest: { map: 3920, castles: 15, vassals: 2, playerCastles: 2, enemyLine: 0.52 }, alliance: { map: 5600, realms: 24 } },
-  large: { conquest: { map: 5180, castles: 24, vassals: 2, playerCastles: 3, enemyLine: 0.6 }, alliance: { map: 6720, realms: 32 } },
+  // Twice the area of the previous layouts, for castles 3-4x their old footprint and the countryside between them.
+  // Alliance War: 8 v 8, 16 v 16 (the standard) and 24 v 24.
+  small: { conquest: { map: 4160, castles: 10, vassals: 1, playerCastles: 2, enemyLine: 0.52 }, alliance: { map: 6000, realms: 16 } },
+  medium: { conquest: { map: 5540, castles: 15, vassals: 2, playerCastles: 2, enemyLine: 0.52 }, alliance: { map: 8000, realms: 32 } },
+  large: { conquest: { map: 7320, castles: 24, vassals: 2, playerCastles: 3, enemyLine: 0.6 }, alliance: { map: 10000, realms: 48 } },
 }
 
 export function generateMap(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: MapOptions = {}): GeneratedMap {
@@ -62,41 +64,121 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
   const R = (a: number, b: number) => a + rnd() * (b - a)
   const alliance = mode === 'alliance'
   const preset = SIZE_PRESETS[opts.size ?? 'medium']
-  const factionCount = Math.max(6, Math.min(32, opts.factions ?? preset.alliance.realms))
+  const factionCount = Math.max(6, Math.min(48, opts.factions ?? preset.alliance.realms))
   const size = alliance ? preset.alliance.map : preset.conquest.map
   const half = size / 2
   // Terrain features scale with map area relative to the medium preset.
   const areaScale = (size * size) / ((alliance ? 4000 : 2800) ** 2)
-  const mapType: MapType = opts.mapType ?? 'vales'
-  const gen = BIOMES[mapType].gen
+  const mapType: MapType = opts.mapType ?? 'crown'
+  const mapDef = MAPS[mapType]
 
-  // --- Terrain features -----------------------------------------------------
+  // --- Terrain features, laid out for this map --------------------------------
+  // u, v run from -1 (west, north) to 1 (east, south).
+  const at = (u: number, v: number): [number, number] => [u * half, v * half]
   const mountains: ScenarioDefinition['mountains'] = []
-  for (let i = 0; i < Math.round((alliance ? gen.mountains[1] : gen.mountains[0]) * areaScale); i++) {
-    mountains.push({ x: R(-half + 150, half - 150), z: R(-half + 150, half - 150), r: R(gen.mountainSize[0], gen.mountainSize[1]), h: R(gen.mountainHeight[0], gen.mountainHeight[1]) })
-  }
   const rivers: ScenarioDefinition['rivers'] = []
-  const nRivers = Math.round(R(gen.rivers[0], gen.rivers[1] + 0.99) - 0.49) + (alliance && gen.rivers[1] > 1 ? 1 : 0)
-  for (let i = 0; i < nRivers; i++) {
-    const horizontal = rnd() < 0.5
-    const a = R(-half * 0.6, half * 0.6)
-    const b = R(-half * 0.6, half * 0.6)
+  const lakes: ScenarioDefinition['lakes'] = []
+  const count = (n: number) => Math.max(1, Math.round(n * Math.sqrt(areaScale)))
+  const peak = (u: number, v: number, r: [number, number], h: [number, number]) => {
+    const [x, z] = at(u, v)
+    mountains.push({ x, z, r: R(r[0], r[1]), h: R(h[0], h[1]) })
+  }
+  const scatter = (n: number, inside: (u: number, v: number) => boolean, r: [number, number], h: [number, number]) => {
+    for (let i = 0, tries = 0; i < n && tries < n * 40; tries++) {
+      const u = R(-0.92, 0.92)
+      const v = R(-0.92, 0.92)
+      if (!inside(u, v)) continue
+      peak(u, v, r, h)
+      i++
+    }
+  }
+  /** A river from one point to another (in u, v), meandering. */
+  const river = (u0: number, v0: number, u1: number, v1: number, width: number, wander = 0.05) => {
     const pts: [number, number][] = []
-    const steps = 12
+    const steps = 14
     let drift = 0
+    const [ax, az] = at(u0, v0)
+    const [bx, bz] = at(u1, v1)
+    const len = Math.hypot(bx - ax, bz - az) || 1
+    const nx = -(bz - az) / len
+    const nz = (bx - ax) / len
+    const waves = R(1, 3)
     for (let k = 0; k <= steps; k++) {
       const t = k / steps
-      const main = -half - 100 + t * (size + 200)
-      drift += R(-1, 1) * size * 0.04
+      drift += R(-1, 1) * size * wander * 0.6
       drift *= 0.85
-      const cross = a + (b - a) * t + drift + Math.sin(t * Math.PI * R(1, 3)) * size * 0.05
-      pts.push(horizontal ? [main, cross] : [cross, main])
+      const off = drift + Math.sin(t * Math.PI * waves) * size * wander
+      pts.push([ax + (bx - ax) * t + nx * off, az + (bz - az) * t + nz * off])
     }
-    rivers.push({ width: R(40, 54), points: pts })
+    rivers.push({ width, points: pts })
   }
-  const lakes: ScenarioDefinition['lakes'] = []
-  const nLakes = Math.round((alliance ? gen.lakes[1] : gen.lakes[0]) * areaScale)
-  for (let i = 0; i < nLakes; i++) lakes.push({ x: R(-half + 300, half - 300), z: R(-half + 300, half - 300), r: R(gen.lakeSize[0], gen.lakeSize[1]) })
+  const lake = (u: number, v: number, r: number) => {
+    const [x, z] = at(u, v)
+    lakes.push({ x, z, r })
+  }
+  const scatterLakes = (n: number, inside: (u: number, v: number) => boolean, r: [number, number]) => {
+    for (let i = 0, tries = 0; i < n && tries < n * 40; tries++) {
+      const u = R(-0.85, 0.85)
+      const v = R(-0.85, 0.85)
+      if (!inside(u, v)) continue
+      lake(u, v, R(r[0], r[1]))
+      i++
+    }
+  }
+  switch (mapType) {
+    case 'crown': {
+      // The snowbound spine, broken by three passes.
+      for (let u = -1.05; u <= 1.05; u += 0.1) {
+        if ([-0.5, 0, 0.5].some((p) => Math.abs(u - p) < 0.1)) continue
+        peak(u + R(-0.03, 0.03), R(-0.06, 0.06), [half * 0.09, half * 0.13], [210, 280])
+      }
+      scatter(count(3), (_u, v) => v < -0.4, [150, 260], [110, 170])
+      scatter(count(2), (_u, v) => v > 0.45, [140, 220], [80, 120])
+      river(-1.1, R(0.45, 0.7), 1.1, R(0.45, 0.7), R(44, 54))
+      river(-1.1, R(-0.75, -0.5), 1.1, R(-0.75, -0.5), R(38, 46))
+      scatterLakes(count(2), (_u, v) => Math.abs(v) > 0.4, [70, 130])
+      break
+    }
+    case 'delta': {
+      river(R(-0.12, 0.12), -1.1, R(-0.12, 0.12), 1.1, 74, 0.035)
+      scatterLakes(count(7), (u, v) => v > 0.55 && Math.abs(u) < 0.42, [55, 115])
+      scatter(count(6), (u) => Math.abs(u) > 0.5, [140, 240], [60, 110])
+      if (alliance) river(-1.1, R(-0.6, -0.3), R(-0.15, -0.05), R(-0.2, 0.1), 40, 0.03)
+      break
+    }
+    case 'frostfire': {
+      scatter(count(7), (u, v) => u - v < -0.35, [160, 260], [160, 240])
+      scatter(count(3), (u, v) => u - v > 0.45, [150, 240], [110, 170])
+      river(-1.1, -0.95, 1.1, 1.0, R(42, 50), 0.04)
+      scatterLakes(count(4), (u, v) => u - v > 0.3, [70, 140])
+      break
+    }
+    case 'coast': {
+      // The sea: great overlapping bowls beyond the southern shore.
+      for (let u = -1.4; u <= 1.4; u += 0.35) lake(u + R(-0.08, 0.08), R(1.42, 1.55), half * R(0.66, 0.74))
+      scatter(count(11), (_u, v) => v < -0.15, [110, 200], [90, 140])
+      river(R(-0.7, -0.4), -1.1, R(-0.6, -0.3), 0.9, R(40, 48))
+      river(R(0.3, 0.7), -1.1, R(0.3, 0.6), 0.9, R(40, 48))
+      break
+    }
+    case 'basin': {
+      scatterLakes(count(7), (u, v) => Math.hypot(u, v) < 0.34, [100, 210])
+      for (let a = 0; a < Math.PI * 2; a += Math.PI / (alliance ? 7 : 5)) {
+        const rr = R(0.82, 0.92)
+        peak(Math.cos(a) * rr, Math.sin(a) * rr, [180, 300], [120, 190])
+      }
+      river(R(-0.2, 0.2), -1.1, R(-0.05, 0.05), -0.05, R(38, 46))
+      break
+    }
+    case 'divide': {
+      river(R(-0.45, -0.3), -1.1, R(-0.45, -0.25), 1.1, R(42, 50))
+      river(R(0.25, 0.45), -1.1, R(0.25, 0.45), 1.1, R(42, 50))
+      scatter(count(6), (_u, v) => v < -0.45, [160, 260], [190, 260])
+      scatter(count(4), (_u, v) => Math.abs(v) < 0.25, [120, 200], [70, 120])
+      scatterLakes(count(2), (_u, v) => v > 0.45, [70, 130])
+      break
+    }
+  }
 
   const riverDist = (x: number, z: number) => {
     let best = Infinity
@@ -110,22 +192,22 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
 
   // --- Castle sites (Poisson-like rejection sampling) -----------------------
   const targetCastles = alliance ? Math.round(factionCount * 1.65 + 4) : preset.conquest.castles
-  const dmin = alliance ? (size * 0.62) / Math.sqrt(targetCastles) : Math.min(560, (size * 0.6) / Math.sqrt(targetCastles))
+  const dmin = alliance ? (size * 0.62) / Math.sqrt(targetCastles) : Math.min(800, (size * 0.6) / Math.sqrt(targetCastles))
   const sites: { x: number; z: number }[] = []
-  const margin = 240
+  const margin = 320
   for (let tries = 0; tries < 20000 && sites.length < targetCastles; tries++) {
     const x = R(-half + margin, half - margin)
     const z = R(-half + margin, half - margin)
-    if (mountains.some((m) => Math.hypot(x - m.x, z - m.z) < m.r * 1.1)) continue
-    if (lakes.some((l) => Math.hypot(x - l.x, z - l.z) < l.r + 130)) continue
-    if (riverDist(x, z) < 120) continue
+    if (mountains.some((m) => Math.hypot(x - m.x, z - m.z) < m.r * 1.1 + 120)) continue
+    if (lakes.some((l) => Math.hypot(x - l.x, z - l.z) < l.r + 230)) continue
+    if (riverDist(x, z) < 230) continue
     if (sites.some((s) => Math.hypot(x - s.x, z - s.z) < dmin)) continue
     sites.push({ x, z })
   }
   if (sites.length < (alliance ? factionCount + 2 : Math.max(8, targetCastles - 3))) return null
 
   // Bridges every ~450 units along each river.
-  const bridges: { x: number; z: number }[] = []
+  const bridges: { x: number; z: number; ford?: boolean }[] = []
   for (const r of rivers) {
     let acc = R(150, 300)
     for (let k = 0; k < r.points.length - 1; k++) {
@@ -138,7 +220,8 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
         const z = az + ((bz - az) * t) / len
         const inside = Math.abs(x) < half - 200 && Math.abs(z) < half - 200
         const clear = !mountains.some((m) => Math.hypot(x - m.x, z - m.z) < m.r * 1.2) && !bridges.some((b) => Math.hypot(b.x - x, b.z - z) < 250)
-        if (inside && clear) bridges.push({ x, z })
+        // Two crossings in three are proper bridges; the rest are shallow fords.
+        if (inside && clear) bridges.push(bridges.length % 3 === 2 ? { x, z, ford: true } : { x, z })
         t += R(380, 520)
       }
       acc = t - len
@@ -311,12 +394,12 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
     bridges,
     mountains,
     lakes,
-    forest_density: R(gen.forest[0], gen.forest[1]),
+    forest_density: mapDef.gen.forest,
     biome: mapType,
   }
   const scenario: Scenario = {
     key: `${mode}-${mapType}-${opts.size ?? 'medium'}-${seed}`,
-    name: `${alliance ? 'Alliance War' : 'Survival'} · ${BIOMES[mapType].name}`,
+    name: `${alliance ? 'Alliance War' : 'Survival'} · ${mapDef.name}`,
     description: alliance
       ? `${factions.length - 1} realms in two great alliances. Take the enemy High Seat.`
       : 'A random frontier. Break the coalition by taking every enemy capital.',

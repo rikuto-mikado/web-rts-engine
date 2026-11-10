@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { mulberry32, Simplex } from '../game/noise'
-import { BRIDGE_DECK, WATER_LEVEL, castleRadius, type World } from '../game/world'
+import { BRIDGE_DECK, WATER_LEVEL, castleRadius, type BridgeInfo, type World } from '../game/world'
 import { box, cone, cyl, merge, part, sphere } from './geo'
 import { applyVision } from './vision'
 
@@ -126,7 +126,7 @@ export function buildVegetation(world: World): THREE.Group {
   const clearOf = (x: number, z: number) => {
     for (const c of world.def.castles) if (Math.hypot(x - c.x, z - c.z) < castleRadius(c.tier) * 1.25) return false
     if (world.def.walls && world.onWall(x, z, 30)) return false
-    return !world.bridgeAt(x, z, 25)
+    return !world.bridgeAt(x, z, 30) && !world.fordAt(x, z, 25)
   }
   for (let z = -world.half + 20; z < world.half - 20; z += step) {
     for (let x = -world.half + 20; x < world.half - 20; x += step) {
@@ -145,13 +145,14 @@ export function buildVegetation(world: World): THREE.Group {
         tmp.rotation.set((rnd() - 0.5) * 0.08, rnd() * Math.PI * 2, (rnd() - 0.5) * 0.08)
         tmp.scale.set(s, s * (0.9 + rnd() * 0.25), s)
         tmp.updateMatrix()
-        const B = world.biome
+        // Each tree takes the look of the climate it grows in.
+        const B = world.climateAt(px, pz)
         const pine = rnd() < B.pines || (h > 55 && rnd() < 0.8)
         const tint = new THREE.Color().setHSL(B.treeHue + (rnd() - 0.5) * 0.06, 0.5, B.treeLight + rnd() * 0.18)
         const tc = new THREE.Color(1, 1, 1).lerp(tint, 0.35)
         if (B.treeFrost > 0) tc.lerp(new THREE.Color(1.6, 1.65, 1.75), B.treeFrost * (0.6 + rnd() * 0.4))
         // Canopy override: autumn colours broadleaves only, scorched woods char every tree.
-        if (B.canopy && (!pine || B.key === 'ashen')) {
+        if (B.canopy && (!pine || B.deadPines)) {
           const m = B.canopy[Math.floor(rnd() * B.canopy.length)]
           tc.setRGB(m[0], m[1], m[2])
         }
@@ -203,36 +204,156 @@ export function buildVegetation(world: World): THREE.Group {
   return group
 }
 
-export function buildBridges(world: World): THREE.Group {
+const bridgeMat = applyVision(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.85 }))
+
+/** An engineers' timber bridge: plank deck on trestles, rope rails. */
+export function bridgeMesh(b: BridgeInfo): THREE.Mesh {
+  const L = b.length
+  const W = b.width
+  const parts: THREE.BufferGeometry[] = [
+    part(box(L, 1.6, W), 0x8a6844, { y: 0 }),
+    part(box(L, 0.6, 0.6), 0x6e5234, { y: 3.4, z: W / 2 - 0.5 }),
+    part(box(L, 0.6, 0.6), 0x6e5234, { y: 3.4, z: -W / 2 + 0.5 }),
+  ]
+  // Plank seams.
+  for (let x = -L / 2 + 4; x < L / 2; x += 6) parts.push(part(box(0.5, 1.7, W - 2), 0x6f5335, { x, y: 0.05 }))
+  // Timber trestles in the river and rail posts.
+  for (let x = -L / 2 + 12; x <= L / 2 - 12; x += Math.max(18, (L - 24) / 4)) {
+    for (const zz of [-1, 1]) parts.push(part(cyl(0.9, 1.1, 16, 6), 0x5c4429, { x, y: -7.5, z: zz * (W / 2 - 3), rx: zz * 0.12 }))
+    parts.push(part(box(1.2, 1.2, W), 0x5c4429, { x, y: -1.4 }))
+  }
+  for (let x = -L / 2 + 2; x <= L / 2 - 2; x += 10) for (const zz of [-1, 1]) parts.push(part(cyl(0.35, 0.4, 4, 5), 0x5c4429, { x, y: 2, z: zz * (W / 2 - 0.5) }))
+  const mesh = new THREE.Mesh(merge(parts), bridgeMat)
+  mesh.position.set(b.x, BRIDGE_DECK - 0.8, b.z)
+  mesh.rotation.y = -Math.atan2(b.dirZ, b.dirX)
+  mesh.castShadow = true
+  mesh.receiveShadow = true
+  return mesh
+}
+
+/** Fords: stepping stones and pale broken water across the shallows. */
+export function buildFords(world: World): THREE.Group {
   const group = new THREE.Group()
-  const mat = applyVision(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.85 }))
-  for (const b of world.bridges) {
+  const stone = applyVision(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.95 }))
+  const foam = new THREE.MeshBasicMaterial({ color: 0xe8f0f2, transparent: true, opacity: 0.28, depthWrite: false })
+  let seed = 1
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647)
+  for (const f of world.fords) {
+    seed = Math.abs(Math.round(f.x * 13 + f.z * 7)) + 1
+    const parts: THREE.BufferGeometry[] = []
+    const L = f.length * 0.82
+    // A broad band of pebbles and stepping stones breaking the surface.
+    for (let k = 0; k < 110; k++) {
+      const along = (rnd() - 0.5) * L
+      const across = (rnd() - 0.5) * (f.width + 34)
+      const s = 1.2 + rnd() * 2.6
+      parts.push(part(cyl(s, s * 1.2, 1.2, 6), rnd() < 0.5 ? 0x9a958a : 0x80796e, { x: along, y: 0.1 + rnd() * 0.3, z: across, ry: rnd() * 3 }))
+    }
+    const mesh = new THREE.Mesh(merge(parts), stone)
+    mesh.position.set(f.x, WATER_LEVEL, f.z)
+    mesh.rotation.y = -Math.atan2(f.dirZ, f.dirX)
+    mesh.receiveShadow = true
+    group.add(mesh)
+    // Small soft ripples where the water breaks over the stones.
+    const rip: THREE.BufferGeometry[] = []
+    for (let k = 0; k < 34; k++) {
+      const along = (rnd() - 0.5) * L
+      const across = (rnd() - 0.5) * (f.width + 20)
+      rip.push(part(new THREE.CircleGeometry(2.5 + rnd() * 3, 10), 0xffffff, { x: along, z: across, rx: -Math.PI / 2, sx: 1.8 }))
+    }
+    const ripples = new THREE.Mesh(merge(rip), foam)
+    ripples.position.set(f.x, WATER_LEVEL + 0.3, f.z)
+    ripples.rotation.y = -Math.atan2(f.dirZ, f.dirX)
+    ripples.renderOrder = 3
+    group.add(ripples)
+  }
+  return group
+}
+
+type BridgeStyle = 'arch' | 'covered' | 'megalith' | 'sandstone' | 'basalt'
+/** The map's own bridges take the style of the land they stand in. */
+function bridgeStyle(key: string): BridgeStyle {
+  if (key === 'taiga' || key === 'autumn') return 'covered'
+  if (key === 'alpine' || key === 'icefield') return 'megalith'
+  if (key === 'desert' || key === 'mesa') return 'sandstone'
+  if (key === 'volcanic' || key === 'wasteland' || key === 'steam' || key === 'marsh') return 'basalt'
+  return 'arch'
+}
+
+/** Permanent bridges: stone arches, covered timber, granite, sandstone or basalt, by climate. */
+export function buildStoneBridges(world: World): THREE.Group {
+  const group = new THREE.Group()
+  const mat = applyVision(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.9 }), '', true)
+  for (const b of world.stoneBridges) {
+    const style = bridgeStyle(world.climateAt(b.x, b.z).key)
     const L = b.length
-    const W = b.width
-    const parts: THREE.BufferGeometry[] = [
-      part(box(L, 1.6, W), 0x8a6844, { y: 0 }),
-      part(box(L, 2.2, 1), 0x6e5234, { y: 1.6, z: W / 2 - 0.5 }),
-      part(box(L, 2.2, 1), 0x6e5234, { y: 1.6, z: -W / 2 + 0.5 }),
-    ]
-    // Plank seams.
-    for (let x = -L / 2 + 4; x < L / 2; x += 6) parts.push(part(box(0.5, 1.7, W - 2), 0x6f5335, { x, y: 0.05 }))
-    // Stone piers.
-    for (let x = -L / 2 + 10; x <= L / 2 - 10; x += (L - 20) / 3) {
-      parts.push(part(box(5, 14, W + 2), 0x8f8a80, { x, y: -7.5 }))
+    const W = b.width + 4
+    const p: THREE.BufferGeometry[] = []
+    const piers = Math.max(2, Math.round(L / 34))
+    const span = L / piers
+    if (style === 'arch' || style === 'sandstone' || style === 'basalt') {
+      const stone = style === 'arch' ? 0x9a948a : style === 'sandstone' ? 0xc8a06a : 0x3a3634
+      const dark = style === 'arch' ? 0x7f796f : style === 'sandstone' ? 0xa47a4a : 0x26232a
+      // Deck and parapets.
+      p.push(part(box(L + 8, 2.6, W), stone, { y: -0.4 }))
+      for (const s of [-1, 1]) {
+        const segs = style === 'basalt' ? 7 : 1
+        for (let k = 0; k < segs; k++) {
+          // The basalt causeway's parapet is broken in places, old war damage.
+          if (style === 'basalt' && (k === 2 || k === 5)) continue
+          const sl = (L + 8) / segs
+          p.push(part(box(sl - (segs > 1 ? 1 : 0), 3, 1.6), dark, { x: -L / 2 - 4 + sl * (k + 0.5), y: 2.4, z: s * (W / 2 - 0.8) }))
+        }
+      }
+      // Piers with cutwaters, and the arches between them.
+      for (let k = 1; k < piers; k++) {
+        const x = -L / 2 + k * span
+        p.push(part(box(6, 16, W + 2), dark, { x, y: -9 }))
+        p.push(part(cyl(0.1, W / 2 + 2, 6, 4), dark, { x, y: -9, z: 0, rx: Math.PI / 2, ry: Math.PI / 4, sy: 1 }))
+      }
+      for (let k = 0; k < piers; k++) {
+        const x = -L / 2 + (k + 0.5) * span
+        // Arch rings on both faces, springing from the piers up to the deck.
+        const ar = span * 0.4
+        for (const sz of [-1, 1]) p.push(part(new THREE.TorusGeometry(ar, 1.8, 5, 12, Math.PI), dark, { x, y: -1.8 - ar, z: sz * (W / 2 + 0.2) }))
+      }
+      if (style === 'sandstone') {
+        for (const sx of [-1, 1]) for (const sz of [-1, 1]) p.push(part(box(2.6, 9, 2.6), dark, { x: sx * (L / 2 + 2), y: 4, z: sz * (W / 2) }))
+      }
+    } else if (style === 'covered') {
+      // Timber trestles, a plank deck, walls with windows and a gable roof.
+      p.push(part(box(L + 6, 1.8, W), 0x7a5a38, { y: 0 }))
+      for (let k = 1; k < piers; k++) for (const s of [-1, 1]) p.push(part(cyl(1, 1.2, 16, 6), 0x5a3f24, { x: -L / 2 + k * span, y: -8, z: s * (W / 2 - 3) }))
+      for (const s of [-1, 1]) {
+        for (let x = -L / 2; x < L / 2; x += 12) p.push(part(box(8, 5, 1), 0x6e5032, { x: x + 4, y: 3.4, z: s * (W / 2 - 0.5) }))
+        p.push(part(box(L + 6, 1, 1), 0x5a3f24, { y: 7, z: s * (W / 2 - 0.5) }))
+      }
+      p.push(part(cyl(W * 0.62, W * 0.62, L + 8, 3), 0x5e3b2a, { y: 10.5, rz: Math.PI / 2, rx: Math.PI / 2, sy: 1 }))
+    } else {
+      // Megalith: great rough granite blocks, snow on the parapets.
+      p.push(part(box(L + 10, 3.2, W + 2), 0x8a8f96, { y: -0.6 }))
+      for (let x = -L / 2; x < L / 2; x += 9) {
+        for (const s of [-1, 1]) {
+          p.push(part(box(8, 4 + ((x * 7) % 3), 2.6), 0x7a7f86, { x: x + 4, y: 2.6, z: s * (W / 2 + 0.2), ry: ((x * 13) % 5) * 0.03 }))
+          p.push(part(box(8.4, 0.8, 3), 0xeef2f6, { x: x + 4, y: 5, z: s * (W / 2 + 0.2) }))
+        }
+      }
+      for (let k = 1; k < piers; k++) p.push(part(box(10, 18, W + 6), 0x6e737a, { x: -L / 2 + k * span, y: -10 }))
     }
-    // Abutments.
-    parts.push(part(box(10, 10, W + 4), 0x8f8a80, { x: L / 2, y: -4.5 }))
-    parts.push(part(box(10, 10, W + 4), 0x8f8a80, { x: -L / 2, y: -4.5 }))
-    for (const s of [-1, 1]) {
-      for (const zz of [-1, 1]) parts.push(part(cyl(0.6, 0.6, 5, 6), 0x5c4429, { x: s * (L / 2 - 2), y: 2.5, z: zz * (W / 2 - 0.5) }))
-    }
-    const mesh = new THREE.Mesh(merge(parts), mat)
+    const mesh = new THREE.Mesh(merge(p), mat)
     mesh.position.set(b.x, BRIDGE_DECK - 0.8, b.z)
     mesh.rotation.y = -Math.atan2(b.dirZ, b.dirX)
     mesh.castShadow = true
     mesh.receiveShadow = true
     group.add(mesh)
   }
+  return group
+}
+
+/** Engineers' bridges standing at load time (more are added as they are built). */
+export function buildBridges(world: World): THREE.Group {
+  const group = new THREE.Group()
+  for (const b of world.bridges) group.add(bridgeMesh(b))
   return group
 }
 

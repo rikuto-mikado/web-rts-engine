@@ -2,7 +2,7 @@ import { Crown, Dices, Handshake, LoaderCircle, RotateCcw, ScrollText, Swords } 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { api } from '../api/client'
 import { GameEngine } from '../game/engine'
-import { BIOMES, MAP_TYPES, type MapType } from '../game/biomes'
+import { MAPS, MAP_TYPES, type MapType } from '../game/biomes'
 import { generateMap, type GeneratedMap } from '../game/mapgen'
 import { World } from '../game/world'
 import type { CastleDef, Difficulty, FactionDef, GameContent, GameMode, MapSize } from '../game/types'
@@ -25,7 +25,7 @@ type MenuMode = 'conquest' | 'alliance'
 
 const SIZE_HINT: Record<'survival' | 'alliance', Record<MapSize, string>> = {
   survival: { small: '10 castles, a quick war (about 20 min).', medium: '15 castles, the standard war.', large: '24 castles, a long campaign. You start with 3.' },
-  alliance: { small: '16 realms on a compact map.', medium: '24 realms.', large: '32 realms on a vast map.' },
+  alliance: { small: '8 v 8 on a compact map.', medium: '16 v 16, the standard war.', large: '24 v 24 on a vast map.' },
 }
 
 const MODES: { key: MenuMode; name: string; icon: ReactNode; tagline: string; text: string }[] = [
@@ -40,7 +40,7 @@ const MODES: { key: MenuMode; name: string; icon: ReactNode; tagline: string; te
     key: 'alliance',
     name: 'Alliance War',
     icon: <Handshake size={22} />,
-    tagline: '16 to 32 realms, two alliances',
+    tagline: '16 to 48 realms, two alliances',
     text: 'Fight beside a coalition of AI lords on a huge random map. Call your allies to arms and take the enemy High Seat.',
   },
 ]
@@ -48,7 +48,7 @@ const MODES: { key: MenuMode; name: string; icon: ReactNode; tagline: string; te
 export function MainMenu({ content, error, onRetry, onStart }: Props) {
   const [menuMode, setMenuMode] = useState<MenuMode>('conquest')
   // Both modes offer the same six generated maps; Conquest uses the "survival" ruleset.
-  const [mapType, setMapChoice] = useState<MapType>('vales')
+  const [mapType, setMapChoice] = useState<MapType>('crown')
   const mode: GameMode = menuMode === 'conquest' ? 'survival' : menuMode
   const [difficulty, setDifficulty] = useState<Difficulty>('normal')
   const [seed, setSeed] = useState(() => Math.floor(Math.random() * 99999))
@@ -82,7 +82,7 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
       const cached = preview?.key === previewKey && preview.map ? preview.map : null
       const map = cached ?? generateMap(mode, seed, { mapType, size: mapSize })
       const engine = GameEngine.create(content, map.scenario, map.rules, difficulty, map.world)
-      const defaultName = `${mode === 'alliance' ? 'Alliance War' : 'Conquest'} · ${BIOMES[mapType].name}`
+      const defaultName = `${mode === 'alliance' ? 'Alliance War' : 'Conquest'} · ${MAPS[mapType].name}`
       const matchName = defaultName
       const record = await api
         .createCampaign({ name: matchName, mode, seed, scenario: null, difficulty, state: null })
@@ -94,7 +94,7 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
     }
   }
 
-  const biome = BIOMES[mapType]
+  const biome = MAPS[mapType]
   const def = preview?.key === previewKey ? (preview.map?.scenario.definition ?? scenario?.definition) : undefined
 
   return (
@@ -162,7 +162,7 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
                   <Label>Map</Label>
                   <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                     {MAP_TYPES.map((k) => {
-                      const b = BIOMES[k]
+                      const b = MAPS[k]
                       return (
                         <button
                           key={k}
@@ -233,11 +233,19 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
                   <Dices size={15} /> A different map
                 </button>
                 <p className="mt-3 text-[14px] leading-snug text-ink-300">{biome.description}</p>
+                <ul className="mt-2 grid gap-0.5 text-[12.5px] text-ink-400">
+                  {biome.regions.map((r, i) => (
+                    <li key={r} className="flex items-center gap-2">
+                      <i className="size-2.5 shrink-0 rounded-sm" style={{ background: biome.swatch[i] }} />
+                      {r}
+                    </li>
+                  ))}
+                </ul>
                 {def && (
                   <div className="mt-3 grid grid-cols-3 gap-1.5 text-center">
                     <MiniStat label="Castles" value={def.castles.length} />
                     <MiniStat label="Realms" value={(def.factions ?? []).filter((f) => f.team !== 'N').length || 2} />
-                    <MiniStat label="Bridges" value={def.bridges.length} />
+                    <MiniStat label="Crossings" value={def.bridges.length} />
                   </div>
                 )}
                 <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1 text-[12px] text-ink-400">
@@ -295,9 +303,11 @@ function MapPreview({ world, castles, factions }: { world: World; castles: Castl
         const h = world.heightAt(x, z)
         world.colorAt(x, z, c)
         if (h < 0.5 && !world.bridgeAt(x, z)) {
-          c[0] = ((w >> 16) & 255) / 255
-          c[1] = ((w >> 8) & 255) / 255
-          c[2] = (w & 255) / 255
+          // Fords show as pale shallows across the river.
+          const ford = world.fordAt(x, z) ? 0.45 : 0
+          c[0] = (((w >> 16) & 255) / 255) * (1 - ford) + 0.78 * ford
+          c[1] = (((w >> 8) & 255) / 255) * (1 - ford) + 0.72 * ford
+          c[2] = ((w & 255) / 255) * (1 - ford) + 0.55 * ford
         }
         const shade = 0.82 + Math.min(0.35, h / 380)
         const k = (j * S + i) * 4
