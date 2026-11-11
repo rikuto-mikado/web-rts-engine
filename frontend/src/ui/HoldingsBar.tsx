@@ -9,7 +9,7 @@ import { useViewport } from './viewport'
  * Always-visible strip of the player's holdings: the seat of power first,
  * then every other castle. Click to fly the camera there.
  */
-export function HoldingsBar({ engine, selection, onSelect }: { engine: GameEngine; selection: Selection; onSelect: (s: Selection, focus?: boolean) => void }) {
+export function HoldingsBar({ engine, selection, onSelect, rightGap = 0 }: { engine: GameEngine; selection: Selection; onSelect: (s: Selection, focus?: boolean) => void; rightGap?: number }) {
   useEngine(engine)
   const capId = engine.state.factions[PLAYER]?.capitalId
   const castles = engine.state.castles
@@ -18,7 +18,10 @@ export function HoldingsBar({ engine, selection, onSelect }: { engine: GameEngin
   const vp = useViewport()
   if (castles.length === 0) return null
   return (
-    <div className={`pointer-events-none absolute z-20 flex justify-center ${vp.compact ? 'safe-bottom right-2 bottom-2 left-2' : 'right-[232px] bottom-3 left-[376px]'}`}>
+    <div
+      className={`pointer-events-none absolute z-20 flex justify-center ${vp.compact ? 'safe-bottom right-2 bottom-2 left-2' : 'right-[232px] bottom-3 left-[376px]'}`}
+      style={vp.compact && rightGap ? { right: rightGap + 8 } : undefined}
+    >
       <div className="panel scroll-thin pointer-events-auto flex max-w-full items-stretch gap-1.5 overflow-x-auto rounded-md px-3 py-2">
         <div className={`mr-1 flex-col justify-center pr-2 text-center ${vp.compact ? 'hidden' : 'flex'}`} style={{ borderRight: '1px solid rgb(209 167 63 / 0.2)' }}>
           <span className="font-display text-[12px] font-bold tracking-[0.14em] text-gold-300">HOLDINGS</span>

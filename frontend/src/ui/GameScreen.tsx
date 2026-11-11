@@ -14,7 +14,7 @@ import { Minimap } from './Minimap'
 import { SelectionPanel } from './SelectionPanel'
 import { Sidebar } from './Sidebar'
 import { TopBar } from './TopBar'
-import { useViewport } from './viewport'
+import { compactPanelWidth, minimapFootprint, useViewport } from './viewport'
 import { loadOverhead, saveOverhead } from './viewPref'
 
 export interface Match {
@@ -61,6 +61,7 @@ export function GameScreen({ match, onExit }: Props) {
   }, [renderer, overhead])
   const vp = useViewport()
   const [sidebarOpen, setSidebarOpen] = useState(() => !vp.compact)
+  const [mapShown, setMapShown] = useState(() => !vp.phone)
   const [orderMode, setOrderMode] = useState(false)
   const orderModeRef = useRef(false)
   useEffect(() => {
@@ -113,11 +114,11 @@ export function GameScreen({ match, onExit }: Props) {
     [renderer, engine],
   )
 
-  // On phones the selection sheet covers the lower half: keep the view centred above it.
+  // On phones the selection panel covers the right side: keep the view centred on the rest.
   useEffect(() => {
     if (!renderer) return
-    renderer.setBottomInset(vp.compact && selection ? Math.min(vp.h * 0.52, 460) : 0)
-  }, [renderer, vp.compact, vp.h, selection])
+    renderer.setRightInset(vp.compact && selection ? compactPanelWidth(vp.w) : 0)
+  }, [renderer, vp.compact, vp.w, selection])
 
   // Renderer + main loop.
   useEffect(() => {
@@ -544,10 +545,13 @@ export function GameScreen({ match, onExit }: Props) {
       <Toasts entries={fresh} onFocus={focusEntry} />
       {showLog && <ChronicleLog engine={engine} onClose={() => setShowLog(false)} onFocus={focusEntry} />}
       <SelectionPanel engine={engine} selection={selection} onSelect={select} onFormArmy={(castleId, targetId) => setFormArmy({ castleId, targetId })} toast={toast} />
-      {!(vp.compact && selection) && <HoldingsBar engine={engine} selection={selection} onSelect={select} />}
-      <Minimap engine={engine} renderer={renderer} />
+      {!(vp.compact && selection) && <HoldingsBar engine={engine} selection={selection} onSelect={select} rightGap={minimapFootprint(vp.compact, vp.phone, mapShown)} />}
+      <Minimap engine={engine} renderer={renderer} shown={mapShown} setShown={setMapShown} />
       {vp.touch && selection?.kind === 'army' && engine.army(selection.id)?.faction === PLAYER && (
-        <div className={`pointer-events-none absolute left-1/2 z-30 -translate-x-1/2 ${vp.compact ? 'bottom-[calc(min(52vh,460px)+10px)]' : 'bottom-24'}`}>
+        <div
+          className={`pointer-events-none absolute z-30 -translate-x-1/2 ${vp.compact ? 'safe-bottom bottom-3' : 'bottom-24 left-1/2'}`}
+          style={vp.compact ? { left: (vp.w - compactPanelWidth(vp.w)) / 2 } : undefined}
+        >
           <button
             className={`btn pointer-events-auto px-4 shadow-lg ${orderMode ? 'btn-gold animate-pulse' : ''}`}
             onClick={() => setOrderMode((v) => !v)}

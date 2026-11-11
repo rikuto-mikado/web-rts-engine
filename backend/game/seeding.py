@@ -25,6 +25,8 @@ def seed_content(apps=None) -> dict[str, int]:
     # Retire unit types that are no longer part of the roster.
     UnitType.objects.exclude(key__in=[u["key"] for u in seed_data.UNIT_TYPES]).delete()
     upsert(Commander, seed_data.COMMANDERS)
+    # Retire commanders who are no longer part of the roster (Lord Cassian gave way to the Sovereign).
+    Commander.objects.exclude(key__in=[c["key"] for c in seed_data.COMMANDERS]).delete()
     upsert(Scenario, seed_data.SCENARIOS)
     return {
         "unit_types": len(seed_data.UNIT_TYPES),

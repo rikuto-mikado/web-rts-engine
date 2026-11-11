@@ -52,7 +52,7 @@ export function power(t: Troops, units: Map<string, UnitType>, cmd?: CommanderDe
   return p * combinedArmsBonus(t, units, cmd)
 }
 
-export function combinedArmsBonus(t: Troops, units: Map<string, UnitType>, cmd?: CommanderDef | null): number {
+export function combinedArmsBonus(t: Troops, units: Map<string, UnitType>, _cmd?: CommanderDef | null): number {
   const n = total(t)
   if (n < 50) return 1
   const cats = new Map<string, number>()
@@ -64,7 +64,7 @@ export function combinedArmsBonus(t: Troops, units: Map<string, UnitType>, cmd?:
   let present = 0
   for (const [cat, c] of cats) if (cat !== 'siege' && c / n >= 0.12) present++
   if (present < 3) return 1
-  return cmd?.key === 'cassian' ? 1.2 : 1.1
+  return 1.1
 }
 
 /** March speed: armies move at the pace of their slowest unit type. */

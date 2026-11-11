@@ -36,13 +36,24 @@ export interface UnitType {
 export interface PortraitSpec {
   skin?: string
   hair?: string
-  hair_style?: 'short' | 'long' | 'bald' | 'braid' | 'topknot' | 'wild'
-  beard?: 'none' | 'full' | 'goatee' | 'mustache' | 'stubble'
-  headgear?: 'none' | 'helm' | 'greathelm' | 'crown' | 'circlet' | 'hood' | 'feather_cap' | 'horned'
+  hair_style?: 'short' | 'cropped' | 'long' | 'bald' | 'shaved' | 'braid' | 'topknot' | 'wild' | 'tied'
+  beard?: 'none' | 'full' | 'short' | 'forked' | 'goatee' | 'mustache' | 'stubble'
+  beard_color?: string
+  /** No helms: a crown or circlet, a cloth hat or headband at most. */
+  headgear?: 'none' | 'crown' | 'circlet' | 'chaperon' | 'headband'
+  hat?: string
+  clothing?: 'gambeson' | 'tabard' | 'fur' | 'cloak' | 'robe' | 'jerkin'
+  cloth?: string
+  /** Older data called the clothing colour "armor". */
   armor?: string
   trim?: string
+  fur?: string
   eyes?: string
+  brows?: 'normal' | 'heavy'
+  age?: 'young' | 'veteran' | 'old'
   scar?: boolean
+  eyepatch?: boolean
+  freckles?: boolean
   bg?: string
   female?: boolean
 }
@@ -84,6 +95,7 @@ export interface CastleDef {
   /** Siege mode: a town district strongpoint. */
   district?: boolean
   /** A village: small, won over by negotiation or plundered. */
+  holding?: HoldingKind
   village?: boolean
   garrison: Troops
 }
@@ -107,6 +119,8 @@ export interface ScenarioDefinition {
   factions?: FactionDef[]
   castles: CastleDef[]
   rivers: { width: number; points: [number, number][] }[]
+  /** Terrain features scattered over the map: standing stones, bogs, terraces, windfall, wadis, crags. */
+  features?: TerrainFeature[]
   /** River crossings: permanent bridges, or shallow fords where `ford` is set. */
   bridges: { x: number; z: number; ford?: boolean }[]
   mountains: { x: number; z: number; r: number; h: number }[]
@@ -154,7 +168,7 @@ export interface FactionState extends FactionDef {
     /** Gold set aside for an outpost the lord wants to raise. */
     outpostReserve?: number
     /** An outpost the lord's engineers are on their way to raise. */
-    buildPlan?: { armyId: string; kind: 'camp' | 'watchtower' | 'lodge' | 'bridgefort' | 'depot'; x: number; z: number } | null
+    buildPlan?: { armyId: string; kind: 'castrum' | 'laager' | 'redoubt' | 'pavilion' | 'depot'; x: number; z: number } | null
     retakeQueue: { castleId: string; at: number }[]
   }
   host: GreatHostState | null
@@ -191,9 +205,15 @@ export interface Castle {
   village?: boolean
   /** A plundered village: burned and abandoned, of no use to anyone. */
   ruined?: boolean
+  /** What kind of small holding this is (villages and the like); plain villages leave it unset. */
+  holding?: HoldingKind
+  /** Abbeys: when the next act of penance lifts some of the lord's infamy. */
+  nextCleanseAt?: number
   /** Vassal villages: gold owed to the lord, shipped by wagon to the nearest castle. */
   tribute?: number
   nextTributeAt?: number
+  /** A ram broke through: the garrison's nerve is shaken until this time. */
+  shakenUntil?: number
   /** Sapped: engineers have undermined the walls; they do not mend themselves until this time. */
   sappedUntil?: number
   /** No new call for aid from this castle before this time. */
@@ -240,7 +260,7 @@ export type ArmyOrder =
   | { type: 'build'; outpostId: string } // stay and raise a field fortification
   | { type: 'garrison'; outpostId: string } // march into a supply depot and quarter there
   | { type: 'raidConvoy'; convoyId: string } // chase down an enemy supply train
-  | { type: 'work'; job: WorkJob; x: number; z: number; bridge: number | null; progress: number; tx?: number; tz?: number } // engineers' field works (tx/tz: the river point a new bridge spans)
+  | { type: 'work'; job: WorkJob; x: number; z: number; bridge: number | null; progress: number; tx?: number; tz?: number; then?: ArmyOrder } // engineers' field works (tx/tz: the river point a new bridge spans; then: the order to resume)
   | { type: 'gather'; siteId: string } // engineers work a mine or lumber camp
   | { type: 'scout'; targetId: string; x: number; z: number; phase: 'out' | 'back' } // spy out an enemy position and bring the news home
 
@@ -287,6 +307,18 @@ export interface Army {
   spottedBy?: string | null
   /** An allied contingent answering a call for aid (the call's id). */
   aidFor?: string | null
+  /** The Royal Guard: the Sovereign's household knights. Never reinforced; if they fall, the war is lost. */
+  royal?: boolean
+  /** Fleeing a fallen castle: a burst of speed until this time. */
+  fleeUntil?: number
+  /** Siege engines built on the spot and pushed along with the army. */
+  engines?: { tower?: boolean; ram?: boolean; mantlet?: boolean }
+  /** Riding out of an outrider pavilion: faster and harder-hitting until this time. */
+  sortieUntil?: number
+  /** Was inside a pavilion last tick (to notice the sortie). */
+  inPavilion?: boolean
+  /** Shaken by bombardment: slowed until this time. */
+  slowedUntil?: number
   /** Militia of a vassal village: they act on their own and go home when the fighting is done. */
   vassalOf?: string | null
   /** A pursuit party: the scouts it hunts, and the army or castle it came from. */
@@ -357,7 +389,9 @@ export interface GreatHostState {
 export interface Outpost {
   id: string
   name: string
-  kind: 'camp' | 'watchtower' | 'lodge' | 'bridgefort' | 'depot'
+  kind: 'castrum' | 'laager' | 'redoubt' | 'pavilion' | 'depot'
+  /** Mangonel redoubt: when it may loose its next stone. */
+  nextShotAt?: number
   faction: Faction
   x: number
   z: number
@@ -376,12 +410,14 @@ export interface Outpost {
   lowWarned?: boolean
 }
 
-export type WorkJob = 'stakes' | 'pit' | 'barricade' | 'pitch' | 'bridge' | 'demolish'
+export type WorkJob = 'stakes' | 'pit' | 'barricade' | 'pitch' | 'bridge' | 'demolish' | 'tower' | 'ram' | 'mantlet' | 'trebuchet'
 
 /** Field obstacles raised by engineers. */
 export interface Obstacle {
   id: string
-  kind: 'stakes' | 'pit' | 'barricade' | 'pitch'
+  kind: 'stakes' | 'pit' | 'barricade' | 'pitch' | 'trebuchet'
+  /** Trebuchet: when it may throw again. */
+  nextShotAt?: number
   faction: Faction
   x: number
   z: number
@@ -402,6 +438,8 @@ export interface Convoy {
   id: string
   faction: Faction
   kind?: 'supply' | 'gold'
+  /** An abbey's wagon of volunteers and nursed men: manpower for the castle it reaches. */
+  manpower?: number
   /** Supply wagons: the depot they feed ('' for gold wagons). */
   outpostId: string
   /** Supply wagons: the castle they left. Gold wagons: the castle they head for. */
@@ -415,6 +453,20 @@ export interface Convoy {
   route: [number, number][]
   cargo: number
   heading: number
+}
+
+/** Small holdings between the castles: all are won by envoys (or plundered) and run themselves as vassals. */
+export type HoldingKind = 'village' | 'caravanserai' | 'abbey' | 'keep' | 'guildhall'
+
+export type FeatureKind = 'stones' | 'terraces' | 'thicket' | 'wadi' | 'crag'
+/** A terrain feature. Wadis are strips (length `len` along `angle`, half-width `r`); the rest are round. */
+export interface TerrainFeature {
+  kind: FeatureKind
+  x: number
+  z: number
+  r: number
+  angle?: number
+  len?: number
 }
 
 /** A call for aid: allies who can spare men send them to stand in the castle until the danger passes. */
@@ -492,6 +544,10 @@ export interface GameState {
   commanders: Record<string, CommanderState>
   chronicle: ChronicleEntry[]
   explored: string // base64 of the explored grid
+  /** The Sovereign's Royal Guard (army id); null once it has fallen. */
+  royalId?: string | null
+  /** The Sovereign has fallen: the war is lost. */
+  kingFallen?: boolean
   armyCounter: number
   status: 'active' | 'victory' | 'defeat'
   /** Alliance-wide target requested by the player ("call to arms"). */

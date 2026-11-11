@@ -1,6 +1,6 @@
 import { Castle as CastleIcon, Package, ChevronLeft, ChevronRight, Footprints, Hammer, Swords, X } from 'lucide-react'
 import { useMemo, useRef, useState, type ReactNode } from 'react'
-import { PLAYER, WALL_K, type GameEngine } from '../game/engine'
+import { ROYAL, PLAYER, WALL_K, type GameEngine } from '../game/engine'
 import { COLUMN, FORMATIONS, FORMATION_ORDER } from '../game/formations'
 import {
   armySpeed,
@@ -193,7 +193,24 @@ export function FormArmyModal({ engine, initialCastleId, initialTargetId, onClos
                 Commander
               </SectionTitle>
               <div ref={carousel} className="scroll-thin flex snap-x gap-1.5 overflow-x-auto pb-1.5">
-                {allCmd.map((c) => {
+                {(() => {
+                  // The Sovereign's place: always first, leading the Royal Guard (never mustered from a garrison).
+                  const king = engine.commanders.get(ROYAL.key)
+                  if (!king) return null
+                  const guard = engine.royalArmy(PLAYER)
+                  return (
+                    <div
+                      title={`${king.name} leads the Royal Guard: ${guard ? `${Math.round(total(guard.troops))} knights` : 'fallen'}`}
+                      className="well relative flex w-[84px] shrink-0 snap-start flex-col items-center gap-1 rounded-sm border border-gold-400/50 px-1 pt-1.5 pb-1"
+                    >
+                      <span className="absolute -top-0.5 left-1 text-[13px] text-gold-300">♛</span>
+                      <PixelPortrait spec={king.portrait} size={54} />
+                      <span className="w-full truncate text-center text-[12px] font-bold text-gold-200">{shortName(king.name)}</span>
+                      <span className="-mt-1 text-center text-[9.5px] font-bold tracking-wide text-gold-300/80">ROYAL GUARD</span>
+                    </div>
+                  )
+                })()}
+                {allCmd.filter((c) => c.key !== ROYAL.key).map((c) => {
                   const st = s.commanders[c.key]
                   const available = free.some((f) => f.key === c.key)
                   const sel = commanderKey === c.key

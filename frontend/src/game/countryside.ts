@@ -1,6 +1,6 @@
 import { mulberry32 } from './noise'
 import { PREFIX, SUFFIX } from './mapgen'
-import type { CastleDef, ResourceSite, Troops } from './types'
+import type { CastleDef, ResourceSite, Troops, HoldingKind } from './types'
 import { holdingRadius, type World } from './world'
 
 /**
@@ -8,6 +8,15 @@ import { holdingRadius, type World } from './world'
  * and resource sites (forests to fell, mines to dig) worked by engineers.
  * Deterministic from the scenario seed, so every player sees the same land.
  */
+/** Militia make-up of each kind of holding (kept here so map generation needs no engine import). */
+const HOLDINGS_MIX: Record<HoldingKind, { infantry: number; cavalry: number; archers: number }> = {
+  village: { infantry: 0.65, cavalry: 0, archers: 0.35 },
+  caravanserai: { infantry: 0.5, cavalry: 0.2, archers: 0.3 },
+  abbey: { infantry: 0.6, cavalry: 0, archers: 0.4 },
+  keep: { infantry: 0.4, cavalry: 0.4, archers: 0.2 },
+  guildhall: { infantry: 0.6, cavalry: 0, archers: 0.4 },
+}
+
 export function generateCountryside(world: World, castles: CastleDef[], seed: number): { villages: CastleDef[]; sites: ResourceSite[] } {
   const rnd = mulberry32((seed * 2654435761) >>> 0)
   const half = world.half
@@ -51,6 +60,42 @@ export function generateCountryside(world: World, castles: CastleDef[], seed: nu
       garrison,
     })
     taken.push({ x, z, r: 200 })
+  }
+
+  // Larger holdings between the villages: caravanserais on the trade roads, abbeys in quiet country,
+  // wardens' keeps on the marches and guildhalls near timber and ore.
+  const special: { kind: HoldingKind; count: number; likes: string[]; title: string; militia: [number, number] }[] = [
+    { kind: 'caravanserai', count: 1.4, likes: ['desert', 'coast', 'oasis', 'grain', 'highland', 'temperate', 'mesa'], title: 'Caravanserai', militia: [100, 180] },
+    { kind: 'abbey', count: 1.4, likes: ['temperate', 'lakeland', 'taiga', 'alpine', 'autumn', 'grain', 'coast', 'steam'], title: 'Abbey', militia: [80, 150] },
+    { kind: 'keep', count: 1.8, likes: [], title: "Wardens' keep", militia: [160, 260] },
+    { kind: 'guildhall', count: 1.2, likes: ['mesa', 'alpine', 'taiga', 'volcanic', 'wasteland', 'autumn', 'icefield', 'temperate'], title: 'Guildhall', militia: [90, 160] },
+  ]
+  let hid = 0
+  for (const sp of special) {
+    const want = Math.max(1, Math.round(sp.count * Math.sqrt(area)))
+    for (let placed = 0, tries = 0; placed < want && tries < 1200; tries++) {
+      const x = (rnd() * 2 - 1) * (half - 280)
+      const z = (rnd() * 2 - 1) * (half - 280)
+      if (!world.isPassable(x, z) || world.forestAt(x, z) > 0.4 || world.slopeAt(x, z) > 0.3 || world.bridgeAt(x, z, 80) || world.featureKindAt(x, z)) continue
+      if (sp.likes.length && !sp.likes.includes(world.climateAt(x, z).key)) continue
+      if (!free(x, z, 140)) continue
+      const m = HOLDINGS_MIX[sp.kind]
+      const militia = sp.militia[0] + Math.floor(rnd() * (sp.militia[1] - sp.militia[0]))
+      villages.push({
+        id: `h${hid++}`,
+        name: name(),
+        subtitle: sp.title,
+        faction: 'neutral',
+        tier: 1,
+        x: Math.round(x),
+        z: Math.round(z),
+        village: true,
+        holding: sp.kind,
+        garrison: { infantry: Math.round(militia * m.infantry), cavalry: Math.round(militia * m.cavalry), archers: Math.round(militia * m.archers), engineers: 0 },
+      })
+      taken.push({ x, z, r: 220 })
+      placed++
+    }
   }
 
   const sites: ResourceSite[] = []

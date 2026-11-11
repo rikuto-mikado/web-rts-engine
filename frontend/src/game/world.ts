@@ -1,6 +1,6 @@
 import { CLIMATES, biomeOf, mapOf, zoneWeights, type Biome, type Climate, type ClimateRules, type MapDef } from './biomes'
 import { Simplex, clamp, lerp, smoothstep } from './noise'
-import type { Scenario, ScenarioDefinition } from './types'
+import type { FeatureKind, Scenario, ScenarioDefinition, TerrainFeature } from './types'
 
 export const NAV_CELL = 20
 export const WATER_LEVEL = 0
@@ -331,6 +331,25 @@ export class World {
     return null
   }
 
+  /** The terrain feature at a point, if any. */
+  featureAt(x: number, z: number): TerrainFeature | null {
+    for (const f of this.def.features ?? []) {
+      const reach = (f.len ?? 0) / 2 + f.r
+      if (Math.abs(x - f.x) > reach || Math.abs(z - f.z) > reach) continue
+      if (f.len) {
+        const dx = x - f.x
+        const dz = z - f.z
+        const ca = Math.cos(f.angle ?? 0)
+        const sa = Math.sin(f.angle ?? 0)
+        if (Math.abs(dx * ca + dz * sa) < f.len / 2 && Math.abs(-dx * sa + dz * ca) < f.r) return f
+      } else if (Math.hypot(x - f.x, z - f.z) < f.r) return f
+    }
+    return null
+  }
+  featureKindAt(x: number, z: number): FeatureKind | null {
+    return this.featureAt(x, z)?.kind ?? null
+  }
+
   /** Every place an army can cross a river: fords and standing bridges. */
   crossings(): BridgeInfo[] {
     return [...this.fords, ...this.stoneBridges, ...this.bridges.filter((_, i) => !this.broken.has(i))]
@@ -376,7 +395,12 @@ export class World {
     if (this.fordAt(x, z)) return FORD_SPEED
     const f = this.forestAt(x, z)
     const s = this.slopeAt(x, z)
-    return clamp(1 - f * 0.35 - s * 0.6, 0.45, 1.1) * this.rulesAt(x, z).speed
+    const base = clamp(1 - f * 0.35 - s * 0.6, 0.45, 1.1) * this.rulesAt(x, z).speed
+    // Terrain features: stones and terraces slow the step.
+    const k = this.def.features?.length ? this.featureKindAt(x, z) : null
+    if (k === 'stones') return base * 0.85
+    if (k === 'terraces') return base * 0.8
+    return base
   }
 
   /** Defensive multiplier for troops standing here (forests and hills help). */

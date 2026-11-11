@@ -17,8 +17,6 @@ const STONE = '#a9a294'
 const STONE_D = '#7f796d'
 const CANVAS = '#e4d8bc'
 const WATER = '#3b7ea1'
-const PINE = '#2f5d34'
-const PINE_L = '#3c7641'
 
 function Frame({ children, size = 96 }: { children: React.ReactNode; size?: number }) {
   return (
@@ -35,75 +33,78 @@ function Frame({ children, size = 96 }: { children: React.ReactNode; size?: numb
   )
 }
 
-const pine = (x: number, y: number, s = 1) => (
-  <g key={`p${x}-${y}`} transform={`translate(${x} ${y}) scale(${s})`}>
-    <rect x="-1" y="0" width="2" height="4" fill={WOOD_D} />
-    <polygon points="-6,1 0,-9 6,1" fill={PINE} />
-    <polygon points="-4.5,-4 0,-13 4.5,-4" fill={PINE_L} />
-  </g>
-)
 
 export function OutpostArt({ kind, size = 96 }: { kind: OutpostKind; size?: number }) {
   switch (kind) {
-    case 'camp':
+    case 'castrum':
       return (
         <Frame size={size}>
           <rect y="44" width="96" height="20" fill={GRASS} />
-          <polygon points="38,46 48,30 58,46" fill={CANVAS} />
-          <polygon points="48,30 58,46 53,46" fill="#c9bb98" />
           {Array.from({ length: 13 }, (_, i) => {
             const x = 12 + i * 6
-            return <polygon key={i} points={`${x - 2},52 ${x - 2},40 ${x},36 ${x + 2},40 ${x + 2},52`} fill={i % 2 ? WOOD : WOOD_D} />
+            return <polygon key={i} points={`${x - 2},52 ${x - 2},38 ${x},34 ${x + 2},38 ${x + 2},52`} fill={i % 2 ? WOOD : WOOD_D} />
           })}
-          <rect x="47.5" y="18" width="1" height="13" fill={WOOD_D} />
-          <polygon points="48.5,18 58,21 48.5,24" fill="#c7372a" />
+          {[10, 82].map((x) => (
+            <g key={x}>
+              <rect x={x - 1} y="22" width="2" height="30" fill={WOOD_D} />
+              <rect x={x + 3} y="22" width="2" height="30" fill={WOOD_D} />
+              <rect x={x - 3} y="20" width="10" height="5" fill={WOOD} />
+              <polygon points={`${x - 4},20 ${x + 2},12 ${x + 8},20`} fill="#4a321c" />
+            </g>
+          ))}
+          <polygon points="40,40 48,28 56,40" fill={CANVAS} />
+          <rect x="47.5" y="14" width="1" height="15" fill={WOOD_D} />
+          <polygon points="48.5,14 58,17 48.5,20" fill="#c7372a" />
         </Frame>
       )
-    case 'watchtower':
+    case 'laager':
       return (
         <Frame size={size}>
-          <polygon points="0,64 0,46 30,36 62,40 96,50 96,64" fill={GRASS_D} />
-          <polygon points="0,64 0,52 40,44 96,56 96,64" fill={GRASS} />
-          <rect x="42" y="16" width="2" height="26" fill={WOOD_D} />
-          <rect x="54" y="16" width="2" height="26" fill={WOOD_D} />
-          <line x1="43" y1="38" x2="55" y2="24" stroke={WOOD} strokeWidth="1.2" />
-          <line x1="55" y1="38" x2="43" y2="24" stroke={WOOD} strokeWidth="1.2" />
-          <rect x="39" y="12" width="20" height="5" fill={WOOD} />
-          <polygon points="37,12 49,3 61,12" fill={WOOD_D} />
-          <path d="M60 14 Q72 6 84 18" stroke="#e9c869" strokeWidth="0.8" fill="none" strokeDasharray="2 2" />
-          <polygon points="84,18 80,16 81,19" fill="#e9c869" />
+          <rect y="44" width="96" height="20" fill={GRASS} />
+          {[14, 36, 58, 80].map((x, i) => (
+            <g key={x}>
+              <rect x={x - 9} y="36" width="18" height="9" fill={WOOD} />
+              <path d={`M${x - 9} 36 Q${x} ${26 - (i % 2)} ${x + 9} 36`} fill="#efe6cf" />
+              <circle cx={x - 5} cy="47" r="3.2" fill={WOOD_D} />
+              <circle cx={x + 5} cy="47" r="3.2" fill={WOOD_D} />
+            </g>
+          ))}
+          {[25, 47, 69].map((x) => (
+            <line key={x} x1={x - 2} y1="42" x2={x + 2} y2="42" stroke="#3a3a3a" strokeWidth="1.4" />
+          ))}
+          <line x1="20" y1="30" x2="10" y2="22" stroke="#e9c869" strokeWidth="0.8" />
+          <line x1="64" y1="30" x2="74" y2="20" stroke="#e9c869" strokeWidth="0.8" />
         </Frame>
       )
-    case 'lodge':
+    case 'redoubt':
+      return (
+        <Frame size={size}>
+          <rect y="44" width="96" height="20" fill={GRASS} />
+          <path d="M6 50 Q48 36 90 50 L90 56 L6 56Z" fill="#7a6648" />
+          <rect x="22" y="40" width="22" height="4" fill={WOOD} />
+          <rect x="26" y="26" width="2" height="15" fill={WOOD_D} />
+          <rect x="38" y="26" width="2" height="15" fill={WOOD_D} />
+          <line x1="20" y1="34" x2="46" y2="20" stroke={WOOD} strokeWidth="2" />
+          <rect x="16" y="32" width="6" height="6" fill={STONE_D} />
+          <rect x="58" y="36" width="20" height="2.4" fill={WOOD} />
+          <rect x="66" y="30" width="2.4" height="12" fill={WOOD_D} />
+          <path d="M58 37 Q68 28 78 37" stroke={WOOD_D} strokeWidth="1.4" fill="none" />
+          <path d="M48 18 Q66 2 86 14" stroke="#e9c869" strokeWidth="0.8" fill="none" strokeDasharray="2 2" />
+          <circle cx="86" cy="14" r="2" fill={STONE} />
+        </Frame>
+      )
+    case 'pavilion':
       return (
         <Frame size={size}>
           <rect y="44" width="96" height="20" fill={GRASS_D} />
-          {[8, 20, 76, 88, 66].map((x, i) => pine(x, 48 - (i % 2) * 3, 1.3))}
-          <rect x="30" y="38" width="20" height="10" fill={WOOD} />
-          <polygon points="28,38 40,29 52,38" fill="#3d5a2a" />
-          <rect x="48" y="41" width="15" height="8" fill={WOOD_D} />
-          <polygon points="46,41 55.5,34 65,41" fill="#4a6a32" />
-          <rect x="37" y="42" width="5" height="6" fill="#2a1d14" />
-          {[38, 58, 46].map((x, i) => pine(x, 56 + (i % 2) * 2, 1.1))}
-        </Frame>
-      )
-    case 'bridgefort':
-      return (
-        <Frame size={size}>
-          <rect y="44" width="96" height="20" fill={GRASS} />
-          <path d="M0 52 Q30 47 50 53 T96 52 L96 60 Q60 62 40 58 T0 60Z" fill={WATER} />
-          <rect x="54" y="47" width="40" height="3" fill={WOOD} />
-          <rect x="60" y="50" width="2" height="7" fill={STONE_D} />
-          <rect x="76" y="50" width="2" height="7" fill={STONE_D} />
-          <rect x="18" y="30" width="34" height="18" fill={STONE} />
-          {[18, 24, 30, 36, 42, 48].map((x) => (
-            <rect key={x} x={x} y="27" width="3.5" height="4" fill={STONE} />
+          <polygon points="18,48 30,32 42,48" fill="#5a6a3a" />
+          <polygon points="46,48 58,30 70,48" fill="#6a5a3a" />
+          <rect x="20" y="30" width="56" height="2" fill="#55693a" opacity="0.8" />
+          {[8, 84, 76, 14].map((x, i) => (
+            <ellipse key={x} cx={x} cy={46 - (i % 2) * 2} rx="7" ry="5" fill={i % 2 ? '#4c6a32' : '#5f7a3a'} />
           ))}
-          <rect x="14" y="22" width="9" height="26" fill={STONE_D} />
-          <rect x="47" y="22" width="9" height="26" fill={STONE_D} />
-          <polygon points="13,22 18.5,15 24,22" fill="#6b4a35" />
-          <polygon points="46,22 51.5,15 57,22" fill="#6b4a35" />
-          <rect x="31" y="38" width="8" height="10" rx="4" fill="#2a1d14" />
+          <path d="M60 54 L92 54" stroke="#e9c869" strokeWidth="1" strokeDasharray="3 2" />
+          <polygon points="92,54 88,52 88,56" fill="#e9c869" />
         </Frame>
       )
     case 'depot':
@@ -208,6 +209,63 @@ export function WorkArt({ job, size = 96 }: { job: WorkJob; size?: number }) {
           <rect x="66" y="40" width="16" height="3" fill={WOOD} transform="rotate(-14 74 41)" />
           <circle cx="84" cy="30" r="3" fill={CANVAS} />
           <rect x="82.5" y="33" width="3" height="9" fill="#2f4f8a" />
+        </Frame>
+      )
+    case 'tower':
+      return (
+        <Frame size={size}>
+          <rect y="50" width="96" height="14" fill={GRASS} />
+          <rect x="62" y="20" width="30" height="32" fill={STONE} />
+          {[62, 70, 78, 86].map((x) => <rect key={x} x={x} y="16" width="4" height="5" fill={STONE} />)}
+          <rect x="22" y="14" width="22" height="36" fill={WOOD} />
+          <rect x="22" y="26" width="22" height="2" fill={WOOD_D} />
+          <rect x="22" y="38" width="22" height="2" fill={WOOD_D} />
+          <rect x="44" y="16" width="20" height="3" fill={WOOD_D} transform="rotate(-8 44 17)" />
+          <circle cx="27" cy="51" r="4" fill={WOOD_D} />
+          <circle cx="39" cy="51" r="4" fill={WOOD_D} />
+        </Frame>
+      )
+    case 'ram':
+      return (
+        <Frame size={size}>
+          <rect y="50" width="96" height="14" fill={GRASS} />
+          <rect x="72" y="14" width="22" height="38" fill={STONE} />
+          <rect x="74" y="34" width="10" height="18" rx="5" fill="#2a1d14" />
+          <polygon points="18,44 38,28 58,44" fill="#8a6a48" />
+          <rect x="18" y="44" width="40" height="4" fill={WOOD_D} />
+          <rect x="30" y="38" width="44" height="4" rx="2" fill={WOOD} />
+          <polygon points="74,37 79,40 74,43" fill={STONE_D} />
+          <circle cx="24" cy="51" r="3.4" fill={WOOD_D} />
+          <circle cx="52" cy="51" r="3.4" fill={WOOD_D} />
+        </Frame>
+      )
+    case 'mantlet':
+      return (
+        <Frame size={size}>
+          <rect y="50" width="96" height="14" fill={GRASS} />
+          {[20, 42, 64].map((x) => (
+            <g key={x}>
+              <rect x={x} y="24" width="16" height="26" fill={WOOD} transform={`rotate(-6 ${x + 8} 37)`} />
+              <rect x={x + 7} y="24" width="2" height="26" fill={WOOD_D} transform={`rotate(-6 ${x + 8} 37)`} />
+              <circle cx={x + 3} cy="52" r="2.6" fill={WOOD_D} />
+              <circle cx={x + 13} cy="52" r="2.6" fill={WOOD_D} />
+            </g>
+          ))}
+          {[[8, 12], [16, 20], [86, 16]].map(([x, y], i) => (
+            <line key={i} x1={x} y1={y} x2={x + 8} y2={y + 4} stroke={STONE} strokeWidth="1" />
+          ))}
+        </Frame>
+      )
+    case 'trebuchet':
+      return (
+        <Frame size={size}>
+          <rect y="50" width="96" height="14" fill={GRASS} />
+          <polygon points="20,50 32,22 44,50" fill="none" stroke={WOOD_D} strokeWidth="3" />
+          <rect x="16" y="48" width="34" height="4" fill={WOOD} />
+          <line x1="14" y1="34" x2="62" y2="12" stroke={WOOD} strokeWidth="3" />
+          <rect x="8" y="32" width="9" height="9" fill={STONE_D} />
+          <path d="M62 12 Q78 0 92 14" stroke="#e9c869" strokeWidth="0.8" fill="none" strokeDasharray="2 2" />
+          <circle cx="92" cy="14" r="3" fill={STONE} />
         </Frame>
       )
     case 'demolish':

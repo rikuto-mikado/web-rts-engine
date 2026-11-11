@@ -2,7 +2,7 @@ import { X } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { COLUMN, FORMATIONS, FORMATION_ORDER } from '../game/formations'
 import { OUTPOST_KINDS, OUTPOST_ORDER } from '../game/outposts'
-import { WORKS } from '../game/engine'
+import { FEATURE_INFO, HOLDINGS, WORKS } from '../game/engine'
 import type { UnitType } from '../game/types'
 import { CounterWheel, OutpostArt, WorkArt } from './art'
 import { FormationIcon, SectionTitle, Tab, UnitGlyph } from './common'
@@ -103,6 +103,7 @@ function Basics() {
             ['🔴', 'A pulsing red ring is an enemy Great Host gathering. Strike before it unites.'],
             ['🤝', 'In Alliance War, summon your allies to muster with you, or call for aid when a castle is threatened.'],
             ['🛡', 'Station an army at a castle (yours or an ally\'s): it mans the walls when the castle is besieged.'],
+            ['♛', 'King Aldric rides with the Royal Guard: 520 black-armoured knights that can never be replaced. Armies within 350m of him fight harder and hold their nerve. If the Guard is destroyed, the war is lost.'],
           ].map(([icon, text]) => (
             <li key={text} className="flex gap-3">
               <span className="grid size-8 shrink-0 place-items-center rounded-full bg-black/30 text-[16px]">{icon}</span>
@@ -248,6 +249,30 @@ function Field() {
         </div>
       </section>
       <section>
+        <SectionTitle>Holdings between the castles</SectionTitle>
+        <p className="mb-2 text-[13px] text-ink-400">All are won with envoys and gold (or plundered), then run themselves as your vassals: they raise their own militia, help a besieged castle nearby, and after five minutes wall themselves in stone (stronger, and their gifts grow).</p>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {Object.values(HOLDINGS).map((h) => (
+            <Card key={h.name}>
+              <div className="font-display text-[15px] font-bold text-gold-100">{h.icon} {h.name}</div>
+              <p className="mt-1 text-[13px] leading-snug text-ink-300">{h.blurb}</p>
+            </Card>
+          ))}
+        </div>
+      </section>
+      <section>
+        <SectionTitle>Lie of the land</SectionTitle>
+        <p className="mb-2 text-[13px] text-ink-400">Every map mixes three climates (deserts stretch supply to 0.8x, mud flats slow armies and stop charges, volcanic ground ignores winter, ice makes it worse) and is dotted with features worth fighting over. Select an army to see what the ground under it does.</p>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {Object.values(FEATURE_INFO).map((f) => (
+            <Card key={f.name}>
+              <div className="font-display text-[15px] font-bold text-gold-100">{f.name}</div>
+              <p className="mt-1 text-[13px] leading-snug text-ink-300">{f.effect}</p>
+            </Card>
+          ))}
+        </div>
+      </section>
+      <section>
         <SectionTitle>Engineers' works · need 10+ Engineers</SectionTitle>
         <div className="grid gap-2 sm:grid-cols-2">
           {(['stakes', 'pit', 'barricade', 'pitch', 'bridge', 'demolish'] as const).map((k) => {
@@ -348,7 +373,7 @@ function Realm() {
       <section className="grid gap-3 sm:grid-cols-2">
         <Card>
           <div className="mb-1 font-display text-[15px] font-bold text-gold-100">🤝 Diplomacy</div>
-          <p className="text-[13.5px] leading-snug text-ink-300">Buy free towns from their castle panel. In the War tab, buy a truce with an enemy lord, or in Alliance War bribe one to change sides. Lords under pressure are easier to turn.</p>
+          <p className="text-[13.5px] leading-snug text-ink-300">The Intrigue tab gathers it all: buy a truce with an enemy lord, or in Alliance War bribe one to change sides (lords under pressure are easier to turn); buy free towns; send envoys to villages within reach; and watch your infamy, which abbeys slowly pray away.</p>
         </Card>
         <Card>
           <div className="mb-1 font-display text-[15px] font-bold text-gold-100">♛ Realm rank</div>

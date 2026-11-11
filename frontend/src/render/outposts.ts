@@ -6,73 +6,109 @@ import { applyVision } from './vision'
 
 const woodMat = applyVision(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.9 }))
 
-function palisadeGeometry() {
+const LOG = 0x6b4a2a
+const LOG_D = 0x5a3d22
+const ROOFW = 0x4a321c
+
+/** Palisade Castrum: a square log stockade with corner towers, a gate on each side and tents within. */
+function castrumGeometry() {
   const parts: THREE.BufferGeometry[] = []
-  const R = 30
-  const n = 30
+  const H = 50
+  for (let i = -H; i <= H; i += 2.8) {
+    for (const [x, z] of [[i, -H], [i, H], [-H, i], [H, i]] as const) {
+      if ((Math.abs(x) === H && Math.abs(z) < 8) || (Math.abs(z) === H && Math.abs(x) < 8)) continue
+      const h = 8 + ((Math.abs(i * 7) | 0) % 3) * 0.5
+      parts.push(part(cyl(1, 1.15, h, 5), (Math.abs(i) * 10) % 2 ? LOG : LOG_D, { x, y: h / 2, z }))
+      parts.push(part(cone(1, 1.6, 5), ROOFW, { x, y: h + 0.8, z }))
+    }
+  }
+  parts.push(part(box(H * 2 + 8, 0.8, H * 2 + 8), 0x7a6648, { y: 0.1 }))
+  for (const [x, z] of [[H, H], [H, -H], [-H, H], [-H, -H]] as const) {
+    for (const [dx, dz] of [[-2.6, -2.6], [2.6, -2.6], [-2.6, 2.6], [2.6, 2.6]]) parts.push(part(cyl(0.6, 0.7, 18, 5), LOG_D, { x: x + dx, y: 9, z: z + dz }))
+    parts.push(part(box(8, 1.2, 8), LOG, { x, y: 18, z }))
+    parts.push(part(box(8, 2.6, 0.8), LOG, { x, y: 19.8, z: z + 3.6 }))
+    parts.push(part(box(8, 2.6, 0.8), LOG, { x, y: 19.8, z: z - 3.6 }))
+    parts.push(part(cone(6.4, 5, 4), ROOFW, { x, y: 23.5, z, ry: Math.PI / 4 }))
+  }
+  return merge(parts)
+}
+
+function tentsGeometry(spread: number) {
+  const parts: THREE.BufferGeometry[] = []
+  const spots: [number, number, number][] = [[14, 12, 0xd8ccb0], [-12, 18, 0xc9b892], [18, -14, 0xd8ccb0], [-4, -22, 0xb9a888], [-24, -4, 0xd8ccb0], [26, 4, 0xc9b892], [-20, 24, 0xb9a888]]
+  for (const [x, z, c] of spots) parts.push(part(cone(5, 7, 6), c, { x: x * spread, y: 3.5, z: z * spread }))
+  // Command tent and fire.
+  parts.push(part(box(12, 5, 9), 0xe2d6b8, { x: 0, y: 2.5, z: 0 }))
+  parts.push(part(cyl(0.01, 6.4, 12.6, 3), 0x9a2a22, { x: 0, y: 7.6, z: 0, rz: Math.PI / 2, sx: 0.9 }))
+  parts.push(part(cyl(2, 2.2, 0.8, 7), 0x6a645a, { x: 8, y: 0.4, z: 10 }))
+  return merge(parts)
+}
+
+/** Wagon Laager: war wagons chained nose to tail in a ring. */
+function laagerGeometry() {
+  const parts: THREE.BufferGeometry[] = []
+  const R = 40
+  const n = 14
   for (let i = 0; i < n; i++) {
     const a = (i / n) * Math.PI * 2
-    if (Math.abs(Math.sin(a)) < 0.12 && Math.cos(a) > 0) continue // gate gap
-    const h = 7 + ((i * 37) % 5) * 0.4
-    parts.push(part(cyl(0.9, 1.1, h, 5), i % 2 ? 0x6b4a2a : 0x5a3d22, { x: Math.cos(a) * R, y: h / 2, z: Math.sin(a) * R }))
-    parts.push(part(cone(0.9, 1.6, 5), 0x4a321c, { x: Math.cos(a) * R, y: h + 0.8, z: Math.sin(a) * R }))
+    const x = Math.cos(a) * R
+    const z = Math.sin(a) * R
+    const ry = -a + Math.PI / 2
+    parts.push(part(box(15, 3, 5.6), LOG, { x, y: 3.2, z, ry }))
+    parts.push(part(box(15, 4, 0.8), 0x7a5a36, { x: x + Math.cos(a) * 2.6, y: 6, z: z + Math.sin(a) * 2.6, ry }))
+    parts.push(part(cyl(2.8, 2.8, 14, 8), 0xd8ccae, { x, y: 7.4, z, ry, rz: Math.PI / 2, sy: 0.7 }))
+    for (const s of [-1, 1]) for (const e of [-1, 1]) parts.push(part(cyl(1.6, 1.6, 0.6, 9), 0x3b2a18, { x: x + Math.cos(-ry) * e * 5 + Math.cos(a) * s * 3, y: 1.6, z: z - Math.sin(-ry) * e * 5 + Math.sin(a) * s * 3, rx: Math.PI / 2, ry }))
+    parts.push(part(cyl(0.3, 0.3, 4, 4), 0x3a3a3a, { x: Math.cos(a + Math.PI / n) * R, y: 2.5, z: Math.sin(a + Math.PI / n) * R, rz: Math.PI / 2, ry: ry }))
   }
-  // Earthen ring under the stakes.
-  parts.push(part(new THREE.TorusGeometry(R, 2.4, 4, 24), 0x6e5a3e, { y: 0.3, rx: Math.PI / 2, sz: 0.35 }))
+  for (const [x, z] of [[6, 4], [-8, -6]]) parts.push(part(cyl(2, 2.2, 0.8, 7), 0x6a645a, { x, y: 0.4, z }))
   return merge(parts)
 }
 
-function campGeometry() {
+/** Mangonel Redoubt: an earthen ring and ditch with a ballista and a mangonel on timber platforms. */
+function redoubtGeometry() {
   const parts: THREE.BufferGeometry[] = []
-  // Watchtower.
-  for (const [x, z] of [[-2.5, -2.5], [2.5, -2.5], [-2.5, 2.5], [2.5, 2.5]]) parts.push(part(cyl(0.5, 0.6, 16, 5), 0x5a3d22, { x: x - 8, y: 8, z: z - 6 }))
-  parts.push(part(box(8, 1.2, 8), 0x6b4a2a, { x: -8, y: 16, z: -6 }))
-  parts.push(part(cone(6.5, 5, 4), 0x4a321c, { x: -8, y: 19.5, z: -6, ry: Math.PI / 4 }))
-  // Tents.
-  for (const [x, z, c] of [[8, 6, 0xd8ccb0], [-6, 10, 0xc9b892], [10, -8, 0xd8ccb0], [0, -14, 0xb9a888]] as const) parts.push(part(cone(5, 7, 6), c, { x, y: 3.5, z }))
-  // Campfire stones.
-  parts.push(part(cyl(2, 2.2, 0.8, 7), 0x6a645a, { x: 2, y: 0.4, z: 2 }))
+  const R = 44
+  parts.push(part(new THREE.TorusGeometry(R, 5, 5, 28), 0x7a6648, { y: 1.2, rx: Math.PI / 2, sz: 0.45 }))
+  parts.push(part(new THREE.TorusGeometry(R + 9, 2.4, 4, 28), 0x4a3c2c, { y: 0.2, rx: Math.PI / 2, sz: 0.2 }))
+  for (let i = 0; i < 24; i++) {
+    const a = (i / 24) * Math.PI * 2
+    if (Math.abs(Math.sin(a)) < 0.1 && Math.cos(a) > 0) continue
+    parts.push(part(cyl(0.7, 0.9, 6, 5), LOG_D, { x: Math.cos(a) * R, y: 5, z: Math.sin(a) * R, rx: Math.sin(a) * 0.4, rz: -Math.cos(a) * 0.4 }))
+  }
+  // Mangonel: platform, frame and throwing arm.
+  parts.push(part(box(16, 2, 14), LOG, { x: -10, y: 1.5, z: 0 }))
+  for (const s of [-1, 1]) parts.push(part(box(1.4, 12, 1.4), LOG_D, { x: -10, y: 8, z: s * 4.6 }))
+  parts.push(part(box(1.2, 1.2, 10.4), LOG_D, { x: -10, y: 13, z: 0 }))
+  parts.push(part(box(24, 1.2, 1.2), LOG, { x: -6, y: 13.5, z: 0, rz: 0.5 }))
+  parts.push(part(box(4, 4, 4), 0x6a645a, { x: -17, y: 9, z: 0 }))
+  // Ballista: a giant crossbow on a post.
+  parts.push(part(box(10, 2, 10), LOG, { x: 14, y: 1.5, z: 8 }))
+  parts.push(part(cyl(0.8, 1, 6, 6), LOG_D, { x: 14, y: 5, z: 8 }))
+  parts.push(part(box(12, 1, 1.4), LOG, { x: 14, y: 8.4, z: 8 }))
+  parts.push(part(box(1.2, 1, 14), LOG_D, { x: 14, y: 8.4, z: 8 }))
+  // Piles of shot.
+  for (let i = 0; i < 8; i++) parts.push(part(new THREE.DodecahedronGeometry(1.4, 0), 0x8a8378, { x: 2 + (i % 4) * 2.4, y: 1.4 + Math.floor(i / 4) * 1.8, z: -14 }))
   return merge(parts)
 }
 
-function watchtowerGeometry() {
+/** Outrider Pavilion: low, camouflaged tents and muffled stables behind brush screens. */
+function pavilionGeometry() {
   const parts: THREE.BufferGeometry[] = []
-  for (const [x, z] of [[-3, -3], [3, -3], [-3, 3], [3, 3]]) parts.push(part(cyl(0.7, 0.9, 30, 5), 0x5a3d22, { x, y: 15, z }))
-  for (let y = 6; y < 30; y += 8) parts.push(part(box(7, 0.6, 0.6), 0x4a321c, { y, z: 3 }), part(box(7, 0.6, 0.6), 0x4a321c, { y, z: -3 }))
-  parts.push(part(box(10, 1.4, 10), 0x6b4a2a, { y: 30 }))
-  for (const [x, z] of [[-4.5, 0], [4.5, 0], [0, -4.5], [0, 4.5]]) parts.push(part(box(x ? 1 : 10, 2.4, z ? 1 : 10), 0x6b4a2a, { x, y: 32, z }))
-  parts.push(part(cone(8, 6, 4), 0x4a321c, { y: 37, ry: Math.PI / 4 }))
-  for (let i = 0; i < 14; i++) {
-    const a = (i / 14) * Math.PI * 2
-    parts.push(part(cyl(0.6, 0.7, 4.5, 5), 0x5a3d22, { x: Math.cos(a) * 15, y: 2.2, z: Math.sin(a) * 15 }))
+  for (const [x, z, r] of [[-14, -8, 0.3], [10, -12, -0.4], [2, 14, 1.2], [-20, 14, 0.8], [20, 10, -1]] as const) {
+    parts.push(part(cone(7, 6, 5), r > 0 ? 0x5a6a3a : 0x6a5a3a, { x, y: 3, z, ry: r }))
   }
-  return merge(parts)
-}
-
-function lodgeGeometry() {
-  const parts: THREE.BufferGeometry[] = []
-  for (const [x, z, r] of [[-9, -4, 0.3], [8, -6, -0.4], [0, 10, 1.2]] as const) {
-    parts.push(part(box(10, 5, 7), 0x5a3a20, { x, y: 2.5, z, ry: r }))
-    parts.push(part(cyl(5.2, 5.2, 11, 3), 0x3d5a2a, { x, y: 6.4, z, rx: Math.PI / 2, ry: r, rz: Math.PI / 2, sy: 1 }))
+  // Stables: long low roofs.
+  parts.push(part(box(22, 3, 8), 0x4f4030, { x: 0, y: 1.5, z: -26 }))
+  parts.push(part(cyl(0.01, 5, 22.6, 3), 0x4a5a32, { x: 0, y: 4.6, z: -26, rz: Math.PI / 2, sx: 0.9 }))
+  // Brush screens and camouflage netting on poles.
+  for (let i = 0; i < 18; i++) {
+    const a = (i / 18) * Math.PI * 2
+    parts.push(part(new THREE.SphereGeometry(3.6, 6, 4), i % 2 ? 0x4c6a32 : 0x5f7a3a, { x: Math.cos(a) * 38, y: 2.4, z: Math.sin(a) * 38, sy: 0.75 }))
   }
-  parts.push(part(cyl(1.6, 1.8, 0.8, 7), 0x6a645a, { x: 0, y: 0.4, z: -1 }))
-  return merge(parts)
-}
-
-function bridgefortGeometry() {
-  const parts: THREE.BufferGeometry[] = []
-  const R = 28
-  for (let i = 0; i < 16; i++) {
-    const a = (i / 16) * Math.PI * 2
-    if (i === 0) continue // gate
-    parts.push(part(box(11.5, 10, 4), 0xa39d90, { x: Math.cos(a) * R, y: 5, z: Math.sin(a) * R, ry: -a + Math.PI / 2 }))
-    parts.push(part(box(3, 2, 4.6), 0x8d877b, { x: Math.cos(a) * R, y: 11, z: Math.sin(a) * R, ry: -a + Math.PI / 2 }))
+  for (const [x, z] of [[-6, 0], [6, 2]]) {
+    parts.push(part(cyl(0.3, 0.3, 7, 4), LOG_D, { x, y: 3.5, z }))
   }
-  for (let i = 0; i < 4; i++) {
-    const a = (i / 4) * Math.PI * 2 + Math.PI / 4
-    parts.push(part(cyl(5, 5.5, 16, 8), 0xb1aa9c, { x: Math.cos(a) * R, y: 8, z: Math.sin(a) * R }))
-    parts.push(part(cone(6, 6, 8), 0x6b4a35, { x: Math.cos(a) * R, y: 19, z: Math.sin(a) * R }))
-  }
+  parts.push(part(box(18, 0.3, 12), 0x55693a, { x: 0, y: 7, z: 1 }))
   return merge(parts)
 }
 
@@ -109,7 +145,10 @@ function depotGeometry() {
     parts.push(part(cyl(2.4, 2.4, 7.4, 8), 0xe8dfc6, { x, y: 4.2, z, ry: r, rz: Math.PI / 2, sy: 0.75 }))
     for (const s of [-1, 1]) parts.push(part(cyl(1.3, 1.3, 0.6, 8), 0x3b2a18, { x: x - Math.sin(r) * s * 2.3, y: 1.3, z: z + Math.cos(r) * s * 2.3, rx: Math.PI / 2, ry: r }))
   }
-  return merge(parts)
+  // Outposts are larger now: the whole depot is built half as large again.
+  const g = merge(parts)
+  g.scale(1.6, 1.25, 1.6)
+  return g
 }
 
 /** Crates, sacks and barrels: the stores on hand. Scaled by the depot's stock. */
@@ -123,7 +162,9 @@ function storesGeometry() {
   for (let i = 0; i < 6; i++) parts.push(part(box(3, 3, 3), 0x9a7a4c, { x: 5.6 + (i % 3) * 3.3, y: 4.5, z: -0.4 + Math.floor(i / 3) * 3.3 }))
   for (let i = 0; i < 5; i++) parts.push(part(cyl(1.3, 1.3, 2.8, 8), 0x5e4126, { x: -2 - (i % 3) * 2.8, y: 1.4, z: 4 + Math.floor(i / 3) * 2.8 }))
   for (let i = 0; i < 4; i++) parts.push(part(new THREE.SphereGeometry(1.5, 6, 4), 0xcdbf98, { x: 6 + i * 2.6, y: 1, z: 9, sy: 0.7 }))
-  return merge(parts)
+  const g = merge(parts)
+  g.scale(1.6, 1.25, 1.6)
+  return g
 }
 
 class OutpostView {
@@ -134,7 +175,7 @@ class OutpostView {
   private color: string
   constructor(o: Outpost, engine: GameEngine, geos: Record<string, [THREE.BufferGeometry, THREE.BufferGeometry]>) {
     this.color = engine.factionColor(o.faction)
-    const [mainGeo, extraGeo] = geos[o.kind] ?? geos.camp
+    const [mainGeo, extraGeo] = geos[o.kind] ?? geos.castrum
     this.palisade = new THREE.Mesh(mainGeo, woodMat)
     this.camp = new THREE.Mesh(extraGeo, woodMat)
     for (const m of [this.palisade, this.camp]) {
@@ -145,13 +186,11 @@ class OutpostView {
     pole.position.set(-8, 20, -6)
     this.flag = new THREE.Mesh(new THREE.PlaneGeometry(7, 4.5), applyVision(new THREE.MeshStandardMaterial({ color: this.color, side: THREE.DoubleSide })))
     this.flag.position.set(-4.5, 31, -6)
-    if (o.kind === 'watchtower') {
-      pole.position.set(0, 38, 0)
-      this.flag.position.set(3.5, 49, 0)
-    } else if (o.kind === 'depot') {
-      pole.position.set(-8, 16, -9)
-      this.flag.position.set(-4.5, 27, -9)
-    }
+    // The banner stands on a corner tower, the mangonel, the command tent or the storehouse.
+    const at: Record<string, [number, number, number]> = { castrum: [50, 24, 50], laager: [0, 6, 0], redoubt: [-10, 14, 0], pavilion: [0, 7, 1], depot: [-13, 20, -14] }
+    const [px, py, pz] = at[o.kind] ?? [0, 6, 0]
+    pole.position.set(px, py, pz)
+    this.flag.position.set(px + 3.5, py + 11, pz)
     this.group.add(this.palisade, this.camp, pole, this.flag)
     this.group.position.set(o.x, engine.world.heightAt(o.x, o.z) - 0.5, o.z)
     this.group.rotation.y = (o.x * 13 + o.z * 7) % 6.28
@@ -179,12 +218,11 @@ export class OutpostRenderer {
   private views = new Map<string, OutpostView>()
   private geos: Record<string, [THREE.BufferGeometry, THREE.BufferGeometry]> = (() => {
     const empty = new THREE.BufferGeometry()
-    const camp = campGeometry()
     return {
-      camp: [palisadeGeometry(), camp],
-      watchtower: [watchtowerGeometry(), empty],
-      lodge: [lodgeGeometry(), empty],
-      bridgefort: [bridgefortGeometry(), camp],
+      castrum: [castrumGeometry(), tentsGeometry(1.2)],
+      laager: [laagerGeometry(), tentsGeometry(0.7)],
+      redoubt: [redoubtGeometry(), empty],
+      pavilion: [pavilionGeometry(), empty],
       depot: [depotGeometry(), storesGeometry()],
     }
   })()

@@ -74,10 +74,25 @@ function pitchGeometry() {
   return merge(parts)
 }
 
+/** A field trebuchet: a tall timber frame, the long arm cocked, a box of counterweight. */
+function trebuchetGeometry() {
+  const parts: THREE.BufferGeometry[] = []
+  parts.push(part(box(18, 1.6, 12), 0x6b4a2a, { y: 0.8 }))
+  for (const s of [-1, 1]) {
+    parts.push(part(box(1.6, 20, 1.6), 0x5a3d22, { x: -3, y: 10, z: s * 4, rz: 0.18 }))
+    parts.push(part(box(1.6, 20, 1.6), 0x5a3d22, { x: 3, y: 10, z: s * 4, rz: -0.18 }))
+  }
+  parts.push(part(box(1.4, 1.4, 10), 0x4a321c, { y: 19 }))
+  parts.push(part(box(30, 1.2, 1.2), 0x6b4a2a, { x: 4, y: 22, rz: -0.55 }))
+  parts.push(part(box(5, 6, 5), 0x6a645a, { x: -8, y: 13, rz: -0.55 }))
+  for (let i = 0; i < 6; i++) parts.push(part(new THREE.DodecahedronGeometry(1.5, 0), 0x8a8378, { x: 8 + (i % 3) * 2.6, y: 1.6 + Math.floor(i / 3) * 1.8, z: 7 }))
+  return merge(parts)
+}
+
 /** Field works: stakes, traps and barricades. Hidden enemy traps stay invisible until found or sprung. */
 export class ObstacleRenderer {
   readonly group = new THREE.Group()
-  private geos = { stakes: stakesGeometry(), pit: pitGeometry(), barricade: barricadeGeometry(), pitch: pitchGeometry() }
+  private geos = { stakes: stakesGeometry(), pit: pitGeometry(), barricade: barricadeGeometry(), pitch: pitchGeometry(), trebuchet: trebuchetGeometry() }
   private meshes = new Map<string, THREE.Mesh>()
   private engine: GameEngine
   constructor(engine: GameEngine) {
@@ -94,6 +109,7 @@ export class ObstacleRenderer {
       if (!m) {
         m = new THREE.Mesh(this.geos[o.kind], mat)
         m.castShadow = o.kind !== 'pit'
+        if (o.kind === 'trebuchet') m.scale.setScalar(1)
         m.receiveShadow = true
         m.position.set(o.x, world.heightAt(o.x, o.z), o.z)
         m.rotation.y = (o.x * 7 + o.z * 3) % 6.28
@@ -102,6 +118,7 @@ export class ObstacleRenderer {
       }
       m.visible = engine.obstacleSeenBy(o, team)
       // Fades into the ground over its last 30 seconds.
+      if (o.kind === 'trebuchet') continue
       const left = o.until - engine.state.time
       const hp = o.kind === 'barricade' ? Math.max(0.35, (o.hp ?? OBSTACLE.barricade.hp) / OBSTACLE.barricade.hp) : 1
       m.scale.set(1, Math.max(0.15, Math.min(1, left / 30)) * hp, 1)

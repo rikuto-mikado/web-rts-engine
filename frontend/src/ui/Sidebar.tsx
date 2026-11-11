@@ -1,7 +1,7 @@
-import { Castle as CastleIcon, ChevronsLeft, ChevronsRight, CircleAlert, Hammer, Handshake, Plus, Swords, Users } from 'lucide-react'
+import { Castle as CastleIcon, ChevronDown, ChevronsLeft, ChevronsRight, CircleAlert, Coins, Hammer, Handshake, Package, Plus, Swords, Users } from 'lucide-react'
 import { useState } from 'react'
 import { useViewport } from './viewport'
-import { PLAYER, type GameEngine } from '../game/engine'
+import { HOLDING_EFFECTS, HOLDINGS, NEUTRAL, PLAYER, type GameEngine } from '../game/engine'
 import { FORMATIONS } from '../game/formations'
 import { fmt, total, totalInt } from '../game/troops'
 import type { Selection } from '../render/GameRenderer'
@@ -18,7 +18,7 @@ interface Props {
   onFocusPoint: (x: number, z: number) => void
 }
 
-type TabKey = 'realm' | 'armies' | 'war'
+type TabKey = 'realm' | 'armies' | 'war' | 'intrigue'
 
 export function Sidebar({ engine, open, setOpen, selection, onSelect, onFormArmy, onFocusPoint }: Props) {
   useEngine(engine)
@@ -42,13 +42,18 @@ export function Sidebar({ engine, open, setOpen, selection, onSelect, onFormArmy
             Realm
           </Tab>
           <Tab active={tab === 'armies'} onClick={() => setTab('armies')}>
-            Armies {armies.length > 0 && <span className="opacity-70">({armies.length})</span>}
+            Armies {armies.length > 0 && <span className="text-[11px] opacity-70">{armies.length}</span>}
           </Tab>
           <Tab active={tab === 'war'} onClick={() => setTab('war')} badge={threats.length}>
             War
           </Tab>
+          <Tab active={tab === 'intrigue'} onClick={() => setTab('intrigue')}>
+            Intrigue
+          </Tab>
         </div>
 
+        {/* Alerts: capped so they can never crowd out the tabs below. */}
+        <div className="scroll-thin max-h-[38%] min-w-[min(88vw,336px)] shrink-0 overflow-y-auto pb-0.5">
         {threats.map((f) => {
           const h = f.host!
           const host = engine.army(h.hostId)
@@ -76,11 +81,13 @@ export function Sidebar({ engine, open, setOpen, selection, onSelect, onFormArmy
 
         <MusterCard engine={engine} onFocusPoint={onFocusPoint} />
         <AidCard engine={engine} onFocusPoint={onFocusPoint} />
+        </div>
 
         <div className="scroll-thin min-w-[min(88vw,336px)] flex-1 overflow-y-auto p-3">
           {tab === 'realm' && <RealmTab engine={engine} selection={selection} onSelect={onSelect} />}
           {tab === 'armies' && <ArmiesTab engine={engine} selection={selection} onSelect={onSelect} onFormArmy={onFormArmy} />}
           {tab === 'war' && <WarTab engine={engine} onFocusPoint={onFocusPoint} />}
+          {tab === 'intrigue' && <IntrigueTab engine={engine} onSelect={onSelect} />}
         </div>
       </aside>
       {!vp.compact && (
@@ -164,6 +171,7 @@ function MusterCard({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint
 function AidCard({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint: (x: number, z: number) => void }) {
   const team = engine.team(PLAYER)
   const [pickFor, setPickFor] = useState<Record<string, string>>({})
+  const [open, setOpen] = useState(false)
   // Only calls your armies could reasonably answer: within reach of one of your castles, nearest first.
   const homes = engine.state.castles.filter((c) => c.faction === PLAYER && !c.village)
   const reach = engine.aidReach()
@@ -180,8 +188,24 @@ function AidCard({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint: (
   const more = near.length - calls.length
   if (calls.length === 0) return null
   const mine = engine.state.armies.filter((a) => a.faction === PLAYER && !a.vassalOf && !a.battleId && a.status !== 'retreating' && !engine.musterOf(a.id))
+  const header = (
+    <button
+      className="flex w-full items-center gap-2 rounded-sm border border-amber-400/40 bg-amber-700/15 px-2.5 py-1.5 text-left text-[13px] hover:bg-amber-700/25"
+      onClick={() => setOpen(!open)}
+      title={open ? 'Fold away' : 'Show the calls'}
+    >
+      <CircleAlert size={15} className="shrink-0 text-amber-300" />
+      <span className="flex-1 truncate font-semibold text-amber-200">
+        Allies call for aid · {near.length}
+      </span>
+      {!open && <span className="truncate text-[12px] text-ink-400">{engine.castle(calls[0].castleId)?.name}{near.length > 1 ? ' …' : ''}</span>}
+      <ChevronDown size={14} className={`shrink-0 text-amber-300 transition-transform ${open ? 'rotate-180' : ''}`} />
+    </button>
+  )
+  if (!open) return <div className="mx-2 mt-2 min-w-[min(84vw,320px)]">{header}</div>
   return (
     <div className="mx-2 mt-2 min-w-[min(84vw,320px)] space-y-1.5">
+      {header}
       {calls.map((call) => {
         const c = engine.castle(call.castleId)
         if (!c) return null
@@ -234,10 +258,22 @@ function RealmTab({ engine, selection, onSelect }: { engine: GameEngine; selecti
   const totals = engine.totals(PLAYER)
   const allN = total(totals.all)
   const castles = s.castles.filter((c) => c.faction === PLAYER)
-  const commanders = engine.content.commanders.filter((c) => s.commanders[c.key]?.owner === PLAYER)
+  const fortresses = castles.filter((c) => !c.village)
+  const vassals = castles.filter((c) => c.village && !c.ruined)
+  const depots = (s.outposts ?? []).filter((o) => o.faction === PLAYER && o.kind === 'depot')
+  const tribute = vassals.reduce((sum, c) => sum + engine.tributeRate(c), 0)
+  const net = totals.income - totals.upkeep
   return (
     <div className="space-y-5">
       <RankCard engine={engine} power={totals.totalPower} />
+      <section>
+        <SectionTitle right={<span className={`text-[12px] font-bold tabular-nums ${net >= 0 ? 'text-emerald-400' : 'text-ember-300'}`}>{net >= 0 ? '+' : ''}{net.toFixed(1)}/s</span>}>Treasury</SectionTitle>
+        <div className="well space-y-1 rounded-lg px-2.5 py-2 text-[13px]">
+          <Ledger label={`Castle rents · ${fortresses.length} ${fortresses.length === 1 ? 'castle' : 'castles'}`} value={totals.income} />
+          <Ledger label={`Tribute by wagon · ${vassals.length} ${vassals.length === 1 ? 'vassal' : 'vassals'}`} value={tribute} note="arrives in loads" />
+          <Ledger label="Army upkeep · Royal Guard free" value={-totals.upkeep} />
+        </div>
+      </section>
       <section>
         <SectionTitle>Total strength</SectionTitle>
         <div className="grid grid-cols-3 gap-1.5">
@@ -264,9 +300,9 @@ function RealmTab({ engine, selection, onSelect }: { engine: GameEngine; selecti
       </section>
 
       <section>
-        <SectionTitle right={<span className="text-[12px] text-ink-500">{castles.length} held</span>}>Holdings</SectionTitle>
+        <SectionTitle right={<span className="text-[12px] text-ink-500">{fortresses.length} held</span>}>Castles</SectionTitle>
         <div className="space-y-1">
-          {castles.map((c) => {
+          {fortresses.map((c) => {
             const sel = selection?.kind === 'castle' && selection.id === c.id
             const n = total(c.garrison)
             return (
@@ -297,34 +333,78 @@ function RealmTab({ engine, selection, onSelect }: { engine: GameEngine; selecti
       </section>
 
       <section>
-        <SectionTitle>Commanders</SectionTitle>
-        <div className="grid grid-cols-6 gap-1.5">
-          {commanders.map((c) => {
-            const st = s.commanders[c.key]
-            const wounded = st.woundedUntil > s.time
-            const busy = !!st.armyId
+        <SectionTitle right={<span className="text-[12px] text-ink-500">{vassals.length} sworn</span>}>Vassal holdings</SectionTitle>
+        {vassals.length === 0 && <p className="text-[12px] leading-snug text-ink-500">No village has sworn to you yet. Win one over by envoy (Intrigue tab or its panel), or take it by force.</p>}
+        <div className="space-y-1">
+          {vassals.map((c) => {
+            const H = HOLDINGS[engine.holdingOf(c)]
+            const sel = selection?.kind === 'castle' && selection.id === c.id
+            const rate = engine.tributeRate(c)
             return (
               <button
-                key={c.key}
-                onClick={() => st.armyId && onSelect({ kind: 'army', id: st.armyId }, true)}
-                title={`${c.name}, ${c.title}\n+ ${c.strengths.join('\n+ ')}\n− ${c.weaknesses.join('\n− ')}\nRank ${st.level}${wounded ? ' · Wounded' : busy ? ' · In the field' : ' · Available'}`}
-                className={`relative overflow-hidden rounded-lg border ${wounded ? 'border-ember-500/40 opacity-40 grayscale' : busy ? 'border-white/10 opacity-60' : 'border-gold-400/50'}`}
+                key={c.id}
+                onClick={() => onSelect({ kind: 'castle', id: c.id }, true)}
+                title={H.blurb}
+                className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${sel ? 'bg-gold-500/10 ring-1 ring-gold-400/60' : 'well hover:bg-white/6'}`}
               >
-                <PixelPortrait spec={c.portrait} size={44} className="w-full rounded-none" />
-                <span className="absolute right-0.5 bottom-0 text-[11px] font-bold text-gold-200 drop-shadow">{'★'.repeat(Math.min(st.level, 5) - 1)}</span>
+                <span className="w-4 text-center">{H.icon}</span>
+                <span className="min-w-0 flex-1 truncate font-medium">
+                  {c.name} <span className="text-[12px] text-ink-500">{H.name}{c.tier >= 2 ? ' · walled' : ''}</span>
+                </span>
+                {c.battleId && <span className="rounded bg-ember-500 px-1 text-[11px] font-bold">SIEGE</span>}
+                <span className="text-[12px] text-gold-300 tabular-nums">{rate > 0 ? `+${rate.toFixed(1)}/s` : ''}</span>
+                <span className="w-10 text-right text-ink-300 tabular-nums">{fmt(total(c.garrison))}</span>
               </button>
             )
           })}
         </div>
       </section>
+
+      {depots.length > 0 && (
+        <section>
+          <SectionTitle right={<span className="text-[12px] text-ink-500">stores · quartered</span>}>Supply depots</SectionTitle>
+          <div className="space-y-1">
+            {depots.map((o) => {
+              const sel = selection?.kind === 'outpost' && selection.id === o.id
+              const stock = Math.round(o.stock ?? 0)
+              return (
+                <button
+                  key={o.id}
+                  onClick={() => onSelect({ kind: 'outpost', id: o.id }, true)}
+                  className={`w-full rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${sel ? 'bg-gold-500/10 ring-1 ring-gold-400/60' : 'well hover:bg-white/6'}`}
+                >
+                  <div className="flex items-center gap-2">
+                    <Package size={13} className={o.progress < 1 ? 'text-ink-500' : stock < 25 ? 'text-ember-400' : 'text-gold-400'} />
+                    <span className="flex-1 truncate font-medium">{o.name}</span>
+                    {o.progress < 1 ? (
+                      <span className="text-[12px] text-ink-400">building {Math.round(o.progress * 100)}%</span>
+                    ) : (
+                      <span className={`tabular-nums ${stock < 25 ? 'text-ember-300' : 'text-ink-300'}`}>{stock}%</span>
+                    )}
+                    <span className="w-10 text-right text-ink-300 tabular-nums">{fmt(total(o.garrison ?? {}))}</span>
+                  </div>
+                  {o.progress >= 1 && (
+                    <div className="mt-1">
+                      <Bar value={stock} max={100} color={stock < 25 ? '#e0603a' : '#d1a73f'} height={2} />
+                    </div>
+                  )}
+                </button>
+              )
+            })}
+          </div>
+        </section>
+      )}
     </div>
   )
 }
 
 function ArmiesTab({ engine, selection, onSelect, onFormArmy }: { engine: GameEngine; selection: Selection; onSelect: Props['onSelect']; onFormArmy: () => void }) {
-  const armies = engine.state.armies.filter((a) => a.faction === PLAYER)
+  const s = engine.state
+  const armies = s.armies.filter((a) => a.faction === PLAYER)
+  const commanders = engine.content.commanders.filter((c) => s.commanders[c.key]?.owner === PLAYER)
   return (
-    <div>
+    <div className="space-y-5">
+      <section>
       <button className="btn btn-gold mb-3 w-full py-2" onClick={onFormArmy}>
         <Plus size={14} /> Muster a new army <kbd className="ml-1 rounded bg-black/20 px-1 text-[12px]">F</kbd>
       </button>
@@ -375,6 +455,39 @@ function ArmiesTab({ engine, selection, onSelect, onFormArmy }: { engine: GameEn
           )
         })}
       </div>
+      </section>
+
+      <section>
+        <SectionTitle right={<span className="text-[12px] text-ink-500">{commanders.filter((c) => !s.commanders[c.key].armyId && !s.commanders[c.key].stationedAt && s.commanders[c.key].woundedUntil <= s.time).length} ready</span>}>Commanders</SectionTitle>
+        <div className="space-y-1">
+          {commanders.map((c) => {
+            const st = s.commanders[c.key]
+            const wound = Math.max(0, Math.ceil(st.woundedUntil - s.time))
+            const army = st.armyId ? engine.army(st.armyId) : undefined
+            const depot = st.stationedAt ? engine.outpost(st.stationedAt) : undefined
+            const keep = army && engine.inKeep(army) && 'castleId' in army.order ? engine.castle(army.order.castleId) : undefined
+            const status = wound > 0 ? `Wounded · ${Math.floor(wound / 60)}:${String(wound % 60).padStart(2, '0')}` : keep ? `In the keep at ${keep.name}` : army ? `In the field · ${army.royal ? 'Royal Guard' : STATUS_TEXT[army.status]}` : depot ? `Quartered at ${depot.name}` : 'Ready to lead'
+            const tone = wound > 0 ? 'text-ember-300' : keep ? 'text-gold-300' : army ? 'text-royal-300' : depot ? 'text-ink-300' : 'text-emerald-400'
+            return (
+              <button
+                key={c.key}
+                onClick={() => (army ? onSelect({ kind: 'army', id: army.id }, true) : depot ? onSelect({ kind: 'outpost', id: depot.id }, true) : onFormArmy())}
+                title={`${c.name}, ${c.title}\n+ ${c.strengths.join('\n+ ')}\n− ${c.weaknesses.join('\n− ')}`}
+                className={`well flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-white/6 ${wound > 0 ? 'opacity-70' : ''}`}
+              >
+                <PixelPortrait spec={c.portrait} size={30} className={`ring-1 ring-white/10 ${wound > 0 ? 'grayscale' : ''}`} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5 text-[13px] font-semibold">
+                    <span className="truncate">{c.name}</span>
+                    {st.level > 1 && <span className="text-[11px] text-gold-300">{'★'.repeat(Math.min(st.level, 5) - 1)}</span>}
+                  </div>
+                  <div className={`truncate text-[12px] ${tone}`}>{status}</div>
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      </section>
     </div>
   )
 }
@@ -391,14 +504,6 @@ function WarTab({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint: (x
     const p = castles.reduce((sum, c) => sum + total(c.garrison), 0) + s.armies.filter((a) => a.faction === fid).reduce((sum, a) => sum + total(a.troops), 0)
     const cap = engine.castle(f.capitalId) ?? castles[0]
     const pactLeft = Math.max(0, (s.pacts[fid] ?? 0) - s.time)
-    const cooldown = Math.max(0, (s.diploCooldown[fid] ?? 0) - s.time)
-    const bribe = engine.bribeOffer(fid)
-    const pact = engine.pactOffer(fid)
-    const gold = s.factions[PLAYER].gold
-    const act = (fn: () => string | null) => {
-      const err = fn()
-      if (err) window.alert(err)
-    }
     return (
       <div key={fid} className={`rounded-sm px-2 py-1 ${!f.alive ? 'opacity-35' : ''}`}>
         <button onClick={() => cap && onFocusPoint(cap.x, cap.z)} className={`flex w-full items-center gap-2 text-left text-[13px] hover:brightness-125 ${!f.alive ? 'line-through' : ''}`}>
@@ -411,28 +516,7 @@ function WarTab({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint: (x
           <span className="w-5 text-right text-ink-400 tabular-nums">{castles.length}</span>
           <span className="w-12 text-right text-ink-300 tabular-nums">~{fmt(Math.round(p / 50) * 50)}</span>
         </button>
-        {f.alive && f.team === 'B' && (pact || bribe) && (
-          <div className="mt-1 mb-1 flex flex-wrap gap-1 pl-4.5">
-            {pactLeft > 0 ? (
-              <span className="rounded-sm bg-teal-700/30 px-1.5 py-0.5 text-[12px] text-teal-200">🕊 Truce {Math.floor(pactLeft / 60)}:{String(Math.floor(pactLeft % 60)).padStart(2, '0')}</span>
-            ) : cooldown > 0 ? (
-              <span className="text-[12px] text-ink-500">Envoys refused ({Math.ceil(cooldown)}s)</span>
-            ) : (
-              <>
-                {pact && (
-                  <button className="btn h-auto min-h-0 px-2 py-0.5 text-[12px]" disabled={gold < pact.price} onClick={() => act(() => engine.signPact(fid))} title="They will not attack your lands or armies for 4 minutes">
-                    🕊 Truce · {fmt(pact.price)}g
-                  </button>
-                )}
-                {bribe && (
-                  <button className="btn h-auto min-h-0 px-2 py-0.5 text-[12px]" disabled={gold < bribe.price} onClick={() => act(() => engine.bribeLord(fid))} title="Pay them to join your alliance. If they refuse, part of the gold is lost.">
-                    💰 Turn · {fmt(bribe.price)}g · {Math.round(bribe.chance * 100)}%
-                  </button>
-                )}
-              </>
-            )}
-          </div>
-        )}
+        {f.alive && pactLeft > 0 && <div className="pl-4.5 text-[12px] text-teal-300">🕊 Truce {Math.floor(pactLeft / 60)}:{String(Math.floor(pactLeft % 60)).padStart(2, '0')}</div>}
       </div>
     )
   }
@@ -500,12 +584,183 @@ function WarTab({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint: (x
         <div>{realms.filter((f) => f.team === 'A').sort((a, b) => (a.id === PLAYER ? -1 : b.id === PLAYER ? 1 : 0)).map((f) => row(f.id))}</div>
       </section>
       <section>
-        <SectionTitle>Enemy realms · diplomacy</SectionTitle>
-        <p className="mb-1.5 text-[12px] leading-snug text-ink-500">
-          Buy a truce to keep a lord off your back{s.rules.mode === 'alliance' ? ', or bribe a lord to change sides. Lords under pressure are easier to turn' : ''}. Free towns can be bought from their castle panel.
-        </p>
+        <SectionTitle right={<span className="text-[12px] text-ink-500">rank · castles · soldiers</span>}>Enemy realms</SectionTitle>
         <div>{realms.filter((f) => f.team === 'B').map((f) => row(f.id))}</div>
       </section>
+    </div>
+  )
+}
+
+/** Truces, bribes, free towns and villages to win over, and the infamy that makes all of it dearer. */
+function IntrigueTab({ engine, onSelect }: { engine: GameEngine; onSelect: Props['onSelect'] }) {
+  const s = engine.state
+  const me = s.factions[PLAYER]
+  const gold = me.gold
+  const [msg, setMsg] = useState<string | null>(null)
+  const act = (fn: () => string | null) => setMsg(fn())
+  const infamy = me.infamy ?? 0
+  const abbeys = s.castles.filter((c) => c.faction === PLAYER && !c.ruined && engine.holdingOf(c) === 'abbey' && c.village)
+  const nextCleanse = abbeys.length ? Math.min(...abbeys.map((c) => c.nextCleanseAt ?? s.time + HOLDING_EFFECTS.abbeyCleanse)) - s.time : null
+  const lords = Object.values(s.factions).filter((f) => f.team === 'B' && f.alive && !f.leader)
+  const home = engine.castle(me.capitalId)
+  const dist = (x: number, z: number) => (home ? Math.hypot(home.x - x, home.z - z) : 0)
+  // Only what your scouts have seen: free towns, and villages your envoys can reach.
+  const towns = s.castles.filter((c) => c.faction === NEUTRAL && !c.village && !c.ruined && engine.isExplored(c.x, c.z)).sort((a, b) => dist(a.x, a.z) - dist(b.x, b.z))
+  const villages = s.castles
+    .filter((c) => c.faction === NEUTRAL && c.village && !c.ruined && engine.isExplored(c.x, c.z))
+    .map((c) => ({ c, t: engine.villageTerms(c.id) }))
+    .filter((v) => !v.t.reason || v.t.reason.startsWith('Needs') || v.t.reason.startsWith('The elders'))
+    .sort((a, b) => dist(a.c.x, a.c.z) - dist(b.c.x, b.c.z))
+    .slice(0, 8)
+  const clock = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`
+  return (
+    <div className="space-y-5">
+      {msg && (
+        <button className="w-full rounded-sm border border-ember-400/40 bg-ember-700/20 px-2.5 py-1.5 text-left text-[12px] text-ember-200" onClick={() => setMsg(null)}>
+          {msg}
+        </button>
+      )}
+      <section>
+        <SectionTitle right={<span className={`text-[12px] font-bold ${infamy >= 3 ? 'text-ember-300' : infamy > 0 ? 'text-gold-300' : 'text-emerald-400'}`}>{infamy === 0 ? 'Good name' : infamy >= 3 ? 'Notorious' : 'Distrusted'}</span>}>Infamy</SectionTitle>
+        <div className="well rounded-lg px-2.5 py-2 text-[13px]">
+          <div className="flex items-center gap-1">
+            {Array.from({ length: Math.max(5, infamy) }, (_, i) => (
+              <i key={i} className={`h-2.5 flex-1 rounded-sm ${i < infamy ? (infamy >= 3 ? 'bg-ember-400' : 'bg-gold-400') : 'bg-white/8'}`} />
+            ))}
+            <span className="ml-1.5 w-5 text-right font-bold tabular-nums">{infamy}</span>
+          </div>
+          <p className="mt-1.5 text-[12px] leading-snug text-ink-400">
+            {infamy > 0 ? `Villages ask ${Math.round(infamy * 35)}% more gold, and their odds of agreeing fall by ${infamy * 14} points.` : 'Villages deal with you fairly.'} Plundering a village adds 1 (an abbey, 2).
+          </p>
+          {abbeys.length > 0 ? (
+            <div className="mt-1.5">
+              <div className="flex justify-between text-[12px] text-ink-300">
+                <span>⛪ Abbey prayers ({abbeys.length})</span>
+                <span className="tabular-nums">{infamy > 0 && nextCleanse !== null ? `−1 in ${clock(Math.max(0, nextCleanse))}` : 'nothing to forgive'}</span>
+              </div>
+              {infamy > 0 && nextCleanse !== null && (
+                <div className="mt-1">
+                  <Bar value={HOLDING_EFFECTS.abbeyCleanse - Math.max(0, nextCleanse)} max={HOLDING_EFFECTS.abbeyCleanse} color="#5fb7a6" height={3} />
+                </div>
+              )}
+            </div>
+          ) : (
+            infamy > 0 && <p className="mt-1 text-[12px] text-ink-500">Hold an abbey and its monks will pray a point away every 3 minutes.</p>
+          )}
+        </div>
+      </section>
+
+      <section>
+        <SectionTitle right={<span className="text-[12px] text-ink-500">{fmt(gold)}g in hand</span>}>Enemy lords</SectionTitle>
+        <p className="mb-1.5 text-[12px] leading-snug text-ink-500">
+          A truce buys 4 minutes of peace with one lord.{s.rules.mode === 'alliance' ? ' Gold can also turn a lord to your side; the harder your castles press him, the likelier. A refusal costs 40% of the bribe.' : ''}
+        </p>
+        {lords.length === 0 && <p className="text-[12px] text-ink-500">No lord will treat with you.</p>}
+        <div className="space-y-1">
+          {lords.map((f) => {
+            const pactLeft = Math.max(0, (s.pacts[f.id] ?? 0) - s.time)
+            const cooldown = Math.max(0, (s.diploCooldown[f.id] ?? 0) - s.time)
+            const pact = engine.pactOffer(f.id)
+            const bribe = engine.bribeOffer(f.id)
+            return (
+              <div key={f.id} className="well rounded-lg px-2.5 py-1.5 text-[13px]">
+                <div className="flex items-center gap-2">
+                  <i className="size-2.5 shrink-0 rounded-sm" style={{ background: f.color }} />
+                  <span className="flex-1 truncate font-medium">{f.name}</span>
+                  <span className="text-[12px] text-ink-400 tabular-nums">{s.castles.filter((c) => c.faction === f.id && !c.village).length} castles</span>
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-1">
+                  {pactLeft > 0 ? (
+                    <span className="rounded-sm bg-teal-700/30 px-1.5 py-0.5 text-[12px] text-teal-200">🕊 Truce · {clock(pactLeft)} left</span>
+                  ) : cooldown > 0 ? (
+                    <span className="text-[12px] text-ink-500">Envoys refused · {clock(cooldown)}</span>
+                  ) : (
+                    <>
+                      {pact && (
+                        <button className="btn h-auto min-h-0 px-2 py-0.5 text-[12px]" disabled={gold < pact.price} onClick={() => act(() => engine.signPact(f.id))} title="They will not attack your lands or armies for 4 minutes">
+                          🕊 Truce · {fmt(pact.price)}g
+                        </button>
+                      )}
+                      {bribe && (
+                        <button className="btn h-auto min-h-0 px-2 py-0.5 text-[12px]" disabled={gold < bribe.price} onClick={() => act(() => engine.bribeLord(f.id))} title="Pay them to join your alliance. If they refuse, 40% of the gold is lost.">
+                          💰 Turn · {fmt(bribe.price)}g
+                        </button>
+                      )}
+                      {bribe && (
+                        <span className={`ml-auto text-[12px] font-bold tabular-nums ${bribe.chance >= 0.6 ? 'text-emerald-400' : bribe.chance >= 0.4 ? 'text-gold-300' : 'text-ink-400'}`} title="Chance they accept the bribe">
+                          {Math.round(bribe.chance * 100)}%
+                        </span>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </section>
+
+      <section>
+        <SectionTitle right={<span className="text-[12px] text-ink-500">{towns.length} known</span>}>Free towns</SectionTitle>
+        {towns.length === 0 && <p className="text-[12px] text-ink-500">Your scouts know of no free town that is for sale.</p>}
+        <div className="space-y-1">
+          {towns.map((c) => {
+            const price = engine.townPrice(c)
+            return (
+              <div key={c.id} className="well flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px]">
+                <button className="flex min-w-0 flex-1 items-center gap-2 text-left hover:brightness-125" onClick={() => onSelect({ kind: 'castle', id: c.id }, true)}>
+                  <CastleIcon size={13} className="shrink-0 text-ink-300" />
+                  <span className="truncate font-medium">{c.name}</span>
+                  <span className="text-[12px] text-ink-500 tabular-nums">T{c.tier} · {fmt(total(c.garrison))}</span>
+                </button>
+                <button className="btn h-auto min-h-0 px-2 py-0.5 text-[12px]" disabled={gold < price || !!c.battleId} onClick={() => act(() => engine.buyTown(c.id))}>
+                  <Coins size={11} /> {fmt(price)}g
+                </button>
+              </div>
+            )
+          })}
+        </div>
+      </section>
+
+      <section>
+        <SectionTitle right={<span className="text-[12px] text-ink-500">price · odds</span>}>Villages within reach</SectionTitle>
+        {villages.length === 0 && <p className="text-[12px] leading-snug text-ink-500">No free village your envoys can reach. Bring an army near one, or hold a castle close by.</p>}
+        <div className="space-y-1">
+          {villages.map(({ c, t }) => {
+            const H = HOLDINGS[engine.holdingOf(c)]
+            const wait = t.reason?.startsWith('The elders')
+            return (
+              <div key={c.id} className="well flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px]">
+                <button className="flex min-w-0 flex-1 items-center gap-2 text-left hover:brightness-125" onClick={() => onSelect({ kind: 'castle', id: c.id }, true)} title={H.blurb}>
+                  <span className="w-4 shrink-0 text-center">{H.icon}</span>
+                  <span className="truncate font-medium">{c.name}</span>
+                  <span className={`text-[12px] font-bold tabular-nums ${t.chance >= 0.6 ? 'text-emerald-400' : t.chance >= 0.4 ? 'text-gold-300' : 'text-ink-400'}`}>{Math.round(t.chance * 100)}%</span>
+                </button>
+                {wait ? (
+                  <span className="text-[12px] text-ink-500">{t.reason!.match(/\d+s/)?.[0]}</span>
+                ) : (
+                  <button className="btn h-auto min-h-0 px-2 py-0.5 text-[12px]" disabled={!!t.reason} onClick={() => act(() => engine.negotiateVillage(c.id))} title="Send envoys: on success the village swears to you; on refusal, part of the gold is lost.">
+                    ✉ {fmt(t.price)}g
+                  </button>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function Ledger({ label, value, note }: { label: string; value: number; note?: string }) {
+  return (
+    <div className="flex items-baseline gap-2">
+      <span className="flex-1 truncate text-ink-300">{label}</span>
+      {note && <span className="text-[11px] text-ink-500">{note}</span>}
+      <span className={`w-14 text-right font-semibold tabular-nums ${value >= 0 ? 'text-ink-100' : 'text-ember-300'}`}>
+        {value >= 0 ? '+' : '−'}
+        {Math.abs(value).toFixed(1)}/s
+      </span>
     </div>
   )
 }

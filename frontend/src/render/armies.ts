@@ -1,12 +1,12 @@
 import * as THREE from 'three'
-import { PLAYER, type GameEngine } from '../game/engine'
+import { PLAYER, ROYAL, type GameEngine } from '../game/engine'
 import { mulberry32 } from '../game/noise'
 import type { Army, FormationKey } from '../game/types'
-import { figureGeometries, figuresFor, type FigureKind } from './figures'
+import { figureGeometries, figuresFor, leaderGeometry, type FigureKind } from './figures'
 import { box, cyl, merge, part } from './geo'
 import { applyVision } from './vision'
 
-const KINDS: FigureKind[] = ['spearmen', 'men_at_arms', 'archers', 'light_cavalry', 'knights', 'siege', 'engineer']
+const KINDS: FigureKind[] = ['spearmen', 'men_at_arms', 'archers', 'light_cavalry', 'knights', 'siege', 'engineer', 'royal_guard']
 const CAPACITY = 16000
 const MAX_FIGURES = 300
 
@@ -28,6 +28,9 @@ export interface ArmyVisual {
   radius: number
   banner: THREE.Group
   flag: THREE.Mesh
+  /** The mounted commander riding at the head (and the King's ring of presence). */
+  leader: THREE.Group | null
+  aura: THREE.Mesh | null
   seen: boolean
   alive: boolean
 }
@@ -51,6 +54,8 @@ export class ArmyRenderer {
   private bannerPole: THREE.BufferGeometry
   private bannerMat: THREE.Material
   private flagGeo: THREE.PlaneGeometry
+  private leaderMat: THREE.Material
+  private auraMat: THREE.Material
   private tints = new Map<string, THREE.Color>()
   private tint(faction: string): THREE.Color {
     let c = this.tints.get(faction)
@@ -82,6 +87,8 @@ export class ArmyRenderer {
     }
     this.bannerPole = merge([part(cyl(0.3, 0.3, 18, 5), 0x3b2f25, { y: 9 }), part(box(0.6, 0.6, 0.6), 0xd4af37, { y: 18.3 })])
     this.bannerMat = applyVision(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true }))
+    this.leaderMat = applyVision(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.7 }))
+    this.auraMat = new THREE.MeshBasicMaterial({ color: 0xf2d27a, transparent: true, opacity: 0.4, depthWrite: false, depthTest: false, side: THREE.DoubleSide })
     this.flagGeo = new THREE.PlaneGeometry(7, 4.5, 6, 1)
     this.flagGeo.translate(3.5, 0, 0)
   }
@@ -93,7 +100,8 @@ export class ArmyRenderer {
       const n = army.troops[u.key] ?? 0
       if (n < 1) continue
       const f = Math.max(1, Math.round((n / 5) * this.density))
-      for (const [kind, c] of figuresFor(u.key, u.category, f)) {
+      // The Royal Guard rides as black-armoured knights, whatever the unit list says.
+      for (const [kind, c] of army.royal ? ([['royal_guard', f]] as [FigureKind, number][]) : figuresFor(u.key, u.category, f)) {
         counts.set(kind, (counts.get(kind) ?? 0) + c)
         figures += c
       }
@@ -120,7 +128,7 @@ export class ArmyRenderer {
     const slots: Slot[] = []
     const take = (k: FigureKind) => Array(counts.get(k) ?? 0).fill(k) as FigureKind[]
     const foot = [...take('spearmen'), ...take('men_at_arms'), ...take('archers'), ...take('engineer')]
-    const cav = [...take('knights'), ...take('light_cavalry')]
+    const cav = [...take('royal_guard'), ...take('knights'), ...take('light_cavalry')]
     const siege = counts.get('siege') ?? 0
     const jitter = shape === 'loose' ? 1.8 : 0.8
     const push = (kind: FigureKind, lx: number, lz: number) => slots.push({ kind, lx: lx + (rnd() - 0.5) * jitter, lz: lz + (rnd() - 0.5) * jitter, phase: rnd() * 6.28 })
@@ -131,7 +139,7 @@ export class ArmyRenderer {
       const ccols = Math.max(3, Math.min(6, Math.ceil(Math.sqrt(all.length / 6))))
       let z = 0
       all.forEach((kind, i) => {
-        const cav = kind === 'knights' || kind === 'light_cavalry'
+        const cav = kind === 'knights' || kind === 'light_cavalry' || kind === 'royal_guard'
         if (i > 0 && i % ccols === 0) z -= cav ? 5.6 : 3.2
         push(kind, ((i % ccols) - (ccols - 1) / 2) * 2.8, z)
       })
@@ -144,7 +152,7 @@ export class ArmyRenderer {
       let i = 0
       while (i < all.length) {
         const width = row * 2 + 1
-        const cav = all[i] === 'knights' || all[i] === 'light_cavalry'
+        const cav = all[i] === 'knights' || all[i] === 'light_cavalry' || all[i] === 'royal_guard'
         for (let c = 0; c < width && i < all.length; c++, i++) push(all[i], (c - (width - 1) / 2) * (cav ? 3.4 : 2.8), -row * (cav ? 4.6 : 3.2))
         row++
       }
@@ -220,7 +228,25 @@ export class ArmyRenderer {
       flag.castShadow = true
       banner.add(flag)
       this.group.add(banner)
-      v = { id: army.id, x: army.x, z: army.z, heading: army.heading, slots: [], layoutKey: '', radius: 10, banner, flag, seen: false, alive: true }
+      let leader: THREE.Group | null = null
+      if (army.commanderKey) {
+        leader = new THREE.Group()
+        const king = !!army.royal
+        const body = new THREE.Mesh(leaderGeometry(new THREE.Color(color).getHex(), king), this.leaderMat)
+        body.castShadow = true
+        body.scale.setScalar(1.35)
+        leader.add(body)
+        this.group.add(leader)
+      }
+      let aura: THREE.Mesh | null = null
+      if (army.royal) {
+        // The King's presence: a faint gold ring round the Guard, 350m out, drawn over the ground.
+        aura = new THREE.Mesh(new THREE.RingGeometry(ROYAL.aura - 14, ROYAL.aura, 128), this.auraMat)
+        aura.rotation.x = -Math.PI / 2
+        aura.renderOrder = 5
+        this.group.add(aura)
+      }
+      v = { id: army.id, x: army.x, z: army.z, heading: army.heading, slots: [], layoutKey: '', radius: 10, banner, flag, leader, aura, seen: false, alive: true }
       this.visuals.set(army.id, v)
     }
     return v
@@ -241,6 +267,8 @@ export class ArmyRenderer {
       const visible = engine.canSee(engine.team(PLAYER), army) && !engine.insideWalls(army)
       v.seen = visible
       v.banner.visible = visible
+      if (v.leader) v.leader.visible = visible
+      if (v.aura && !visible) v.aura.visible = false
       // Snap if the gap is large (e.g. first frame, after load).
       if (Math.hypot(army.x - v.x, army.z - v.z) > 120) {
         v.x = army.x
@@ -280,7 +308,7 @@ export class ArmyRenderer {
           lz *= 1.6
         }
         let bob = 0
-        if (moving) bob = Math.abs(Math.sin(time * (s.kind === 'light_cavalry' || s.kind === 'knights' ? 9 : 7) + s.phase)) * 0.5
+        if (moving) bob = Math.abs(Math.sin(time * (s.kind === 'light_cavalry' || s.kind === 'knights' || s.kind === 'royal_guard' ? 9 : 7) + s.phase)) * 0.5
         if (fighting && s.kind !== 'siege') {
           lz += Math.sin(time * 5 + s.phase * 3) * 1.1
           lx += Math.sin(time * 3.3 + s.phase * 5) * 0.5
@@ -299,6 +327,19 @@ export class ArmyRenderer {
         this.plain.get(s.kind)!.setMatrixAt(idx, tmpM)
       }
 
+      // The commander rides at the head of the army.
+      if (v.leader) {
+        const lx = v.x + fx * (v.radius * 0.55 + 6)
+        const lz = v.z + fz * (v.radius * 0.55 + 6)
+        const bob = moving ? Math.abs(Math.sin(time * 8)) * 0.5 : 0
+        v.leader.position.set(lx, world.surfaceAt(lx, lz) + bob, lz)
+        v.leader.rotation.y = Math.PI / 2 - v.heading
+      }
+      if (v.aura) {
+        // Centred on the Guard, and only while the King is in the field.
+        v.aura.position.set(v.x, world.surfaceAt(v.x, v.z) + 4, v.z)
+        v.aura.visible = visible && !engine.insideWalls(army)
+      }
       // Standard bearer at the rear centre.
       const bx = v.x - fx * (v.radius * 0.35)
       const bz = v.z - fz * (v.radius * 0.35)
@@ -326,6 +367,8 @@ export class ArmyRenderer {
     for (const [id, v] of this.visuals) {
       if (v.alive) continue
       this.group.remove(v.banner)
+      if (v.leader) this.group.remove(v.leader)
+      if (v.aura) this.group.remove(v.aura)
       v.flag.geometry.dispose()
       this.visuals.delete(id)
     }

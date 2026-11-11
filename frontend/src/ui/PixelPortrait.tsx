@@ -2,10 +2,12 @@ import { memo } from 'react'
 import type { PortraitSpec } from '../game/types'
 
 /**
- * Procedural 24×24 pixel-art bust, drawn from a small spec stored with each
- * commander in the database (skin, hair style, beard, headgear, colours...).
+ * Procedural 32x32 pixel-art bust, drawn from a small spec stored with each
+ * commander in the database. Faces are bare (no helms or plate): soldiers
+ * in quilted gambesons, tabards, fur mantles and travelling cloaks, with the
+ * scars, beards and crowns of their trade.
  */
-const N = 24
+const N = 32
 
 function shade(hex: string, f: number): string {
   const n = parseInt(hex.slice(1), 16)
@@ -16,200 +18,321 @@ function shade(hex: string, f: number): string {
   return `#${((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1)}`
 }
 
-function draw(p: PortraitSpec): (string | null)[][] {
-  const px: (string | null)[][] = Array.from({ length: N }, () => Array(N).fill(null))
+type Px = (string | null)[][]
+
+function draw(p: PortraitSpec): Px {
+  const px: Px = Array.from({ length: N }, () => Array(N).fill(null))
   const set = (x: number, y: number, c: string) => {
     if (x >= 0 && y >= 0 && x < N && y < N) px[y][x] = c
   }
   const rect = (x0: number, y0: number, x1: number, y1: number, c: string) => {
     for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) set(x, y, c)
   }
+  const get = (x: number, y: number) => (x >= 0 && y >= 0 && x < N && y < N ? px[y][x] : null)
+
   const skin = p.skin ?? '#d6a07a'
-  const skinD = shade(skin, -0.18)
+  const skinD = shade(skin, -0.16)
+  const skinDD = shade(skin, -0.32)
+  const skinL = shade(skin, 0.12)
   const hair = p.hair ?? '#3a2a1a'
   const hairD = shade(hair, -0.3)
-  const armor = p.armor ?? '#6a6f78'
+  const hairL = shade(hair, 0.18)
+  const cloth = p.cloth ?? p.armor ?? '#5a4a3a'
+  const clothD = shade(cloth, -0.28)
+  const clothL = shade(cloth, 0.14)
   const trim = p.trim ?? '#c9a227'
-  const metal = '#9aa3ad'
-  const metalD = '#6a727c'
+  const fur = p.fur ?? '#8a7458'
   const bg = p.bg ?? '#222'
+  const gold = '#e3bd5a'
+  const goldD = '#a8862a'
 
-  // Background with a soft vignette.
-  rect(0, 0, N - 1, N - 1, bg)
+  // Background: a dark vertical wash with a vignette.
+  for (let y = 0; y < N; y++) rect(0, y, N - 1, y, shade(bg, 0.08 - (y / N) * 0.22))
   for (let i = 0; i < N; i++) {
-    set(i, 0, shade(bg, -0.35))
-    set(i, N - 1, shade(bg, -0.35))
-    set(0, i, shade(bg, -0.35))
-    set(N - 1, i, shade(bg, -0.35))
+    for (const [x, y] of [[i, 0], [i, N - 1], [0, i], [N - 1, i]]) set(x, y, shade(bg, -0.4))
   }
-  rect(4, 2, 19, 6, shade(bg, 0.06))
 
   // Long hair falls behind the shoulders.
   if (p.hair_style === 'long' || p.hair_style === 'wild') {
-    rect(5, 7, 6, 18, hairD)
-    rect(17, 7, 18, 18, hairD)
+    rect(8, 10, 9, 25, hairD)
+    rect(22, 10, 23, 25, hairD)
   }
 
-  // Shoulders and armour.
-  rect(3, 19, 20, 23, armor)
-  rect(4, 18, 19, 18, armor)
-  rect(3, 19, 4, 23, shade(armor, -0.25))
-  rect(19, 19, 20, 23, shade(armor, -0.25))
-  rect(9, 18, 14, 18, trim)
-  rect(11, 19, 12, 23, trim)
-  set(6, 20, shade(armor, 0.25))
-  set(17, 20, shade(armor, 0.25))
-
-  // Neck and head.
-  rect(10, 15, 13, 17, skinD)
-  rect(8, 6, 15, 15, skin)
-  rect(7, 7, 16, 14, skin)
-  rect(15, 7, 16, 14, skinD)
-  set(8, 15, bg)
-  set(15, 15, bg)
-  set(7, 10, skinD)
-  set(16, 10, skinD)
-
-  // Face.
-  const eye = p.eyes ?? '#2a1a10'
-  rect(9, 10, 10, 10, '#f4ead8')
-  rect(13, 10, 14, 10, '#f4ead8')
-  set(10, 10, eye)
-  set(13, 10, eye)
-  rect(9, 9, 10, 9, hairD)
-  rect(13, 9, 14, 9, hairD)
-  set(11, 11, skinD)
-  set(12, 12, skinD)
-  set(11, 12, skinD)
-  rect(10, 13, 13, 13, p.female ? '#b8545a' : shade(skin, -0.32))
-  if (p.female) {
-    set(9, 9, '#1a1010')
-    set(14, 9, '#1a1010')
+  // --- Clothing (no armour) --------------------------------------------------
+  const shoulders = () => {
+    for (let y = 25; y < N; y++) {
+      const w = Math.min(13, 6 + (y - 25) * 2)
+      rect(16 - w, y, 15 + w, y, cloth)
+    }
+    rect(3, 29, 4, 31, clothD)
+    rect(27, 29, 28, 31, clothD)
   }
-  if (p.scar) {
-    set(14, 8, '#e08a7a')
-    set(14, 9, '#e08a7a')
-    set(15, 11, '#e08a7a')
-    set(15, 12, '#c86a5a')
-  }
-
-  // Hair.
-  switch (p.hair_style) {
-    case 'bald':
-      rect(7, 9, 7, 11, hair)
-      rect(16, 9, 16, 11, hair)
-      set(10, 6, shade(skin, 0.15))
+  shoulders()
+  switch (p.clothing ?? 'gambeson') {
+    case 'gambeson':
+      // Quilted jacket: stitched rows and a stand-up collar.
+      for (let y = 26; y < N; y += 2) for (let x = 2; x < N - 2; x++) if (get(x, y) === cloth) set(x, y, clothD)
+      rect(12, 24, 19, 25, clothL)
+      rect(15, 26, 16, 31, trim)
       break
-    case 'wild':
-      rect(7, 4, 16, 7, hair)
-      for (const x of [6, 8, 10, 12, 14, 16, 17]) set(x, 3 + (x % 3 === 0 ? 0 : 1), hair)
-      rect(6, 7, 7, 11, hair)
-      rect(16, 7, 17, 11, hair)
+    case 'tabard':
+      // A surcoat in the lord's colours with a broad stripe.
+      rect(10, 25, 21, 31, trim)
+      rect(14, 25, 17, 31, shade(trim, -0.25))
+      rect(12, 24, 19, 24, clothL)
       break
-    case 'topknot':
-      rect(8, 5, 15, 6, hair)
-      rect(7, 7, 7, 9, hair)
-      rect(16, 7, 16, 9, hair)
-      rect(11, 2, 12, 4, hair)
-      set(10, 3, hairD)
+    case 'fur':
+      // A fur mantle over the shoulders, fastened with a brooch.
+      for (let y = 24; y <= 28; y++) for (let x = 4; x <= 27; x++) if (get(x, y) && (x + y) % 3 !== 0 && Math.abs(x - 15.5) > 3 - (y - 24)) set(x, y, (x * 7 + y) % 4 === 0 ? shade(fur, -0.2) : fur)
+      rect(15, 28, 16, 29, gold)
+      set(15, 28, '#fff3c0')
       break
-    case 'braid':
-      rect(8, 4, 15, 6, hair)
-      rect(7, 6, 7, 11, hair)
-      rect(16, 6, 17, 11, hair)
-      for (let y = 12; y <= 19; y++) set(17 + (y % 2), y, y % 2 ? hair : hairD)
+    case 'cloak':
+      // A travelling cloak, the clasp chain across the chest.
+      rect(10, 26, 21, 31, clothD)
+      for (let x = 11; x <= 20; x++) set(x, 26 + Math.round(Math.abs(x - 15.5) / 3), gold)
+      rect(10, 26, 11, 27, goldD)
+      rect(20, 26, 21, 27, goldD)
       break
-    case 'long':
-      rect(8, 4, 15, 6, hair)
-      rect(7, 5, 7, 14, hair)
-      rect(16, 5, 16, 14, hair)
-      rect(9, 7, 10, 7, hair)
+    case 'robe':
+      // A robe with an embroidered collar.
+      rect(12, 24, 19, 26, trim)
+      for (let x = 12; x <= 19; x += 2) set(x, 25, shade(trim, 0.3))
+      rect(15, 27, 16, 31, trim)
       break
-    default:
-      rect(8, 4, 15, 6, hair)
-      rect(7, 6, 7, 9, hair)
-      rect(16, 6, 16, 9, hair)
-      set(9, 7, hair)
-  }
-
-  // Facial hair.
-  switch (p.beard) {
-    case 'full':
-      rect(7, 11, 7, 14, hair)
-      rect(16, 11, 16, 14, hair)
-      rect(8, 13, 15, 16, hair)
-      rect(9, 17, 14, 17, hairD)
-      rect(10, 13, 13, 13, shade(skin, -0.32))
-      rect(9, 12, 14, 12, hair)
-      break
-    case 'goatee':
-      rect(10, 12, 13, 12, hair)
-      rect(10, 14, 13, 16, hair)
-      break
-    case 'mustache':
-      rect(9, 12, 14, 12, hair)
-      set(8, 13, hair)
-      set(15, 13, hair)
-      break
-    case 'stubble':
-      for (let y = 12; y <= 15; y++) for (let x = 8; x <= 15; x++) if ((x + y) % 2 === 0 && px[y][x] === skin) set(x, y, shade(skin, -0.12))
-      break
-  }
-
-  // Headgear.
-  switch (p.headgear) {
-    case 'helm':
-    case 'horned':
-      rect(7, 3, 16, 7, metal)
-      rect(6, 6, 7, 10, metal)
-      rect(16, 6, 17, 10, metal)
-      rect(7, 3, 16, 3, metalD)
-      rect(11, 8, 12, 11, metalD)
-      set(15, 4, '#d8dde3')
-      if (p.headgear === 'horned') {
-        rect(3, 2, 5, 3, '#e8dcc0')
-        rect(4, 4, 6, 5, '#e8dcc0')
-        rect(18, 2, 20, 3, '#e8dcc0')
-        rect(17, 4, 19, 5, '#e8dcc0')
-        set(2, 1, '#e8dcc0')
-        set(21, 1, '#e8dcc0')
+    case 'jerkin':
+      // A leather jerkin laced up the front.
+      rect(12, 25, 19, 31, clothL)
+      for (let y = 26; y <= 30; y += 2) {
+        set(14, y, '#2a1a10')
+        set(17, y, '#2a1a10')
+        set(15, y + 1, '#2a1a10')
+        set(16, y + 1, '#2a1a10')
       }
       break
-    case 'greathelm':
-      rect(6, 3, 17, 16, metal)
-      rect(6, 3, 17, 3, metalD)
-      rect(15, 4, 17, 16, metalD)
-      rect(8, 10, 15, 10, '#111')
-      rect(11, 11, 12, 15, metalD)
-      for (const [x, y] of [[9, 13], [14, 13], [9, 14], [14, 14]]) set(x, y, '#222')
-      set(8, 5, '#d8dde3')
+  }
+
+  // --- Neck and head -----------------------------------------------------------
+  rect(13, 21, 18, 24, skinD)
+  rect(13, 23, 18, 23, skinDD)
+  // Head: rounded, with the jaw narrowing.
+  rect(11, 8, 20, 18, skin)
+  rect(10, 10, 21, 16, skin)
+  rect(12, 19, 19, 20, skin)
+  rect(13, 21, 18, 21, skin)
+  set(11, 18, skinD)
+  set(20, 18, skinD)
+  // Light from the left: the right side in shade, a cheekbone highlight.
+  rect(19, 10, 21, 18, skinD)
+  rect(17, 19, 19, 20, skinD)
+  rect(11, 14, 12, 15, skinL)
+  // Ears.
+  rect(9, 12, 9, 15, skinD)
+  rect(22, 12, 22, 15, skinDD)
+  set(9, 13, skinDD)
+
+  // Face: brows, eyes, nose and mouth.
+  const eye = p.eyes ?? '#2a1a10'
+  const brow = p.brows === 'heavy' ? hairD : shade(hair, -0.15)
+  rect(12, 11, 14, 11, brow)
+  rect(17, 11, 19, 11, brow)
+  if (p.brows === 'heavy') {
+    rect(12, 10, 14, 10, brow)
+    rect(17, 10, 19, 10, brow)
+  }
+  // Eyes: lid shadow, white, iris.
+  rect(12, 12, 14, 12, skinDD)
+  rect(17, 12, 19, 12, skinDD)
+  rect(12, 13, 14, 13, '#efe6d6')
+  rect(17, 13, 19, 13, '#efe6d6')
+  set(13, 13, eye)
+  set(18, 13, eye)
+  set(14, 13, shade(eye, 0.2))
+  set(19, 13, shade(eye, 0.2))
+  if (p.female) {
+    set(11, 12, '#1a1010')
+    set(20, 12, '#1a1010')
+  }
+  // Nose: bridge highlight, shaded side, nostrils.
+  rect(15, 13, 15, 16, skinL)
+  rect(16, 13, 16, 16, skinD)
+  rect(15, 17, 16, 17, skinDD)
+  set(14, 17, skinD)
+  // Mouth.
+  rect(14, 19, 17, 19, p.female ? '#a8464e' : shade(skin, -0.38))
+  set(14, 20, skinD)
+  set(17, 20, skinD)
+  // Age: lines at the brow and the corners of the eyes.
+  if (p.age === 'old' || p.age === 'veteran') {
+    rect(13, 9, 18, 9, skinD)
+    set(11, 14, skinD)
+    set(20, 14, skinDD)
+    if (p.age === 'old') {
+      rect(14, 8, 17, 8, skinD)
+      set(13, 18, skinD)
+      set(18, 18, skinD)
+    }
+  }
+  if (p.freckles) for (const [x, y] of [[12, 15], [13, 16], [18, 15], [19, 16], [14, 15]]) set(x, y, shade(skin, -0.24))
+  if (p.scar) {
+    // An old sword cut down the cheek, below the eye.
+    for (const [x, y] of [[19, 14], [19, 15], [20, 16], [20, 17]]) set(x, y, '#b86a5e')
+    set(18, 15, '#d08a7e')
+  }
+
+  // --- Hair --------------------------------------------------------------------
+  switch (p.hair_style) {
+    case 'bald':
+      rect(10, 11, 10, 15, hair)
+      rect(21, 11, 21, 15, hair)
+      set(14, 8, skinL)
+      set(15, 8, skinL)
       break
+    case 'shaved':
+      for (let y = 7; y <= 10; y++) for (let x = 11; x <= 20; x++) if ((x + y) % 2 === 0) set(x, y, shade(skin, -0.22))
+      break
+    case 'cropped':
+      rect(11, 6, 20, 8, hair)
+      rect(10, 8, 10, 11, hairD)
+      rect(21, 8, 21, 11, hairD)
+      for (let x = 11; x <= 20; x += 2) set(x, 6, hairL)
+      break
+    case 'wild':
+      // A shaggy mane: uneven locks, swept every way.
+      rect(10, 6, 21, 9, hair)
+      for (const [x, y] of [[10, 5], [12, 4], [13, 5], [16, 5], [17, 4], [20, 5], [9, 7], [22, 7]]) set(x, y, hair)
+      rect(8, 8, 10, 16, hair)
+      rect(21, 8, 23, 16, hairD)
+      set(8, 17, hairD)
+      set(23, 17, hairD)
+      for (const [x, y] of [[11, 7], [14, 6], [18, 7], [9, 11]]) set(x, y, hairL)
+      for (const [x, y] of [[12, 9], [19, 9]]) set(x, y, hairD)
+      break
+    case 'topknot':
+      rect(11, 7, 20, 8, hair)
+      rect(10, 9, 10, 12, hair)
+      rect(21, 9, 21, 12, hair)
+      rect(14, 3, 17, 6, hair)
+      rect(15, 2, 16, 2, hairD)
+      rect(14, 6, 17, 6, gold)
+      break
+    case 'braid':
+      rect(11, 6, 20, 8, hair)
+      rect(10, 7, 10, 14, hair)
+      rect(21, 7, 22, 14, hair)
+      set(12, 9, hair)
+      for (let y = 15; y <= 27; y++) set(22 + (y % 2), y, y % 2 ? hair : hairD)
+      set(22, 28, trim)
+      break
+    case 'tied':
+      // Swept back and tied at the nape.
+      rect(11, 6, 20, 8, hair)
+      rect(10, 8, 10, 12, hair)
+      rect(21, 8, 21, 12, hairD)
+      for (let x = 11; x <= 20; x += 2) set(x, 7, hairL)
+      rect(22, 12, 23, 17, hairD)
+      break
+    case 'long':
+      rect(11, 6, 20, 8, hair)
+      rect(10, 7, 10, 18, hair)
+      rect(21, 7, 21, 18, hair)
+      rect(12, 9, 13, 9, hair)
+      for (let x = 11; x <= 20; x += 2) set(x, 6, hairL)
+      break
+    default:
+      rect(11, 6, 20, 8, hair)
+      rect(10, 8, 10, 11, hair)
+      rect(21, 8, 21, 11, hair)
+      set(12, 9, hair)
+      for (let x = 12; x <= 19; x += 3) set(x, 6, hairL)
+  }
+
+  // --- Beard ---------------------------------------------------------------------
+  const beardC = p.beard_color ?? hair
+  const beardD = shade(beardC, -0.25)
+  switch (p.beard) {
+    case 'full':
+      rect(10, 15, 10, 18, beardC)
+      rect(21, 15, 21, 18, beardD)
+      rect(11, 17, 20, 21, beardC)
+      rect(12, 22, 19, 22, beardD)
+      rect(13, 23, 18, 23, beardD)
+      rect(13, 18, 18, 18, beardC)
+      rect(14, 19, 17, 19, shade(skin, -0.38))
+      for (let x = 12; x <= 19; x += 2) set(x, 21, beardD)
+      break
+    case 'short':
+      rect(10, 15, 10, 17, beardC)
+      rect(21, 15, 21, 17, beardD)
+      rect(11, 18, 20, 20, beardC)
+      rect(13, 18, 18, 18, beardC)
+      rect(14, 19, 17, 19, shade(skin, -0.38))
+      break
+    case 'forked':
+      rect(11, 17, 20, 19, beardC)
+      rect(13, 18, 18, 18, beardC)
+      rect(14, 19, 17, 19, shade(skin, -0.38))
+      rect(12, 20, 14, 23, beardC)
+      rect(17, 20, 19, 23, beardD)
+      set(13, 24, beardD)
+      set(18, 24, beardD)
+      break
+    case 'goatee':
+      rect(14, 18, 17, 18, beardC)
+      rect(14, 20, 17, 22, beardC)
+      set(15, 23, beardD)
+      set(16, 23, beardD)
+      break
+    case 'mustache':
+      rect(13, 18, 18, 18, beardC)
+      set(12, 19, beardC)
+      set(19, 19, beardC)
+      set(12, 20, beardD)
+      set(19, 20, beardD)
+      break
+    case 'stubble':
+      for (let y = 16; y <= 21; y++) for (let x = 11; x <= 20; x++) if ((x + y) % 2 === 0 && (get(x, y) === skin || get(x, y) === skinD)) set(x, y, shade(skin, -0.14))
+      break
+  }
+
+  if (p.eyepatch) {
+    rect(17, 12, 19, 14, '#141414')
+    for (let x = 10; x <= 21; x++) set(x, 10 + Math.round((x - 10) * 0.12), '#2a2420')
+  }
+
+  // --- Headgear (never a helm) -----------------------------------------------------
+  switch (p.headgear) {
     case 'crown':
-      rect(7, 4, 16, 5, '#e8c55a')
-      for (const x of [7, 10, 13, 16]) rect(x, 2, x, 3, '#e8c55a')
-      set(11, 4, '#c0392b')
-      set(14, 4, '#2e86de')
-      rect(7, 5, 16, 5, '#b8932a')
+      // A gold circlet with points and gems: a king on campaign, not on a throne.
+      rect(10, 6, 21, 7, gold)
+      rect(10, 7, 21, 7, goldD)
+      for (const x of [10, 13, 16, 18, 21]) rect(x, 3, x, 5, gold)
+      for (const x of [13, 18]) set(x, 3, '#fff3c0')
+      set(15, 6, '#c0392b')
+      set(16, 6, '#c0392b')
+      set(12, 6, '#2e86de')
+      set(19, 6, '#27ae60')
       break
     case 'circlet':
-      rect(7, 6, 16, 6, '#e8d27a')
-      set(11, 6, '#3ad08a')
-      set(12, 6, '#3ad08a')
+      rect(10, 8, 21, 8, gold)
+      set(15, 8, '#3ad08a')
+      set(16, 8, '#3ad08a')
       break
-    case 'hood': {
-      const h = shade(armor, 0.05)
-      rect(6, 3, 17, 6, h)
-      rect(5, 6, 7, 17, h)
-      rect(16, 6, 18, 17, h)
-      rect(7, 3, 16, 3, shade(armor, -0.25))
-      rect(8, 7, 15, 7, shade(h, -0.25))
+    case 'chaperon': {
+      // A draped cloth hat.
+      const h = p.hat ?? '#7a2a2a'
+      rect(9, 5, 22, 8, h)
+      rect(8, 7, 23, 8, shade(h, -0.2))
+      rect(20, 4, 24, 6, shade(h, 0.1))
+      rect(23, 6, 25, 12, shade(h, -0.15))
       break
     }
-    case 'feather_cap':
-      rect(7, 4, 16, 6, trim)
-      rect(6, 6, 17, 6, shade(trim, -0.2))
-      for (let i = 0; i < 6; i++) set(17 + Math.floor(i / 2), 4 - i, i % 2 ? '#f2f2f2' : '#d8d8d8')
+    case 'headband': {
+      const h = p.hat ?? trim
+      rect(10, 8, 21, 8, h)
+      rect(22, 8, 23, 11, shade(h, -0.2))
       break
+    }
   }
   return px
 }

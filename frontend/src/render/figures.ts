@@ -7,7 +7,7 @@ import { box, cone, cyl, merge, part, sphere } from './geo'
  * geometry (skin, steel, wood, horses) with baked vertex colours.
  * Models face +Z.
  */
-export type FigureKind = 'spearmen' | 'men_at_arms' | 'archers' | 'light_cavalry' | 'knights' | 'siege' | 'engineer'
+export type FigureKind = 'spearmen' | 'men_at_arms' | 'archers' | 'light_cavalry' | 'knights' | 'siege' | 'engineer' | 'royal_guard'
 
 const SKIN = 0xd9a77e
 const STEEL = 0x9aa3ad
@@ -99,6 +99,25 @@ export function figureGeometries(kind: FigureKind): { tinted: THREE.BufferGeomet
         ]),
         scale: 1.1,
       }
+    case 'royal_guard':
+      // The King's household knights: blackened plate on black horses, gilt trim, a crimson plume.
+      return {
+        tinted: merge([part(cone(0.35, 1.8, 5), WHITE, { y: 12.1, z: -0.3, rx: -0.4 })]),
+        plain: merge([
+          ...horse(0x17161a),
+          part(box(2.9, 2.3, 6.1), 0x202024, { y: 3.6 }),
+          part(box(3.0, 0.3, 6.2), 0xb8932a, { y: 2.5 }),
+          part(box(1.7, 1.5, 1.3), 0x202024, { y: 6.0, z: 2.9, rx: -0.5 }),
+          part(box(2.2, 2.7, 1.5), 0x26272c, { y: 7.7 }),
+          part(box(2.3, 0.3, 1.6), 0xb8932a, { y: 6.5 }),
+          part(box(1.55, 1.7, 1.55), 0x1c1d21, { y: 9.7 }),
+          part(box(1.6, 0.25, 0.3), 0xb8932a, { y: 9.9, z: 0.8 }),
+          part(box(0.45, 3, 2.3), 0x1c1d21, { x: -1.55, y: 7.6, z: 0.4 }),
+          part(cyl(0.16, 0.22, 12, 5), 0x2a2a2e, { x: 1.3, y: 8.4, z: 3.2, rx: 1.25 }),
+          part(cone(0.3, 1.2, 4), 0xb8932a, { x: 1.3, y: 13.4, z: 8.6, rx: 1.25 }),
+        ]),
+        scale: 1.15,
+      }
     case 'engineer':
       return {
         tinted: merge([part(box(1.9, 2.4, 1.3), WHITE, { y: 4.2 })]),
@@ -130,6 +149,35 @@ export function figureGeometries(kind: FigureKind): { tinted: THREE.BufferGeomet
   }
 }
 
+/**
+ * A mounted commander at the head of the army: a horse in a caparison of his
+ * colours, a long coat and cloak, bare-headed (or crowned, for the King).
+ */
+export function leaderGeometry(color: number, king: boolean): THREE.BufferGeometry {
+  const coat = king ? 0x1e1c22 : 0x3a3028
+  const cloak = king ? 0x7a1f2b : color
+  const parts: THREE.BufferGeometry[] = [
+    ...horse(king ? 0x17161a : 0x5a3e2a),
+    part(box(3.0, 2.4, 6.3), cloak, { y: 3.5 }),
+    part(box(3.1, 0.35, 6.4), 0xd4af37, { y: 2.4 }),
+    part(box(2.2, 2.8, 1.5), coat, { y: 7.8 }),
+    part(box(2.4, 0.35, 1.7), 0xd4af37, { y: 6.6 }),
+    part(sphere(0.85), SKIN, { y: 9.8 }),
+    part(box(1.4, 0.6, 1.3), king ? 0x8a7a68 : 0x4a3424, { y: 10.5, z: -0.1 }),
+    // A cloak down the back, fur-trimmed for the King.
+    part(box(2.8, 4.2, 0.4), cloak, { y: 7.4, z: -1.0, rx: 0.18 }),
+    part(box(2.9, 0.7, 1.4), king ? 0x3a3028 : coat, { y: 9.0, z: -0.3 }),
+  ]
+  if (king) {
+    parts.push(part(cyl(0.95, 0.95, 0.5, 8), 0xe3bd5a, { y: 10.9 }))
+    for (let i = 0; i < 5; i++) parts.push(part(cone(0.22, 0.6, 4), 0xe3bd5a, { x: Math.cos((i / 5) * Math.PI * 2) * 0.85, y: 11.4, z: Math.sin((i / 5) * Math.PI * 2) * 0.85 }))
+    parts.push(part(cyl(0.12, 0.12, 9, 5), 0x2a2a2e, { x: 1.4, y: 8, z: 1.4, rx: 0.15 }))
+  } else {
+    parts.push(part(cyl(0.12, 0.12, 4, 5), 0xb8b0a0, { x: 1.4, y: 7.6, z: 1.6, rx: 0.8 }))
+  }
+  return merge(parts)
+}
+
 /** How many soldiers one figure represents, per kind. */
 export const SOLDIERS_PER_FIGURE: Record<FigureKind, number> = {
   spearmen: 5,
@@ -137,6 +185,7 @@ export const SOLDIERS_PER_FIGURE: Record<FigureKind, number> = {
   archers: 5,
   light_cavalry: 5,
   knights: 4,
+  royal_guard: 4,
   siege: 4,
   engineer: 5,
 }

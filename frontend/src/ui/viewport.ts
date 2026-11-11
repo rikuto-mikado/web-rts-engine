@@ -5,7 +5,7 @@ export interface Viewport {
   h: number
   /** Phones and small tablets: drawers and bottom sheets instead of side panels. */
   compact: boolean
-  /** Narrow phones in portrait. */
+  /** Phones (played in landscape: a short screen). */
   phone: boolean
   /** Primary input is a finger. */
   touch: boolean
@@ -35,4 +35,15 @@ export function useViewport(): Viewport {
 
 export function isTouchDevice() {
   return typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
+}
+
+/** Width of the selection panel on phones and small tablets (played in landscape). */
+export function compactPanelWidth(screenW: number) {
+  return Math.round(Math.min(400, Math.max(300, screenW * 0.44)))
+}
+
+/** On phones and tablets the map folds away to a button; both sit at the bottom right. */
+export function minimapFootprint(compact: boolean, phone: boolean, shown: boolean): number {
+  if (!compact) return 0
+  return shown ? (phone ? 132 : 160) + 12 + 8 : 48 + 8
 }

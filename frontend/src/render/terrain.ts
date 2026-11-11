@@ -126,7 +126,8 @@ export function buildVegetation(world: World): THREE.Group {
   const clearOf = (x: number, z: number) => {
     for (const c of world.def.castles) if (Math.hypot(x - c.x, z - c.z) < castleRadius(c.tier) * 1.25) return false
     if (world.def.walls && world.onWall(x, z, 30)) return false
-    return !world.bridgeAt(x, z, 30) && !world.fordAt(x, z, 25)
+    const k = world.featureKindAt(x, z)
+    return !world.bridgeAt(x, z, 30) && !world.fordAt(x, z, 25) && k !== 'stones' && k !== 'wadi' && k !== 'crag'
   }
   for (let z = -world.half + 20; z < world.half - 20; z += step) {
     for (let x = -world.half + 20; x < world.half - 20; x += step) {
@@ -347,6 +348,129 @@ export function buildStoneBridges(world: World): THREE.Group {
     mesh.receiveShadow = true
     group.add(mesh)
   }
+  return group
+}
+
+/**
+ * Terrain features: rings of standing stones,
+ * terraced slopes, windfall thickets, dry wadis and crag overlooks.
+ * Built in world space as one merged mesh.
+ */
+export function buildFeatures(world: World): THREE.Group {
+  const group = new THREE.Group()
+  const feats = world.def.features ?? []
+  if (!feats.length) return group
+  const mat = applyVision(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.95 }), '', true)
+  const parts: THREE.BufferGeometry[] = []
+  const rnd = mulberry32(world.def.castles.length * 977 + feats.length)
+  const y = (x: number, z: number) => world.heightAt(x, z)
+  for (const f of feats) {
+    const ca = Math.cos(f.angle ?? 0)
+    const sa = Math.sin(f.angle ?? 0)
+    switch (f.kind) {
+      case 'stones': {
+        // A low mound crowned with a ring of tall mossy stones.
+        const h0 = y(f.x, f.z)
+        parts.push(part(cyl(f.r * 0.85, f.r, 3, 18), 0x6f7a4a, { x: f.x, y: h0 + 0.8, z: f.z }))
+        const n = 11
+        for (let i = 0; i < n; i++) {
+          const a = (i / n) * Math.PI * 2
+          const x = f.x + Math.cos(a) * f.r * 0.62
+          const z = f.z + Math.sin(a) * f.r * 0.62
+          const h = 9 + rnd() * 7
+          if (i === 4) parts.push(part(box(4, 3, 10), 0x8a8a80, { x, y: h0 + 4, z, ry: a }))
+          else parts.push(part(box(4 + rnd() * 1.5, h, 3), rnd() < 0.5 ? 0x8a8a80 : 0x7d8274, { x, y: h0 + 2.5 + h / 2, z, ry: -a + Math.PI / 2, rz: (rnd() - 0.5) * 0.12 }))
+        }
+        parts.push(part(box(10, 2.5, 6), 0x8a8a80, { x: f.x, y: h0 + 3.6, z: f.z, ry: rnd() * 3 }))
+        break
+      }
+      case 'terraces': {
+        // Rows of dry-stone walls across the slope, vines between them.
+        const e = 6
+        const gx = world.heightAt(f.x + e, f.z) - world.heightAt(f.x - e, f.z)
+        const gz = world.heightAt(f.x, f.z + e) - world.heightAt(f.x, f.z - e)
+        const g = Math.hypot(gx, gz) || 1
+        const ux = gx / g
+        const uz = gz / g
+        for (let row = -3; row <= 3; row++) {
+          const along = row * 26
+          const cx = f.x + ux * along
+          const cz = f.z + uz * along
+          const span = f.r * 1.6 * Math.sqrt(1 - (row / 4) ** 2)
+          for (let t = -span / 2; t < span / 2; t += 10) {
+            const x = cx - uz * t
+            const z = cz + ux * t
+            parts.push(part(box(10.5, 3.2, 2.4), 0xa49a84, { x, y: y(x, z) + 1.2, z, ry: -Math.atan2(ux, -uz) }))
+            if ((Math.round(t / 10) + row) % 2 === 0) {
+              const vx = x + ux * 9
+              const vz = z + uz * 9
+              parts.push(part(sphere(2.2), 0x5f7d33, { x: vx, y: y(vx, vz) + 2.4, z: vz, sy: 0.8 }))
+            }
+          }
+        }
+        break
+      }
+      case 'thicket': {
+        // Great trunks blown down every which way, roots in the air.
+        for (let i = 0; i < 26; i++) {
+          const a = rnd() * Math.PI * 2
+          const r = rnd() * f.r * 0.85
+          const x = f.x + Math.cos(a) * r
+          const z = f.z + Math.sin(a) * r
+          const L = 18 + rnd() * 16
+          const ry = rnd() * Math.PI
+          parts.push(part(cyl(1.3, 1.8, L, 6), rnd() < 0.5 ? 0x5a4029 : 0x4a3520, { x, y: y(x, z) + 1.8, z, rz: Math.PI / 2 - 0.1, ry }))
+          parts.push(part(sphere(3.2), 0x4a3a28, { x: x + Math.cos(ry) * L * 0.5, y: y(x, z) + 3, z: z - Math.sin(ry) * L * 0.5, sy: 1.2 }))
+        }
+        for (let i = 0; i < 8; i++) {
+          const a = rnd() * Math.PI * 2
+          const r = rnd() * f.r * 0.8
+          const x = f.x + Math.cos(a) * r
+          const z = f.z + Math.sin(a) * r
+          parts.push(part(cyl(1.4, 1.8, 6, 6), 0x5a4029, { x, y: y(x, z) + 3, z }))
+        }
+        break
+      }
+      case 'wadi': {
+        // A pale dry streambed with darker cut banks and boulders.
+        const L = f.len ?? 400
+        for (let t = -L / 2; t < L / 2; t += 16) {
+          const w = f.r * (1.4 + Math.sin(t * 0.03) * 0.25)
+          const x = f.x + ca * t + -sa * Math.sin(t * 0.02) * 10
+          const z = f.z + sa * t + ca * Math.sin(t * 0.02) * 10
+          parts.push(part(box(17, 0.7, w), 0xc9b78e, { x, y: y(x, z) + 0.25, z, ry: -(f.angle ?? 0) }))
+          for (const s of [-1, 1]) {
+            const bx = x - sa * s * (w / 2 + 2)
+            const bz = z + ca * s * (w / 2 + 2)
+            parts.push(part(box(17, 4, 4), 0x8c6a48, { x: bx, y: y(bx, bz) + 1.4, z: bz, ry: -(f.angle ?? 0), rx: s * 0.4 }))
+          }
+          if (rnd() < 0.4) parts.push(part(new THREE.DodecahedronGeometry(2 + rnd() * 2, 0), 0x9a8a72, { x, y: y(x, z) + 1.5, z }))
+        }
+        break
+      }
+      case 'crag': {
+        // A lone rock pinnacle with a winding path and a beacon brazier on top.
+        const h0 = y(f.x, f.z)
+        const tiers = 5
+        for (let i = 0; i < tiers; i++) {
+          const r = f.r * (1 - i * 0.16)
+          parts.push(part(new THREE.DodecahedronGeometry(r, 0), i % 2 ? 0x8a8378 : 0x7a7368, { x: f.x + (rnd() - 0.5) * 4, y: h0 + 8 + i * 13, z: f.z + (rnd() - 0.5) * 4, sy: 0.55, ry: rnd() * 3 }))
+        }
+        for (let i = 0; i < 10; i++) {
+          const a = (i / 10) * Math.PI * 2.4
+          const r = f.r * (1.05 - i * 0.06)
+          parts.push(part(box(5, 1, 3), 0xa89878, { x: f.x + Math.cos(a) * r, y: h0 + 4 + i * 6, z: f.z + Math.sin(a) * r, ry: -a }))
+        }
+        parts.push(part(cyl(2.2, 1.6, 3, 8), 0x3a3027, { x: f.x, y: h0 + 8 + tiers * 13, z: f.z }))
+        parts.push(part(cone(1.6, 3, 6), 0xffa040, { x: f.x, y: h0 + 11 + tiers * 13, z: f.z }))
+        break
+      }
+    }
+  }
+  const mesh = new THREE.Mesh(merge(parts), mat)
+  mesh.castShadow = true
+  mesh.receiveShadow = true
+  group.add(mesh)
   return group
 }
 

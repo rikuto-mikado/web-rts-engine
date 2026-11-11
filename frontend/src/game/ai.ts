@@ -1,4 +1,4 @@
-import type { GameEngine } from './engine'
+import { ROYAL, type GameEngine } from './engine'
 import { DIFFICULTY, PLAYER } from './engine'
 import { OUTPOST_KINDS, type OutpostKind } from './outposts'
 import { mulberry32 } from './noise'
@@ -68,7 +68,8 @@ export class FactionAI {
   }
 
   private myArmies(): Army[] {
-    return this.s.armies.filter((a) => a.faction === this.id && !a.vassalOf && !a.aidFor)
+    // (On autopilot the player's Royal Guard stays where the player left it.)
+    return this.s.armies.filter((a) => a.faction === this.id && !a.vassalOf && !a.aidFor && !a.royal)
   }
   private personality() {
     return this.f.personality ?? 'balanced'
@@ -99,6 +100,8 @@ export class FactionAI {
     this.workSites()
     this.sendScouts()
     this.fieldWorks()
+    this.siegeWorks()
+    this.holdGround()
     this.tidyIdleArmies()
     this.relieveSieges()
     this.raidConvoys()
@@ -270,16 +273,17 @@ export class FactionAI {
       if (Math.hypot(b.x - px, b.z - pz) > 300) continue
       // Our side of the crossing.
       const back = 90 / Math.max(1, Math.hypot(b.x - from.x, b.z - from.z))
-      spots.push({ x: b.x + (from.x - b.x) * back, z: b.z + (from.z - b.z) * back, kinds: ['bridgefort'] })
+      spots.push({ x: b.x + (from.x - b.x) * back, z: b.z + (from.z - b.z) * back, kinds: ['castrum'] })
     }
     for (const f of [0.38, 0.48, 0.3, 0.56]) {
       for (const off of [0, 120, -120]) {
         const px = from.x + (t.x - from.x) * f + (-(t.z - from.z) / span) * off
         const pz = from.z + (t.z - from.z) * f + ((t.x - from.x) / span) * off
-        const kinds: OutpostKind[] = long && !mine.some((o) => o.kind === 'depot') ? ['depot', 'camp'] : []
-        if (w.forestAt(px, pz) > 0.35) kinds.push('lodge')
-        if (w.heightAt(px, pz) > 32) kinds.push('watchtower')
-        kinds.push('camp')
+        const kinds: OutpostKind[] = long && !mine.some((o) => o.kind === 'depot') ? ['depot', 'castrum'] : []
+        // Lords mix their forts: a redoubt on high ground, a hidden pavilion for raiders, a quick laager otherwise.
+        if (w.heightAt(px, pz) > 32 && this.f.gold > 600) kinds.push('redoubt')
+        if (this.personality() === 'aggressive' && !mine.some((o) => o.kind === 'pavilion')) kinds.push('pavilion')
+        kinds.push(this.rnd() < 0.5 ? 'castrum' : 'laager')
         spots.push({ x: px, z: pz, kinds })
       }
     }
@@ -315,6 +319,62 @@ export class FactionAI {
       if (typeof res === 'string') return
       ai.buildPlan = { armyId: res.id, kind, x: sp.x, z: sp.z }
       return
+    }
+  }
+
+  /**
+   * Siege engines: an army marching on a walled castle with engineers stops
+   * short to build a ram (or a belfry, when rich and bold), mantlets against
+   * strong archers, and now and then a trebuchet; then takes up the march again.
+   */
+  private siegeWorks() {
+    if (this.f.gold < 220) return
+    for (const a of this.myArmies()) {
+      if (a.order.type !== 'attack' || a.battleId || a.status === 'retreating') continue
+      const c = this.engine.castle(a.order.castleId)
+      if (!c || c.village || c.walls <= 0) continue
+      const eng = a.troops.engineers ?? 0
+      if (eng < 10) continue
+      const d = Math.hypot(c.x - a.x, c.z - a.z)
+      if (d > this.d(1000) || d < 420) continue
+      const then = a.order
+      const archers = (c.garrison.archers ?? 0) / Math.max(1, total(c.garrison))
+      let job: 'ram' | 'tower' | 'mantlet' | 'trebuchet' | null = null
+      if (eng >= 15 && !a.engines?.ram && !a.engines?.tower) job = this.f.gold > 600 && this.personality() === 'aggressive' && this.rnd() < 0.5 ? 'tower' : 'ram'
+      else if (archers > 0.3 && !a.engines?.mantlet) job = 'mantlet'
+      else if (eng >= 20 && this.f.gold > 800 && this.rnd() < 0.15 && !(this.s.obstacles ?? []).some((o) => o.kind === 'trebuchet' && o.faction === this.id)) job = 'trebuchet'
+      if (!job) continue
+      const err = this.engine.startWork(a.id, job, job === 'trebuchet' ? undefined : then)
+      if (!err) return
+    }
+  }
+
+  /**
+   * Hold good ground: an idle army near our lands, with enemies about, takes
+   * up a ring of standing stones, terraced slopes or windfall nearby.
+   */
+  private holdGround() {
+    const feats = this.engine.world.def.features ?? []
+    if (!feats.length) return
+    const foes = this.s.armies.filter((h) => this.engine.isHostile(h.faction, this.id) && h.status !== 'retreating' && this.sees(h))
+    if (!foes.length) return
+    for (const a of this.myArmies()) {
+      if (a.battleId || a.status !== 'idle' || a.order.type !== 'hold' || this.engine.insideWalls(a)) continue
+      if (this.engine.world.featureKindAt(a.x, a.z)) continue
+      if (!foes.some((f) => Math.hypot(f.x - a.x, f.z - a.z) < this.d(1400))) continue
+      const horse = (a.troops.cavalry ?? 0) / Math.max(1, total(a.troops))
+      let best: { x: number; z: number; d: number } | null = null
+      for (const f of feats) {
+        // Horse keeps out of windfall; everyone likes stones and terraces.
+        if (f.kind === 'thicket' && horse > 0.1) continue
+        if (f.kind !== 'stones' && f.kind !== 'terraces' && f.kind !== 'thicket') continue
+        const d = Math.hypot(f.x - a.x, f.z - a.z)
+        if (d < 520 && (!best || d < best.d)) best = { x: f.x, z: f.z, d }
+      }
+      if (best) {
+        this.engine.orderArmy(a.id, { type: 'move', x: best.x, z: best.z })
+        return
+      }
     }
   }
 
@@ -366,7 +426,7 @@ export class FactionAI {
   private courtVillages() {
     const ai = this.f.ai as typeof this.f.ai & { nextVillageAt?: number }
     if (this.s.time < (ai.nextVillageAt ?? 90 + this.rnd() * 120)) return
-    ai.nextVillageAt = this.s.time + 120 + this.rnd() * 140
+    ai.nextVillageAt = this.s.time + 80 + this.rnd() * 90
     if (this.threatened()) return
     const mine = this.myCastles().filter((c) => !c.village && !c.battleId)
     if (mine.length === 0) return
@@ -374,7 +434,8 @@ export class FactionAI {
       .filter((c) => c.village && c.faction === 'neutral' && !c.ruined && !c.battleId)
       .map((c) => ({ c, d: Math.min(...mine.map((m) => Math.hypot(m.x - c.x, m.z - c.z))) }))
       .filter((v) => v.d < this.engine.envoyReach())
-      .sort((a, b) => a.d - b.d)
+      // Caravanserais, abbeys, keeps and guildhalls are worth riding a little farther for.
+      .sort((a, b) => a.d * (a.c.holding ? 0.6 : 1) - b.d * (b.c.holding ? 0.6 : 1))
     if (free.length === 0) return
     const { c } = free[0]
     const p = this.personality()
@@ -595,12 +656,14 @@ export class FactionAI {
         decline('They have no soldiers to spare.')
         continue
       }
-      const willing = this.personality() === 'defensive' ? 0.6 : this.personality() === 'aggressive' ? 0.95 : 0.85
+      // The Sovereign himself at the rally point: lords answer more readily and send more.
+      const king = !!(m.rallyArmyId && this.engine.army(m.rallyArmyId)?.royal)
+      const willing = Math.min(1, (this.personality() === 'defensive' ? 0.6 : this.personality() === 'aggressive' ? 0.95 : 0.85) * (king ? ROYAL.charisma : 1))
       if (this.rnd() > willing) {
         decline('They will hold their own walls this time.')
         continue
       }
-      const frac = Math.min(0.55, spare / Math.max(1, total(src.garrison)))
+      const frac = Math.min(king ? 0.7 : 0.55, (spare / Math.max(1, total(src.garrison))) * (king ? ROYAL.charisma : 1))
       const army = this.send(src, frac, `${this.f.name.split(' of ').pop()} Contingent`, { type: 'rally', x: m.rallyX, z: m.rallyZ, hostId: m.id }, { keep: 220 })
       if (!army) continue
       this.engine.addMusterContingent(m.id, army)

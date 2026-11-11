@@ -7,6 +7,9 @@ import {
   PLAYER,
   RECRUIT_TEMPLATES,
   VILLAGE,
+  FEATURE_INFO,
+  HOLDINGS,
+  HOLDING_EFFECTS,
   capacityForTier,
   incomeForTier,
   type GameEngine,
@@ -16,9 +19,9 @@ import { OUTPOST_KINDS } from '../game/outposts'
 import { RESOURCE, RESOURCE_STOCK } from '../game/countryside'
 import { TRAIT_MAP } from '../game/traits'
 import { fmt, total, totalInt } from '../game/troops'
-import type { Army, Battle, Castle, Outpost } from '../game/types'
+import type { Army, Battle, Castle, Outpost, WorkJob } from '../game/types'
 import type { Selection } from '../render/GameRenderer'
-import { useViewport } from './viewport'
+import { compactPanelWidth, useViewport } from './viewport'
 import { OutpostArt, WorkArt } from './art'
 import { PixelPortrait } from './PixelPortrait'
 import { Bar, FormationIcon, STATUS_TEXT, SectionTitle, Slider, StackBar, UnitGlyph, moraleColor, useEngine } from './common'
@@ -110,18 +113,17 @@ export function SelectionPanel({ engine, selection, onSelect, onFormArmy, toast 
 
 function Shell({ children, onClose }: { children: ReactNode; onClose: () => void }) {
   const vp = useViewport()
-  const [collapsed, setCollapsed] = useState(false)
   if (vp.compact) {
-    // Bottom sheet: thumb-reachable, collapsible to a peek so the map stays visible.
+    // Landscape phones: a panel down the right side, below the top bar; the map stays in view on the left.
     return (
-      <div className={`panel animate-sheet-up safe-bottom pointer-events-auto absolute right-0 bottom-0 left-0 z-30 flex flex-col overflow-hidden rounded-t-md ${collapsed ? 'h-[132px]' : 'h-[min(52vh,460px)]'}`}>
-        <div className="relative flex h-7 shrink-0 items-center justify-center" onClick={() => setCollapsed((v) => !v)}>
-          <span className="h-1.5 w-12 rounded-full bg-gold-400/50" />
-          <button className="absolute top-1 right-3 p-1 text-ink-300" onClick={(e) => (e.stopPropagation(), onClose())}>
-            <X size={20} />
-          </button>
-        </div>
-        <div className="scroll-thin flex-1 overflow-y-auto px-4 pb-4">{children}</div>
+      <div
+        className="panel animate-slide-in safe-bottom pointer-events-auto absolute top-[64px] right-0 bottom-0 z-30 flex flex-col overflow-hidden rounded-tl-md"
+        style={{ width: compactPanelWidth(vp.w), paddingRight: 'env(safe-area-inset-right)' }}
+      >
+        <button className="absolute top-2 right-2 z-10 rounded-sm bg-black/30 p-1.5 text-ink-300" style={{ marginRight: 'env(safe-area-inset-right)' }} onClick={onClose} title="Close">
+          <X size={18} />
+        </button>
+        <div className="scroll-thin flex-1 overflow-y-auto p-3 pt-3">{children}</div>
       </div>
     )
   }
@@ -286,6 +288,17 @@ function ArmyHeader({ engine, army }: { engine: GameEngine; army: Army }) {
         </>
       )}
       {unknown && <div className="mb-3" />}
+      {(() => {
+        const f = engine.world.featureAt(army.x, army.z)
+        const info = f && FEATURE_INFO[f.kind]
+        if (!info) return null
+        return (
+          <div className="mb-3 rounded-sm border border-gold-400/25 bg-gold-500/10 px-2 py-1.5 text-[12px] leading-snug">
+            <span className="font-bold text-gold-200">On {info.name.toLowerCase()}: </span>
+            <span className="text-ink-300">{info.effect}</span>
+          </div>
+        )
+      })()}
     </>
   )
 }
@@ -343,6 +356,14 @@ function PlayerArmy({ engine, army, toast, onSelect }: { engine: GameEngine; arm
   return (
     <div>
       <ArmyHeader engine={engine} army={army} />
+      {army.royal && (
+        <div className="mb-3 rounded-sm border border-gold-400/40 bg-gold-500/10 px-2.5 py-2 text-[12.5px] leading-snug">
+          <div className="font-bold text-gold-200">♛ The Royal Guard</div>
+          <p className="mt-0.5 text-ink-300">
+            Household knights from the homeland: never reinforced, no upkeep. In the field the King's presence steadies every friendly army within 350m (+15% damage, -10% losses, morale holds). Allies answer his summons more readily; envoys near him do better. If the Guard is destroyed, the war is lost. In a castle it waits in the keep and rides out by the far gate if the castle falls.
+          </p>
+        </div>
+      )}
       {battle && <BattleBox engine={engine} battle={battle} />}
 
       <div className="mt-3 rounded-lg well px-3 py-2 text-xs">
@@ -419,8 +440,7 @@ function PlayerArmy({ engine, army, toast, onSelect }: { engine: GameEngine; arm
             <House size={13} /> Garrison
           </button>
         </div>
-        <BuildOutpostButton engine={engine} army={army} toast={toast} />
-        <WorksButton engine={engine} army={army} toast={toast} />
+        <EngineersPanel engine={engine} army={army} toast={toast} />
         <ScoutBox engine={engine} army={army} toast={toast} />
       </section>
 
@@ -665,7 +685,7 @@ function PlayerCastle({ engine, castle, onFormArmy, toast, onSelect }: { engine:
         <div className="space-y-1">
           {engine.unitList.map((u) => {
             const b = u.key === 'engineers' ? Math.max(5, Math.round(batch / 4)) : batch
-            const price = u.cost_gold
+            const price = engine.unitCost(PLAYER, u.key)
             const max = engine.maxRecruitable(castle.id, u.key)
             return (
               <div key={u.key} className="flex items-center gap-2 rounded-lg well px-2 py-1.5 text-xs" title={u.description}>
@@ -808,68 +828,88 @@ function OtherCastle({ engine, castle, onFormArmy, toast }: { engine: GameEngine
 }
 
 /** Engineers' field works: obstacles to slow or stop the enemy, and burning or rebuilding bridges. */
-function WorksButton({ engine, army, toast }: { engine: GameEngine; army: Army; toast: (m: string) => void }) {
-  const [open, setOpen] = useState(false)
-  if ((army.troops.engineers ?? 0) < 10) return null
+const SIEGE_JOBS: WorkJob[] = ['tower', 'ram', 'mantlet', 'trebuchet']
+const FIELD_JOBS: WorkJob[] = ['stakes', 'pit', 'barricade', 'pitch', 'bridge', 'demolish']
+
+/** Everything engineers can do, in three tabs: outposts, siege engines, field works. */
+function EngineersPanel({ engine, army, toast }: { engine: GameEngine; army: Army; toast: (m: string) => void }) {
+  const [tab, setTab] = useState<'outposts' | 'siege' | 'field' | null>(null)
+  const eng = army.troops.engineers ?? 0
+  if (eng < 10) return null
+  const carried = (['tower', 'ram', 'mantlet'] as const).filter((k) => army.engines?.[k]).map((k) => WORKS[k].name)
   const working = army.order.type === 'work' ? army.order : null
-  if (working) {
-    return (
-      <div className="well mt-1.5 flex items-center gap-2 rounded-sm px-2.5 py-1.5 text-[13px]">
-        <Hammer size={14} className="text-gold-300" />
-        <span className="flex-1">{WORKS[working.job].name}</span>
-        <span className="tabular-nums text-ink-300">{Math.round(working.progress * 100)}%</span>
-      </div>
-    )
-  }
-  const opts = engine.workOptions(army.id)
+  const building = army.order.type === 'build' ? engine.outpost(army.order.outpostId) : null
+  const tabs = [
+    { key: 'outposts', label: 'Outposts', icon: <Tent size={13} /> },
+    { key: 'siege', label: 'Siege engines', icon: <CastleIcon size={13} /> },
+    { key: 'field', label: 'Field works', icon: <Hammer size={13} /> },
+  ] as const
   return (
     <div className="mt-1.5">
-      <button className="btn w-full text-[13px]" onClick={() => setOpen((v) => !v)} title="Obstacles and bridges">
-        <Hammer size={14} /> Engineers' works
-      </button>
-      {open && (
-        <div className="mt-1.5 grid grid-cols-1 gap-1.5" ref={(el) => el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })}>
-          {opts.map((o) => {
-            const def = WORKS[o.job]
-            return (
-              <button
-                key={o.job}
-                disabled={!o.ok}
-                onClick={() => {
-                  const err = engine.startWork(army.id, o.job)
-                  if (err) toast(err)
-                  else setOpen(false)
-                }}
-                className={`well flex w-full items-stretch gap-2.5 rounded-sm p-1.5 text-left text-[13px] transition hover:brightness-125 ${o.ok ? '' : 'opacity-50 grayscale-[60%]'}`}
-              >
-                <WorkArt job={o.job} size={84} />
-                <span className="min-w-0 flex-1 py-0.5">
-                  <span className="flex justify-between gap-2 font-bold">
-                    <span className="text-gold-100">{def.name}</span>
-                    <span className="text-gold-300">{def.cost ? `${def.cost}g` : 'free'}</span>
-                  </span>
-                  <span className="block text-[11.5px] font-bold text-gold-300/70">{def.engineers}+ Engineers · ~{def.seconds}s</span>
-                  <span className={`mt-0.5 block text-[12px] leading-snug ${o.ok ? 'text-ink-300' : 'text-ember-300'}`}>{o.reason ?? def.description}</span>
-                </span>
-              </button>
-            )
-          })}
+      {carried.length > 0 && <p className="mb-1 text-[12px] text-gold-200">⚙ Pushing along: {carried.join(', ')}</p>}
+      {(working || building) && (
+        <div className="well mb-1.5 flex items-center gap-2 rounded-sm px-2.5 py-1.5 text-[13px]">
+          <Hammer size={14} className="text-gold-300" />
+          <span className="flex-1">{working ? WORKS[working.job].name : building?.name}</span>
+          <span className="tabular-nums text-ink-300">{Math.round((working ? working.progress : building?.progress ?? 0) * 100)}%</span>
         </div>
       )}
+      <div className="grid grid-cols-3 gap-1">
+        {tabs.map((t) => (
+          <button key={t.key} className={`btn px-1 text-[12px] ${tab === t.key ? 'btn-gold' : ''}`} onClick={() => setTab(tab === t.key ? null : t.key)}>
+            {t.icon} {t.label}
+          </button>
+        ))}
+      </div>
+      {tab === 'outposts' && <BuildOutpostButton engine={engine} army={army} toast={toast} onDone={() => setTab(null)} />}
+      {tab === 'siege' && <WorksList engine={engine} army={army} toast={toast} jobs={SIEGE_JOBS} onDone={() => setTab(null)} />}
+      {tab === 'field' && <WorksList engine={engine} army={army} toast={toast} jobs={FIELD_JOBS} onDone={() => setTab(null)} />}
     </div>
   )
 }
 
-function BuildOutpostButton({ engine, army, toast }: { engine: GameEngine; army: Army; toast: (m: string) => void }) {
-  const [open, setOpen] = useState(false)
+function WorksList({ engine, army, toast, jobs, onDone }: { engine: GameEngine; army: Army; toast: (m: string) => void; jobs: WorkJob[]; onDone: () => void }) {
+  const opts = engine.workOptions(army.id).filter((o) => jobs.includes(o.job))
+  return (
+    <div className="mt-1.5 grid grid-cols-1 gap-1.5" ref={(el) => el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })}>
+      {opts.map((o) => {
+        const def = WORKS[o.job]
+        return (
+          <button
+            key={o.job}
+            disabled={!o.ok}
+            onClick={() => {
+              const err = engine.startWork(army.id, o.job)
+              if (err) toast(err)
+              else onDone()
+            }}
+            className={`well flex w-full items-stretch gap-2.5 rounded-sm p-1.5 text-left text-[13px] transition hover:brightness-125 ${o.ok ? '' : 'opacity-50 grayscale-[60%]'}`}
+          >
+            <WorkArt job={o.job} size={84} />
+            <span className="min-w-0 flex-1 py-0.5">
+              <span className="flex justify-between gap-2 font-bold">
+                <span className="text-gold-100">{def.name}</span>
+                <span className="text-gold-300">{def.cost ? `${def.cost}g` : 'free'}</span>
+              </span>
+              <span className="block text-[11.5px] font-bold text-gold-300/70">{def.engineers}+ Engineers · ~{def.seconds}s</span>
+              <span className={`mt-0.5 block text-[12px] leading-snug ${o.ok ? 'text-ink-300' : 'text-ember-300'}`}>{o.reason ?? def.description}</span>
+            </span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+function BuildOutpostButton({ engine, army, toast, onDone }: { engine: GameEngine; army: Army; toast: (m: string) => void; onDone: () => void }) {
+  const setOpen = (v: boolean) => {
+    if (!v) onDone()
+  }
   if (army.order.type === 'build') return null
   const opts = engine.outpostOptions(army.id)
-  const any = opts.some((o) => o.ok)
+  const open = true
   return (
     <div className="mt-1.5">
-      <button className="btn w-full text-[13px]" onClick={() => setOpen((v) => !v)} title="Engineers raise field fortifications suited to the ground here">
-        <Tent size={14} /> Build an outpost here {any ? '' : '(unavailable)'}
-      </button>
       {open && (
         <div className="mt-1.5 grid grid-cols-1 gap-1.5" ref={(el) => el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })}>
           {opts.map((o) => {
@@ -889,7 +929,7 @@ function BuildOutpostButton({ engine, army, toast }: { engine: GameEngine; army:
                 <span className="min-w-0 flex-1 py-0.5">
                   <span className="flex justify-between gap-2 font-bold">
                     <span className="text-gold-100">{def.name}</span>
-                    <span className="text-gold-300">{def.cost}g</span>
+                    <span className="text-gold-300">{engine.outpostCost(PLAYER, o.kind)}g</span>
                   </span>
                   <span className="block text-[11.5px] font-bold text-gold-300/70">{def.terrain}</span>
                   <span className={`mt-0.5 block text-[12px] leading-snug ${o.ok ? 'text-ink-300' : 'text-ember-300'}`}>{o.reason ?? def.description}</span>
@@ -1023,11 +1063,13 @@ function OutpostPanel({
               🐌 Enemies within {kind.zoc}m march {Math.round((1 - kind.zocSlow) * 100)}% slower
             </li>
           )}
-          {kind.fireRange > 0 && <li>🏹 Shoots at enemies within {kind.fireRange}m</li>}
-          {kind.hides && <li>🌲 Armies stationed here stay hidden and ambush</li>}
+          {kind.bombard > 0 && <li>🪨 Manned, bombards enemies and walls within {kind.bombard}m (more from high ground)</li>}
+          {kind.archers > 1 && <li>🏹 Archers inside shoot {Math.round((kind.archers - 1) * 100)}% harder</li>}
+          {kind.hides && <li>🫥 Troops inside stay hidden; riding out, 20 s of 1.25x speed and a 1.6x first blow</li>}
+          {kind.refund > 0 && <li>🛞 Packs up again: {Math.round(kind.refund * 100)}% of the cost back</li>}
           <li>📦 Supplies armies within {Math.round(engine.outpostSupplyRange(outpost))}m</li>
           <li>❤ Armies here recover morale as in a castle</li>
-          <li className="text-ember-300/90">🔥 Left empty, enemies burn it in {OUTPOST.razeSeconds}s</li>
+          <li className="text-ember-300/90">⚠ Left empty, an enemy standing on it takes it in {OUTPOST.razeSeconds}s</li>
         </ul>
         {!done && <p className="mt-1 text-[12px] text-ink-400">Effects begin once construction is finished.</p>}
       </section>
@@ -1046,7 +1088,7 @@ function OutpostPanel({
       </section>
       {rel === 'self' && (
         <button className="btn btn-danger mt-4 w-full" onClick={() => (engine.dismantleOutpost(outpost.id), onSelect(null))}>
-          Dismantle
+          {kind.refund > 0 ? `Pack up · +${Math.round(engine.outpostCost(PLAYER, outpost.kind) * kind.refund)}g` : 'Dismantle'}
         </button>
       )}
     </div>
@@ -1277,19 +1319,21 @@ function VassalPanel({ engine, castle, onSelect }: { engine: GameEngine; castle:
   const nextIn = Math.max(0, Math.ceil((castle.nextTributeAt ?? 0) - now))
   const stoneIn = Math.max(0, Math.ceil(castle.lastCapturedAt + VILLAGE.stoneAfter - now))
   const rate = engine.tributeRate(castle) * engine.incomeMult(PLAYER)
+  const kind = engine.holdingOf(castle)
+  const H = HOLDINGS[kind]
   return (
     <div>
       <div className="flex items-center gap-3 pr-6">
         <span className="grid size-12 place-items-center rounded-sm text-[24px]" style={{ background: 'linear-gradient(160deg, #4f6fae, #1d2a44)' }}>
-          🏘
+          {H.icon}
         </span>
         <div className="min-w-0">
           <h3 className="panel-title truncate">{castle.name}</h3>
-          <p className="text-[13px] text-ink-400">Vassal village · {castle.tier >= 2 ? 'stone walls' : 'palisade'}</p>
+          <p className="text-[13px] text-ink-400">Vassal {H.name.toLowerCase()} · {castle.tier >= 2 ? 'stone walls' : 'palisade'}</p>
         </div>
       </div>
       <p className="mt-3 text-[12.5px] leading-snug text-ink-400">
-        The village answers to you but runs its own affairs. It raises its own militia, pays tribute by wagon to your nearest castle, and sends men to help a castle of yours under siege nearby.
+        It answers to you but runs its own affairs: it raises its own militia and sends men to help a castle of yours under siege nearby. {H.blurb}
       </p>
       <div className="mt-3 space-y-1.5 text-[13px]">
         <div className="flex items-center gap-2">
@@ -1304,16 +1348,38 @@ function VassalPanel({ engine, castle, onSelect }: { engine: GameEngine; castle:
             <span className="tabular-nums">{Math.round((castle.walls / castle.maxWalls) * 100)}%</span>
           </div>
         )}
-        <div className="flex items-center gap-2">
-          <span className="w-20 text-ink-400">Tribute</span>
-          <span className="flex-1 text-gold-300 tabular-nums">+{rate.toFixed(1)} gold/s</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="w-20 text-ink-400">Next wagon</span>
-          <span className="flex-1 tabular-nums">
-            {fmt(Math.round(castle.tribute ?? 0))} gold {castle.battleId ? '· held while under attack' : nextIn > 0 ? `· leaves in ${nextIn}s` : '· loading'}
-          </span>
-        </div>
+        {rate > 0 && (
+          <div className="flex items-center gap-2">
+            <span className="w-20 text-ink-400">Tribute</span>
+            <span className="flex-1 text-gold-300 tabular-nums">+{rate.toFixed(1)} gold/s</span>
+          </div>
+        )}
+        {(rate > 0 || kind === 'abbey') && (
+          <div className="flex items-center gap-2">
+            <span className="w-20 text-ink-400">Next wagon</span>
+            <span className="flex-1 tabular-nums">
+              {kind === 'abbey' ? `${HOLDING_EFFECTS.abbeyManpower[castle.tier]} volunteers` : `${fmt(Math.round(castle.tribute ?? 0))} gold`} {castle.battleId ? '· held while under attack' : nextIn > 0 ? `· leaves in ${nextIn}s` : '· loading'}
+            </span>
+          </div>
+        )}
+        {kind === 'abbey' && (
+          <div className="flex items-center gap-2">
+            <span className="w-20 text-ink-400">Healing</span>
+            <span className="flex-1">commanders recover {Math.round((1 - engine.woundFactor(PLAYER)) * 100)}% faster · infamy {engine.state.factions[PLAYER]?.infamy ?? 0}</span>
+          </div>
+        )}
+        {kind === 'guildhall' && (
+          <div className="flex items-center gap-2">
+            <span className="w-20 text-ink-400">Workshops</span>
+            <span className="flex-1">engineers {engine.unitCost(PLAYER, 'engineers')}g · builds -{Math.round((1 - engine.buildDiscount(PLAYER)) * 100)}% · walls mend 1.5x</span>
+          </div>
+        )}
+        {kind === 'keep' && (
+          <div className="flex items-center gap-2">
+            <span className="w-20 text-ink-400">Patrol</span>
+            <span className="flex-1">rides out within {HOLDING_EFFECTS.keepPatrol}m · horse {fmt(castle.garrison.cavalry ?? 0)}</span>
+          </div>
+        )}
         <div className="flex items-center gap-2">
           <span className="w-20 text-ink-400">Delivers to</span>
           {home ? (
@@ -1331,7 +1397,7 @@ function VassalPanel({ engine, castle, onSelect }: { engine: GameEngine; castle:
       </div>
       {band && (
         <button className="btn mt-3 w-full" onClick={() => onSelect({ kind: 'army', id: band.id }, true)}>
-          {totalInt(band.troops)} militia out helping · show
+          {totalInt(band.troops)} {kind === 'keep' ? 'riders out' : 'militia out helping'} · show
         </button>
       )}
       <p className="mt-3 text-[12px] leading-snug text-ink-400">Wagons can be raided on the road. Keep the way to your castle safe.</p>
@@ -1352,13 +1418,19 @@ function VillagePanel({ engine, castle, toast }: { engine: GameEngine; castle: C
     <div>
       <div className="flex items-center gap-3 pr-6">
         <span className="grid size-12 place-items-center rounded-sm text-[24px]" style={{ background: castle.ruined ? '#2a2420' : 'linear-gradient(160deg, #8a7650, #2a2218)' }}>
-          {castle.ruined ? '🔥' : '🏘'}
+          {castle.ruined ? '🔥' : HOLDINGS[engine.holdingOf(castle)].icon}
         </span>
         <div className="min-w-0">
           <h3 className="panel-title truncate">{castle.name}</h3>
-          <p className="text-[13px] text-ink-400">{castle.ruined ? 'Ruins of a plundered village' : 'Free village'}</p>
+          <p className="text-[13px] text-ink-400">{castle.ruined ? 'Ruins, plundered' : `Free ${HOLDINGS[engine.holdingOf(castle)].name.toLowerCase()}`}</p>
         </div>
       </div>
+      {!castle.ruined && (
+        <p className="mt-2 rounded-sm border border-gold-400/25 bg-gold-500/10 px-2 py-1.5 text-[12px] leading-snug text-ink-300">
+          <span className="font-bold text-gold-200">As your vassal: </span>
+          {HOLDINGS[engine.holdingOf(castle)].blurb} Plundering it yields {HOLDINGS[engine.holdingOf(castle)].loot[0]}-{HOLDINGS[engine.holdingOf(castle)].loot[1]} gold{HOLDINGS[engine.holdingOf(castle)].infamy > 1 ? ` and costs ${HOLDINGS[engine.holdingOf(castle)].infamy} infamy` : ''}.
+        </p>
+      )}
       {castle.ruined ? (
         <p className="mt-3 text-[13px] leading-snug text-ink-400">Burned and abandoned. Nobody will live here again, and it is of no use to anyone.</p>
       ) : (

@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { PLAYER, type GameEngine } from '../game/engine'
+import { HOLDINGS, PLAYER, type GameEngine } from '../game/engine'
 import { FORMATIONS } from '../game/formations'
 import { clamp } from '../game/noise'
 import { fmt, totalInt } from '../game/troops'
@@ -11,9 +11,10 @@ import { CastleView } from './castles'
 import { OutpostRenderer } from './outposts'
 import { ConvoyRenderer } from './convoys'
 import { ObstacleRenderer } from './obstacles'
+import { EngineRenderer } from './engines'
 import { SiteRenderer } from './sites'
 import { ParticleSystem } from './particles'
-import { bridgeMesh, buildBridges, buildFords, buildSkirt, buildStoneBridges, buildTerrain, buildTown, buildVegetation, buildWalls, buildWater } from './terrain'
+import { bridgeMesh, buildBridges, buildFeatures, buildFords, buildSkirt, buildStoneBridges, buildTerrain, buildTown, buildVegetation, buildWalls, buildWater } from './terrain'
 import { visionUniforms } from './vision'
 import { makePaintTexture } from './paint'
 import { Diorama } from './postfx'
@@ -50,6 +51,7 @@ export class GameRenderer {
   private convoys: ConvoyRenderer
   private diorama: Diorama | null = null
   private obstacles: ObstacleRenderer
+  private siegeEngines: EngineRenderer
   private sites: SiteRenderer
   private bridgeGroup: THREE.Group
   private bridgeDown = new Set<number>()
@@ -143,6 +145,7 @@ export class GameRenderer {
     this.scene.add(this.bridgeGroup)
     this.scene.add(buildFords(world))
     this.scene.add(buildStoneBridges(world))
+    this.scene.add(buildFeatures(world))
     this.scene.add(buildWalls(world))
     this.scene.add(buildTown(world))
 
@@ -156,6 +159,8 @@ export class GameRenderer {
     this.scene.add(this.convoys.group)
     this.obstacles = new ObstacleRenderer(engine)
     this.scene.add(this.obstacles.group)
+    this.siegeEngines = new EngineRenderer(engine)
+    this.scene.add(this.siegeEngines.group)
     this.sites = new SiteRenderer(engine)
     this.scene.add(this.sites.group)
 
@@ -212,8 +217,8 @@ export class GameRenderer {
     const ref = 1.25
     this.cam.camera.fov =
       aspect >= ref ? base : Math.min(78, (2 * Math.atan((Math.tan(((base / 2) * Math.PI) / 180) * ref) / aspect) * 180) / Math.PI)
-    // A bottom sheet covers part of the screen: centre the view on what is left.
-    if (this.bottomInset > 0) this.cam.camera.setViewOffset(w, h, 0, Math.round(this.bottomInset / 2), w, h)
+    // A side panel covers part of the screen: centre the view on what is left.
+    if (this.rightInset > 0) this.cam.camera.setViewOffset(w, h, Math.round(this.rightInset / 2), 0, w, h)
     else this.cam.camera.clearViewOffset()
     this.cam.camera.updateProjectionMatrix()
   }
@@ -223,12 +228,12 @@ export class GameRenderer {
     this.cam.overhead = on
   }
 
-  private bottomInset = 0
-  /** Pixels at the bottom of the screen hidden behind UI (e.g. the phone bottom sheet). */
-  setBottomInset(px: number) {
+  private rightInset = 0
+  /** Pixels at the right of the screen hidden behind UI (the phone selection panel). */
+  setRightInset(px: number) {
     const v = Math.max(0, Math.round(px))
-    if (v === this.bottomInset) return
-    this.bottomInset = v
+    if (v === this.rightInset) return
+    this.rightInset = v
     this.resize()
   }
 
@@ -425,6 +430,7 @@ export class GameRenderer {
     this.outposts.update(this.time)
     this.convoys.update(this.time)
     this.obstacles.update()
+    this.siegeEngines.update()
     this.sites.update(this.time)
     this.updateBridges()
     this.armyEffects(dt)
@@ -792,11 +798,11 @@ export class GameRenderer {
             continue
           }
           if (c.village && c.faction === 'neutral') {
-            l.el.innerHTML = `<div class="cl-name">🏘 ${escapeHtml(c.name)}</div><div class="cl-realm">Free village</div><div class="cl-row"><span class="cl-gar">militia ${g}</span>${c.battleId ? '<span class="cl-siege">RAID</span>' : ''}</div>`
+            l.el.innerHTML = `<div class="cl-name">${HOLDINGS[engine.holdingOf(c)].icon} ${escapeHtml(c.name)}</div><div class="cl-realm">Free ${HOLDINGS[engine.holdingOf(c)].name.toLowerCase()}</div><div class="cl-row"><span class="cl-gar">militia ${g}</span>${c.battleId ? '<span class="cl-siege">RAID</span>' : ''}</div>`
             continue
           }
           l.el.innerHTML = `
-            ${c.faction === PLAYER ? `<span class="cl-home">${c.id === engine.state.factions[PLAYER]?.capitalId ? '♛ YOUR SEAT' : c.village ? '🏘 YOUR VILLAGE' : '⚑ YOUR CASTLE'}</span>` : ''}
+            ${c.faction === PLAYER ? `<span class="cl-home">${c.id === engine.state.factions[PLAYER]?.capitalId ? '♛ YOUR SEAT' : c.village ? `${HOLDINGS[engine.holdingOf(c)].icon} YOUR ${HOLDINGS[engine.holdingOf(c)].name.toUpperCase()}` : '⚑ YOUR CASTLE'}</span>` : ''}
             <div class="cl-name"><i class="cl-swatch" style="background:${engine.factionColor(c.faction)}"></i>${c.capital ? '<span class="cl-crown">♛</span>' : ''}${escapeHtml(c.name)}</div>
             ${showRealm ? `<div class="cl-realm">${escapeHtml(engine.factionName(c.faction))}</div>` : ''}
             <div class="cl-row">${rank > 0 ? `<span class="cl-rank" title="Realm rank">RANK <b>${rank}</b></span>` : ''}<span class="cl-gar">⚔ ${g}</span>${c.battleId ? '<span class="cl-siege">SIEGE</span>' : ''}</div>

@@ -1,5 +1,5 @@
 import { Map as MapIcon, X } from 'lucide-react'
-import { useEffect, useRef, useState, type PointerEvent } from 'react'
+import { useEffect, useRef, type PointerEvent } from 'react'
 import { useViewport } from './viewport'
 import { PLAYER, type GameEngine } from '../game/engine'
 import { RELATION_COLOR } from './common'
@@ -10,9 +10,8 @@ import type { GameRenderer } from '../render/GameRenderer'
 const SIZE = 200
 
 /** Top-down overview: terrain, fog, castles, armies and the camera footprint. Click to jump. */
-export function Minimap({ engine, renderer }: { engine: GameEngine; renderer: GameRenderer | null }) {
+export function Minimap({ engine, renderer, shown, setShown }: { engine: GameEngine; renderer: GameRenderer | null; shown: boolean; setShown: (v: boolean) => void }) {
   const vp = useViewport()
-  const [shown, setShown] = useState(!vp.phone)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const bgRef = useRef<HTMLCanvasElement | null>(null)
 
@@ -156,7 +155,7 @@ export function Minimap({ engine, renderer }: { engine: GameEngine; renderer: Ga
 
   if (vp.compact && !shown) {
     return (
-      <button className="panel btn safe-top pointer-events-auto absolute top-[64px] right-2 z-20 h-10 px-3" onClick={() => setShown(true)} title="Show map">
+      <button className="panel btn safe-bottom pointer-events-auto absolute right-2 bottom-2 z-20 h-12 w-12 px-0" onClick={() => setShown(true)} title="Show map">
         <MapIcon size={16} />
       </button>
     )
@@ -164,11 +163,11 @@ export function Minimap({ engine, renderer }: { engine: GameEngine; renderer: Ga
   const size = vp.compact ? (vp.phone ? 132 : 160) : SIZE
   return (
     <div
-      className={`panel pointer-events-auto absolute z-20 rounded-md p-1.5 ${vp.compact ? 'top-[64px] right-2' : 'right-3 bottom-3'}`}
+      className={`panel pointer-events-auto absolute z-20 rounded-md p-1.5 ${vp.compact ? 'safe-bottom right-2 bottom-2' : 'right-3 bottom-3'}`}
       onDoubleClick={() => vp.compact && setShown(false)}
     >
       {vp.compact && (
-        <button className="absolute -bottom-2 -left-2 z-10 grid size-7 place-items-center rounded-full bg-ink-800 text-ink-200 ring-1 ring-black" onClick={() => setShown(false)}>
+        <button className="absolute -top-2 -left-2 z-10 grid size-7 place-items-center rounded-full bg-ink-800 text-ink-200 ring-1 ring-black" onClick={() => setShown(false)} title="Hide map">
           <X size={14} />
         </button>
       )}

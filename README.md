@@ -74,7 +74,8 @@ backend records each match's result and battle reports.
   then everyone marches on the target together (or press _March now_).
   On one of your own castles, _Call for aid_ asks allied lords who are close,
   safe and have men to spare to send them to stand in it until the danger
-  passes. AI lords call for aid too: answer from the War tab (_Send_). Armies
+  passes. AI lords call for aid too: answer from the card at the top of the
+  sidebar (_Send_). Armies
   stationed at a castle (yours or an ally's) fight from its walls when it is
   besieged.
 - **Units**: Infantry (beat cavalry), Cavalry (beat archers and engineers),
@@ -88,8 +89,9 @@ backend records each match's result and battle reports.
   storms blunt archers; spring brings recruits, autumn the harvest.
 - **Ambush**: an army holding still in a forest becomes hidden and strikes
   first when an enemy blunders into it.
-- **Diplomacy**: buy free towns, buy truces, and in Alliance War bribe enemy
-  lords to change sides.
+- **Intrigue** (its own sidebar tab): buy truces, in Alliance War bribe enemy
+  lords to change sides, buy free towns, send envoys to villages within reach,
+  and track your infamy and the abbeys praying it away.
 - **Realm rank**: every realm's rank rises with its total strength (top rank
   5 / 6 / 7 by map size) and is shown under its castles and outposts; all of a
   realm's castles grow grander with each rank.
@@ -99,13 +101,33 @@ backend records each match's result and battle reports.
   can seize the wagons, and a depot's supply reach shrinks as stores run out.
 - **Rivers**: crossed at shallow fords (slow; no charging or squares in the
   water, 20% more losses) or on bridges engineers build.
-- **Engineers' works**: spike stakes (stop charges), hidden mud pits (bog the
-  enemy down, no charge, more losses), road barricades (stop enemy wagons,
-  hold armies ~12 s), pitch barrels (hidden; a blow to morale), timber bridges
-  and pulling down enemy ones. 15+ engineers in a siege undermine the walls:
-  they stop mending for 3 minutes.
+- **Engineers** (three tabs on the army panel):
+  - *Outposts*, anywhere on dry ground: Palisade Castrum (the strongest fort,
+    slows enemies nearby), Wagon Laager (built in half the time, archers 1.45x,
+    packs up for 70% back), Mangonel Redoubt (bombards armies and walls within
+    380m while manned), Outrider Pavilion (troops inside hidden anywhere; a
+    burst of speed and a 1.6x first blow when they ride out) and Supply Depot.
+    An outpost left empty is taken by enemies who stand on it.
+  - *Siege engines*, built where the army stands: siege tower (fight on the
+    walls from the first moment), tortoise ram (walls 3x faster, fewer arrows,
+    the breach shakes the garrison), mantlet wagons (half the arrow losses) and
+    field trebuchet (stones from 450m while guarded).
+  - *Field works*: spike stakes, hidden mud pits, road barricades, pitch
+    barrels, timber bridges (and pulling down enemy ones). 15+ engineers in a
+    siege undermine the walls: they stop mending for 3 minutes.
+- **Sighting**: castles and holdings are known to all, but enemy armies show
+  only within sight of your troops, castles, holdings or outposts (allies share
+  what they see). The AI plays by the same rule.
 - **Rear attacks**: joining a fight from behind the enemy's engaged line gives
   a short damage bonus and a charge that no spear wall stops.
+- **Holdings**: besides villages, the countryside holds caravanserais (big
+  trade wagons, faster wagons nearby), abbeys (volunteers for your castles,
+  faster-healing commanders, infamy forgiven), wardens' keeps (riders that
+  chase off scouts, wagons and small raids) and siege guildhalls (cheaper
+  engineers, outposts and upgrades; walls mend faster).
+- **Terrain**: three climates per map with their own rules, crossings by
+  bridge or ford, and features: standing stones, peat bogs, terraced slopes,
+  windfall thickets, dry wadis and crag overlooks.
 - **Villages**: win free villages over with envoys and gold. A vassal village
   runs itself: it raises its own militia, sends tribute wagons to its lord's
   nearest castle, walls itself in stone in time and sends militia to help a
@@ -126,7 +148,9 @@ backend records each match's result and battle reports.
 - **Navigation**: the holdings bar (bottom) lists your castles and outposts;
   press **C** or the Home button to fly to your seat of power.
 - **Commanders**: each has a pixel portrait and clear strengths and drawbacks
-  (stored in the database, editable in the admin). Lord Cassian is the all-rounder.
+  (stored in the database, editable in the admin). King Aldric, the Sovereign, rides
+  with the Royal Guard: 520 knights that can never be replaced; armies near him
+  fight harder, and if he falls the war is lost.
 - **Counters**: spears beat cavalry, men-at-arms beat spears, cavalry rides down
   archers and siege crews, archers soften infantry. The formation screen tells
   you what your mix is strong and weak against.

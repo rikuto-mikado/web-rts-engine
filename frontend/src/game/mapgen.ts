@@ -1,8 +1,8 @@
 import { MAPS, type MapType } from './biomes'
 import { PLAYER } from './engine'
 import { mulberry32 } from './noise'
-import type { CastleDef, FactionDef, GameMode, GameRules, MapSize, Scenario, ScenarioDefinition, Team, Troops } from './types'
-import { World, distToSegment } from './world'
+import type { CastleDef, FactionDef, GameMode, GameRules, MapSize, Scenario, ScenarioDefinition, Team, Troops, FeatureKind, TerrainFeature } from './types'
+import { World, distToSegment, holdingRadius } from './world'
 
 /**
  * Procedural maps for Alliance War and Survival. Everything derives from the
@@ -412,7 +412,73 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
   const world = new World(scenario)
   const home = castles.find((c) => c.faction === PLAYER && c.capital)!
   if (!castles.every((c) => world.connected(home.x, home.z, c.x, c.z))) return null
+  definition.features = placeFeatures(world, castles, rnd)
   return { scenario, rules, world }
+}
+
+/** Where each terrain feature likes to be found, by climate. */
+const FEATURE_CLIMATES: Record<FeatureKind, string[]> = {
+  stones: ['highland', 'taiga', 'temperate', 'grain', 'wasteland', 'alpine', 'lakeland', 'icefield', 'volcanic', 'desert', 'coast'],
+  terraces: ['grain', 'coast', 'autumn', 'temperate', 'mesa', 'oasis', 'volcanic'],
+  thicket: ['taiga', 'autumn', 'steam', 'wasteland', 'temperate', 'icefield', 'oasis'],
+  wadi: ['desert', 'mesa', 'highland', 'wasteland', 'volcanic', 'grain'],
+  crag: ['highland', 'desert', 'mesa', 'temperate', 'grain', 'volcanic', 'icefield', 'wasteland', 'coast', 'alpine'],
+}
+
+/** Scatter standing stones, terraces, windfall, wadis and crags over the land. */
+function placeFeatures(world: World, castles: CastleDef[], rnd: () => number): TerrainFeature[] {
+  const out: TerrainFeature[] = []
+  const half = world.half
+  const area = (world.size * world.size) / (5540 * 5540)
+  const each = Math.max(2, Math.round(3 * Math.sqrt(area)))
+  const kinds: FeatureKind[] = ['stones', 'terraces', 'thicket', 'wadi', 'crag']
+  const clear = (x: number, z: number, r: number) =>
+    Math.abs(x) < half - 260 &&
+    Math.abs(z) < half - 260 &&
+    castles.every((c) => Math.hypot(c.x - x, c.z - z) > holdingRadius(c) + r + 160) &&
+    world.crossings().every((b) => Math.hypot(b.x - x, b.z - z) > r + 160) &&
+    out.every((f) => Math.hypot(f.x - x, f.z - z) > f.r + (f.len ?? 0) / 2 + r + 200)
+  for (const kind of kinds) {
+    for (let placed = 0, tries = 0; placed < each && tries < 600; tries++) {
+      const x = (rnd() * 2 - 1) * (half - 300)
+      const z = (rnd() * 2 - 1) * (half - 300)
+      const h = world.heightAt(x, z)
+      if (h < 4 || !world.isPassable(x, z)) continue
+      if (!FEATURE_CLIMATES[kind].includes(world.climateAt(x, z).key)) continue
+      const slope = world.slopeAt(x, z)
+      const forest = world.forestAt(x, z)
+      const r = kind === 'wadi' ? 26 : kind === 'crag' ? 34 : kind === 'stones' ? 70 : kind === 'terraces' ? 110 : 100
+      if (kind === 'terraces' && (slope < 0.12 || slope > 0.6)) continue
+      // Round features sit wholly on dry land.
+      if (kind !== 'wadi') {
+        let dry = true
+        for (let k = 0; k < 8; k++) {
+          const px = x + Math.cos((k / 8) * Math.PI * 2) * r
+          const pz = z + Math.sin((k / 8) * Math.PI * 2) * r
+          if (world.heightAt(px, pz) < 4 || !world.isPassable(px, pz)) dry = false
+        }
+        if (!dry) continue
+      }
+      if (kind === 'thicket' && forest < 0.25) continue
+      if ((kind === 'stones' || kind === 'crag' || kind === 'wadi') && (forest > 0.35 || slope > 0.4)) continue
+      const len = kind === 'wadi' ? 380 + rnd() * 240 : 0
+      const angle = rnd() * Math.PI
+      if (!clear(x, z, r + len / 2)) continue
+      // A strip must lie on dry, passable ground along its length.
+      if (len) {
+        let ok = true
+        for (let t = -0.5; t <= 0.5; t += 0.125) {
+          const px = x + Math.cos(angle) * len * t
+          const pz = z + Math.sin(angle) * len * t
+          if (!world.isPassable(px, pz) || world.heightAt(px, pz) < 4) ok = false
+        }
+        if (!ok) continue
+      }
+      out.push(len ? { kind, x: Math.round(x), z: Math.round(z), r, angle, len: Math.round(len) } : { kind, x: Math.round(x), z: Math.round(z), r })
+      placed++
+    }
+  }
+  return out
 }
 
 function nearestIndex(pts: { x: number; z: number }[], x: number, z: number) {
