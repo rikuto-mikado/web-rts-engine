@@ -1,3 +1,4 @@
+import { Glyph } from './Glyph'
 import { Crown, Flame, Shield, Skull, Swords, Wind } from 'lucide-react'
 import { useSyncExternalStore, type ReactNode } from 'react'
 import type { GameEngine } from '../game/engine'
@@ -72,6 +73,7 @@ export function UnitGlyph({ unit, size = 16, color }: { unit: string; size?: num
 }
 
 export function CommanderSigil({ cmd, size = 18 }: { cmd: Pick<CommanderDef, 'sigil'>; size?: number }) {
+  if (cmd.sigil === 'raven') return <Glyph name="mask" size={size} strokeWidth={2} />
   const Icon = { shield: Shield, wind: Wind, crown: Crown, flame: Flame, skull: Skull, trident: Swords }[cmd.sigil] ?? Crown
   return <Icon size={size} strokeWidth={2} />
 }

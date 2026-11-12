@@ -1,4 +1,6 @@
 import { X } from 'lucide-react'
+import { Glyph } from './Glyph'
+import type { GlyphName } from '../render/glyphs'
 import { useState, type ReactNode } from 'react'
 import { COLUMN, FORMATIONS, FORMATION_ORDER } from '../game/formations'
 import { OUTPOST_KINDS, OUTPOST_ORDER } from '../game/outposts'
@@ -14,9 +16,11 @@ const TOUCH: [string, string][] = [
   ['Tap', 'Select an army or castle'],
   ['Drag', 'Pan the map'],
   ['Pinch / twist', 'Zoom and rotate'],
-  ['Long-press', 'Order the selected army to that spot or target'],
-  ['🎯 Give an order', 'Then tap the target: ground, castle, enemy, or your army to merge'],
-  ['☰', 'Realm, armies and the war overview'],
+  ['Thumb stick', 'Drive the selected army by hand: push harder to go faster; let go and it rolls to a halt. A quick tap turns the commander\'s view (low behind the army) on or off'],
+  ['Drag the map', 'Look around freely; touch the stick again to return to the army'],
+  ['Double-tap', 'March the selected army there: ground, castle, enemy, or your army to merge'],
+  ['Long-press', 'The same order as a double-tap'],
+  ['Menu button', 'Realm, armies and the war overview'],
   ['⋯ → Overhead view', 'Switch between overhead and tilted view'],
 ]
 
@@ -97,16 +101,26 @@ function Basics() {
         <SectionTitle>How a war is won</SectionTitle>
         <ol className="space-y-2 text-[14px] leading-relaxed text-ink-300">
           {[
-            ['💰', 'Gold is the main limit. Take castles, buy free towns and expand them to grow it.'],
-            ['⚔', 'Muster armies from castles: a commander, a mix of troops and a formation.'],
-            ['🏰', 'Walls must be battered down before a garrison can be stormed. Engineers do it fastest.'],
-            ['🔴', 'A pulsing red ring is an enemy Great Host gathering. Strike before it unites.'],
-            ['🤝', 'In Alliance War, summon your allies to muster with you, or call for aid when a castle is threatened.'],
-            ['🛡', 'Station an army at a castle (yours or an ally\'s): it mans the walls when the castle is besieged.'],
-            ['♛', 'King Aldric rides with the Royal Guard: 520 black-armoured knights that can never be replaced. Armies within 350m of him fight harder and hold their nerve. If the Guard is destroyed, the war is lost.'],
+            ['purse', 'Gold is the main limit. Take castles, buy free towns and expand them to grow it.'],
+            ['swords', 'Muster armies from castles: a commander, a mix of troops and a formation.'],
+            ['castle', 'Walls must be battered down before a garrison can be stormed. Engineers do it fastest.'],
+            ['muster', 'A pulsing red ring is an enemy Great Host gathering. Strike before it unites.'],
+            ['handshake', 'In Alliance War, summon your allies to muster with you, or call for aid when a castle is threatened.'],
+            ['shield', 'Station an army at a castle (yours or an ally\'s): it mans the walls when the castle is besieged.'],
+            ['crown', 'King Aldric rides with the Royal Guard: 520 steel-and-gold knights that can never be replaced. Armies within 350m of him fight harder and hold their nerve. If the Guard is destroyed, the war is lost.'],
+            ['mask', 'Corvin Ashe, the spymaster: light troops he leads hide on their own (500 men, 1000 at three stars, 1500 at five). In woods, thickets, river valleys, on a mountain\'s flank, in a hidden camp, or in rain, storm and snow they are concealed; on open ground in fair weather they pass as pilgrims and pedlars, which the enemy ignores but scouts, walls and watch posts see through from further off. Whatever he leads lives off the land (never out of supply) and marches 28% faster than other armies. Their first blow strikes 2.2x as hard (1.9x from disguise). Found out, they cannot hide again for 90 seconds. With his band selected, the enemy\'s watches show as red rings (orange: where a disguise is seen through), and the road is coloured green under cover, gold in disguise and red where they would be found. In disguise they walk as pilgrims with mules and carts.'],
+            ['dagger', 'The Whisper Blades: Ashe\'s own 130 knife-men, fixed like the Royal Guard (never reinforced; an abbey of yours can take them in to fill their ranks, for gold). Send them after an enemy army and they strike at its leader, not its ranks: if the knife finds its mark, a commander is carried from the field and the host breaks; the Usurper Queen herself can fall (rarely, and every attempt makes her guard warier). Hidden, they are likelier to succeed; large hosts and seasoned commanders are harder. A failed strike costs them dearly. After each strike they regroup for 150 seconds. They do not storm walls.'],
+            ['mask', 'Sabotage: Ashe\'s band, unseen near an enemy castle or fieldwork, can Foul the Wells (garrison -12%, levies -40%), Fire the Granary (the garrison fights shaken for 3 minutes), Undermine the Postern (walls -30%, no mending for 3 minutes), Spoil a depot\'s Stores or Fire the Works. 12 seconds of work unseen; the alarm may go up afterwards.'],
+            ['chapel', 'Sanctuary: one of your abbeys takes in the Royal Guard or the Whisper Blades standing there short of men: the wounded are nursed and lay brothers sworn to the Crown fill the ranks, for gold each man.'],
+            ['castle', 'The Long Night: hold the King\'s royal city until dawn. The Endless Night pours without pause from the Great Rift before the city; every so often it erupts with whole hosts, fiends, wraith riders and, later, giants. Its battalions mass before the weakest gate (the bar at the bottom warns where) and go in together while others pin a second gate. The outer wall has five gatehouses and the inner three: a gate taken lets the dead into the ring behind it. Station armies at the gates, lay traps before them, keep the wards (they pay and raise men) and sally out to break the trebuchets. Lose the Citadel or the King and the city is lost.'],
+            ['wagon', 'Convoy Raid: five gold wagons run one forest road from the caravanserai to the castle, one every 75 seconds. Seizing one takes 5 seconds standing at it, and cannot be done while a guard who is not fighting stands beside it. Escorting, right-click a wagon to have an army walk beside it and halt the train from the bar at the bottom of the screen. Raiding, pin the guards in a fight and take the wagon with another band; your sappers can pull down the bridge to send the wagons the long way through a ford. Give the bands you cannot watch a standing order (Escort, Hunt, Picket; Ambush, Harass, Bridge) from their panel. Three wagons decide it.'],
+            ['mask', 'The Usurper has a spymaster too: Mother Sereth, the Grey Abbess. Her grey pilgrims slip behind our lines to seize wagon trains and empty outposts. Walls, wardens\' keeps, outposts and scouts find them out; keep wagons guarded and outposts manned.'],
+            ['crown', 'Across the lines rules Queen Morwenna, the Usurper, with her crimson Thorn Guard. She holds court in the enemy High Seat and rides out with some of the Great Hosts. Destroy her guard and the war is won. Where she was last seen shows on the map (a red crown) and in the War tab; scouts near her report her whereabouts.'],
           ].map(([icon, text]) => (
             <li key={text} className="flex gap-3">
-              <span className="grid size-8 shrink-0 place-items-center rounded-full bg-black/30 text-[16px]">{icon}</span>
+              <span className="grid size-8 shrink-0 place-items-center rounded-full bg-black/30 text-gold-300">
+                <Glyph name={icon as GlyphName} size={17} />
+              </span>
               <span>{text}</span>
             </li>
           ))}
@@ -235,13 +249,13 @@ function Field() {
         <SectionTitle>Supply depots and supply lines</SectionTitle>
         <div className="grid gap-3 sm:grid-cols-2">
           <Card>
-            <div className="mb-1 font-display text-[15px] font-bold text-gold-100">📦 Quarters</div>
+            <div className="mb-1 font-display text-[15px] font-bold text-gold-100"><Glyph name="crate" size={15} className="mr-1 -mt-0.5 text-gold-300" />Quarters</div>
             <p className="text-[13.5px] leading-snug text-ink-300">
               Send armies into your depot (select an army, then tap the depot). Up to 900 soldiers wait inside, out of sight, with their commanders. Raise new armies from the depot as from a castle; only commanders quartered there, or a captain, can lead them. If enemies reach the gate, the garrison marches out to fight; if the depot falls, they retreat to your nearest castle.
             </p>
           </Card>
           <Card>
-            <div className="mb-1 font-display text-[15px] font-bold text-gold-100">🛞 Wagon trains</div>
+            <div className="mb-1 font-display text-[15px] font-bold text-gold-100"><Glyph name="wheel" size={15} className="mr-1 -mt-0.5 text-gold-300" />Wagon trains</div>
             <p className="text-[13.5px] leading-snug text-ink-300">
               Every depot draws on its stores; wagons from the nearest friendly castle refill them along a road shown as a dashed line. Wagons are unarmed: any enemy army that reaches them seizes them. As stores run down, the depot's supply reach shrinks, and empty, it supplies nobody. Cut enemy lines, guard your own.
             </p>
@@ -254,7 +268,10 @@ function Field() {
         <div className="grid gap-2 sm:grid-cols-2">
           {Object.values(HOLDINGS).map((h) => (
             <Card key={h.name}>
-              <div className="font-display text-[15px] font-bold text-gold-100">{h.icon} {h.name}</div>
+              <div className="font-display text-[15px] font-bold text-gold-100">
+                <Glyph name={h.icon} size={15} className="mr-1 -mt-0.5 text-gold-300" />
+                {h.name}
+              </div>
               <p className="mt-1 text-[13px] leading-snug text-ink-300">{h.blurb}</p>
             </Card>
           ))}
@@ -301,28 +318,28 @@ function Field() {
         <SectionTitle>Villages, mines and scouts</SectionTitle>
         <div className="grid gap-3 sm:grid-cols-3">
           <Card>
-            <div className="mb-1 font-display text-[15px] font-bold text-gold-100">🏘 Villages</div>
+            <div className="mb-1 font-display text-[15px] font-bold text-gold-100"><Glyph name="house" size={15} className="mr-1 -mt-0.5 text-gold-300" />Villages</div>
             <p className="text-[13.5px] leading-snug text-ink-300">
               Free villages lie between the castles. Send envoys (an army nearby or a castle within reach) and pay their price: if they agree, it becomes your vassal. A vassal village runs itself: it raises its own militia, pays tribute by wagon to your nearest castle (raiders can seize the wagons), raises stone walls in time, and sends its militia to help a castle of yours under siege nearby. You cannot muster from it or send armies into it. Or plunder it: beat the militia for gold and captives, but the village burns for good and every other village grows warier of you.
             </p>
           </Card>
           <Card>
-            <div className="mb-1 font-display text-[15px] font-bold text-gold-100">⛏ Mines & lumber camps</div>
+            <div className="mb-1 font-display text-[15px] font-bold text-gold-100"><Glyph name="pick" size={15} className="mr-1 -mt-0.5 text-gold-300" />Mines & lumber camps</div>
             <p className="text-[13.5px] leading-snug text-ink-300">
               An army with 10+ engineers can work a mine or a forest camp for gold. Only the number of engineers matters (10 make about 1.2 gold/s, 40 about 3; mines pay 30% more). The gold goes home by wagon, which enemies can seize. Sites run dry and recover slowly when left alone.
             </p>
           </Card>
           <Card>
-            <div className="mb-1 font-display text-[15px] font-bold text-gold-100">🔭 Scouts</div>
+            <div className="mb-1 font-display text-[15px] font-bold text-gold-100"><Glyph name="spyglass" size={15} className="mr-1 -mt-0.5 text-gold-300" />Scouts</div>
             <p className="text-[13.5px] leading-snug text-ink-300">
-              There is no fog: you and the AI lords see the whole map and every army on the march. What hides is local: troops waiting in woods or a Forest Lodge vanish from the other side's view (yours and the AI's alike) until someone comes within 200m (400m from a watchtower). Far from your forces (over 450m), enemy numbers are only rumours (~…?) and their leader and mix of troops are unknown; the AI judges your armies with the same error. A party of 80 or fewer can scout: it rides out, sees what is near, and reports only if it gets home. Castles, outposts and armies that spot scouts send riders after them; captured scouts may give away where they came from. Rain, storms and forest cover help scouts; horsemen and watchtowers help spot them. Ambushers are only found up close.
+              There is no fog: you and the AI lords see the whole map and every army on the march. What hides is local: troops waiting in woods or a Forest Lodge vanish from the other side's view (yours and the AI's alike) until someone comes within 200m (400m from a watchtower). Far from your forces (over 450m), enemy numbers are only rumours (~…?) and their leader and mix of troops are unknown; the AI judges your armies with the same error. To scout, tap an enemy castle and press Send: 40 scouts (riders first) ride out from the castle or supply depot you pick, see what is near, and report only if they get home. Any army of 80 or fewer can also be sent to scout from its own panel. Castles, outposts and armies that spot scouts send riders after them; captured scouts may give away where they came from. Rain, storms and forest cover help scouts; horsemen and watchtowers help spot them. Ambushers are only found up close.
             </p>
           </Card>
         </div>
       </section>
       <section>
         <Card>
-          <div className="mb-1 font-display text-[15px] font-bold text-gold-100">⚔ Striking from behind</div>
+          <div className="mb-1 font-display text-[15px] font-bold text-gold-100"><Glyph name="swords" size={15} className="mr-1 -mt-0.5 text-gold-300" />Striking from behind</div>
           <p className="text-[13.5px] leading-snug text-ink-300">
             Join a fight that is already under way from the far side of the enemy, behind the line your own troops are holding. For 8 seconds your army deals 25% more damage and its cavalry charges into their backs, where spear walls, schiltrons and palisades give no protection. The enemy's morale is shaken at once. Ordering an army to attack an enemy that is already fighting makes it swing around to the rear by itself. Enemies do the same to you.
           </p>
@@ -330,13 +347,13 @@ function Field() {
       </section>
       <section className="grid gap-3 sm:grid-cols-2">
         <Card>
-          <div className="mb-1 font-display text-[15px] font-bold text-gold-100">🌲 Ambush</div>
+          <div className="mb-1 font-display text-[15px] font-bold text-gold-100"><Glyph name="tree" size={15} className="mr-1 -mt-0.5 text-gold-300" />Ambush</div>
           <p className="text-[13.5px] leading-snug text-ink-300">
             An army that holds still in a forest for a few seconds vanishes from enemy sight. When an enemy blunders into it, the ambushers strike first and hard, and the victims lose morale. Forest Lodges keep armies hidden at once.
           </p>
         </Card>
         <Card>
-          <div className="mb-1 font-display text-[15px] font-bold text-gold-100">📦 Supply</div>
+          <div className="mb-1 font-display text-[15px] font-bold text-gold-100"><Glyph name="crate" size={15} className="mr-1 -mt-0.5 text-gold-300" />Supply</div>
           <p className="text-[13.5px] leading-snug text-ink-300">
             Armies must stay within reach of a friendly castle, outpost or camp. Out of supply, they lose men and morale every second. Supply Depots extend your reach.
           </p>
@@ -353,17 +370,17 @@ function Realm() {
         <SectionTitle>Seasons & weather</SectionTitle>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           {[
-            ['🌱', 'Spring', 'Recruits come 25% faster.'],
-            ['☀', 'Summer', 'Long days for campaigning.'],
-            ['🍂', 'Autumn', 'Harvest: +15% income.'],
-            ['🌨', 'Winter', 'Slow marches, upkeep ×1.5, short supply lines.'],
-            ['🌧', 'Rain', 'Archers −35%, mud slows marches and sieges.'],
-            ['⛈', 'Storm', 'Archers nearly useless, everything slower.'],
-            ['❄', 'Snow', 'Archers −20%, slower marches.'],
-            ['🌤', 'Clear', 'No penalties.'],
+            ['sprout', 'Spring', 'Recruits come 25% faster.'],
+            ['sun', 'Summer', 'Long days for campaigning.'],
+            ['leaf', 'Autumn', 'Harvest: +15% income.'],
+            ['snowflake', 'Winter', 'Slow marches, upkeep ×1.5, short supply lines.'],
+            ['rain', 'Rain', 'Archers −35%, mud slows marches and sieges.'],
+            ['storm', 'Storm', 'Archers nearly useless, everything slower.'],
+            ['snow', 'Snow', 'Archers −20%, slower marches.'],
+            ['clear', 'Clear', 'No penalties.'],
           ].map(([icon, name, text]) => (
             <Card key={name}>
-              <div className="text-[26px] leading-none">{icon}</div>
+              <Glyph name={icon as GlyphName} size={26} className="text-gold-300" />
               <div className="mt-1 font-bold text-gold-100">{name}</div>
               <div className="text-[12.5px] leading-snug text-ink-400">{text}</div>
             </Card>
@@ -372,11 +389,11 @@ function Realm() {
       </section>
       <section className="grid gap-3 sm:grid-cols-2">
         <Card>
-          <div className="mb-1 font-display text-[15px] font-bold text-gold-100">🤝 Diplomacy</div>
+          <div className="mb-1 font-display text-[15px] font-bold text-gold-100"><Glyph name="handshake" size={15} className="mr-1 -mt-0.5 text-gold-300" />Diplomacy</div>
           <p className="text-[13.5px] leading-snug text-ink-300">The Intrigue tab gathers it all: buy a truce with an enemy lord, or in Alliance War bribe one to change sides (lords under pressure are easier to turn); buy free towns; send envoys to villages within reach; and watch your infamy, which abbeys slowly pray away.</p>
         </Card>
         <Card>
-          <div className="mb-1 font-display text-[15px] font-bold text-gold-100">♛ Realm rank</div>
+          <div className="mb-1 font-display text-[15px] font-bold text-gold-100"><Glyph name="crown" size={15} className="mr-1 -mt-0.5 text-gold-300" />Realm rank</div>
           <p className="text-[13.5px] leading-snug text-ink-300">Every realm has a rank, shown under its castles and outposts. It rises with total military strength (garrisons and armies) and falls after heavy losses. Each rank makes all of a realm's castles grander. The top rank depends on the map size.</p>
         </Card>
         <Card>

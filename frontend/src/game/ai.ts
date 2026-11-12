@@ -1,5 +1,5 @@
-import { ROYAL, type GameEngine } from './engine'
-import { DIFFICULTY, PLAYER } from './engine'
+import { ROYAL, SPY, NEUTRAL, type GameEngine } from './engine'
+import { PLAYER, foeDifficulty } from './engine'
 import { OUTPOST_KINDS, type OutpostKind } from './outposts'
 import { mulberry32 } from './noise'
 import { floorTroops, power, scaleTroops, total, totalInt } from './troops'
@@ -69,7 +69,7 @@ export class FactionAI {
 
   private myArmies(): Army[] {
     // (On autopilot the player's Royal Guard stays where the player left it.)
-    return this.s.armies.filter((a) => a.faction === this.id && !a.vassalOf && !a.aidFor && !a.royal)
+    return this.s.armies.filter((a) => a.faction === this.id && !a.vassalOf && !a.aidFor && !a.royal && !this.engine.isSpyBand(a))
   }
   private personality() {
     return this.f.personality ?? 'balanced'
@@ -108,6 +108,8 @@ export class FactionAI {
     this.strikeFromBehind()
     this.interceptInvaders()
     this.greatHost()
+    this.queenRides()
+    this.spyRaids()
     this.raid()
     this.retake()
   }
@@ -127,7 +129,8 @@ export class FactionAI {
   }
 
   private captain(): { commanderKey: string | null; captainName: string } {
-    const free = this.engine.freeCommanders(this.id).filter((c) => c.key !== 'malakor')
+    // (Malakor never takes the field; the Grey Abbess leads only her own spies.)
+    const free = this.engine.freeCommanders(this.id).filter((c) => c.key !== 'malakor' && !SPY.keys.includes(c.key))
     if (free.length > 0 && this.rnd() < 0.7) return { commanderKey: free[Math.floor(this.rnd() * free.length)].key, captainName: '' }
     return { commanderKey: null, captainName: CAPTAINS[Math.floor(this.rnd() * CAPTAINS.length)] }
   }
@@ -171,7 +174,7 @@ export class FactionAI {
       if (host && (a.id === host.hostId || host.detachmentIds.includes(a.id))) continue
       if (this.engine.musterOf(a.id)) continue
       // Raiders standing at an enemy outpost stay until it burns.
-      if (this.s.outposts.some((o) => this.engine.isHostile(o.faction, this.id) && Math.hypot(o.x - a.x, o.z - a.z) < 80)) continue
+      if (this.s.outposts.some((o) => this.engine.isHostile(o.faction, this.id) && this.engine.outpostKnown(this.team, o) && Math.hypot(o.x - a.x, o.z - a.z) < 80)) continue
       // Armies holding one of our outposts are its garrison.
       if (this.s.outposts.some((o) => o.faction === this.id && Math.hypot(o.x - a.x, o.z - a.z) < 90)) continue
       if (this.f.ai.buildPlan?.armyId === a.id) continue
@@ -806,7 +809,7 @@ export class FactionAI {
     const ai = this.f.ai
     if (this.s.time < ai.nextRaidAt) return
     const pmult = this.personality() === 'aggressive' ? 0.75 : this.personality() === 'defensive' ? 1.5 : 1
-    const base = this.hostileToPlayer ? DIFFICULTY[this.s.difficulty].raidEvery : 110
+    const base = this.hostileToPlayer ? foeDifficulty(this.s.rules.mode, this.s.difficulty).raidEvery : 110
     ai.nextRaidAt = this.s.time + base * pmult * (0.75 + this.rnd() * 0.5)
     const sources = this.myCastles()
       .filter((c) => !c.battleId && total(c.garrison) > 350)
@@ -815,7 +818,7 @@ export class FactionAI {
     if (!src) return
     // Burn hostile outposts that threaten our lands.
     const camp = this.s.outposts
-      .filter((o) => this.engine.isHostile(o.faction, this.id) && Math.hypot(o.x - src.x, o.z - src.z) < this.d(1100))
+      .filter((o) => this.engine.isHostile(o.faction, this.id) && this.engine.outpostKnown(this.team, o) && Math.hypot(o.x - src.x, o.z - src.z) < this.d(1100))
       .sort((a, b) => Math.hypot(a.x - src.x, a.z - src.z) - Math.hypot(b.x - src.x, b.z - src.z))[0]
     if (camp && this.rnd() < 0.45) {
       const army = this.send(src, 0.35, 'Torchbearers', { type: 'move', x: camp.x, z: camp.z }, { keep: 200 })
@@ -902,7 +905,7 @@ export class FactionAI {
     const h = this.f.host
     if (!h) return
     const t = this.s.time
-    const diff = DIFFICULTY[this.s.difficulty]
+    const diff = foeDifficulty(this.s.rules.mode, this.s.difficulty)
     const every = this.hostileToPlayer ? diff.hostEvery : 300
     const fraction = this.hostileToPlayer ? diff.hostFraction : 0.5
     const capital = e.castle(this.f.capitalId) ?? this.myCastles()[0]
@@ -999,5 +1002,107 @@ export class FactionAI {
         h.nextAt = t + every
       }
     }
+  }
+
+  /**
+   * The Usurper Queen holds court in her High Seat, but rides out at the rear of
+   * some of the Great Hosts (her presence steels them), and falls back to the
+   * nearest castle when enemies close in on her guard.
+   */
+  private queenRides() {
+    const e = this.engine
+    const q = e.foeRoyal()
+    if (!q || q.faction !== this.id || q.battleId || q.status === 'retreating') return
+    const seat = e.castle(this.f.capitalId) ?? this.myCastles().find((c) => !c.village)
+    const inField = !e.inKeep(q)
+    // Danger: enemy strength she can see closing on her guard.
+    let threat = 0
+    for (const a of this.s.armies) {
+      if (!e.isHostile(a.faction, this.id) || !this.sees(a)) continue
+      if (Math.hypot(a.x - q.x, a.z - q.z) < this.d(650)) threat += this.foeArmy(a)
+    }
+    if (inField && threat > e.armyPower(q) * 1.5) {
+      const refuge = this.nearestOwn(q.x, q.z, (c) => !c.village && !c.battleId)
+      if (refuge && !(q.order.type === 'station' && q.order.castleId === refuge.id)) e.orderArmy(q.id, { type: 'station', castleId: refuge.id })
+      return
+    }
+    const h = this.f.host
+    const host = h && h.phase === 'marching' ? e.army(h.hostId) : undefined
+    // She rides with every other host, from the second one on.
+    if (host && h && h.wave % 2 === 1) {
+      // Keep to the rear of the host, inside her ring of presence.
+      const tx = host.x + Math.cos(host.heading + Math.PI) * this.d(180)
+      const tz = host.z + Math.sin(host.heading + Math.PI) * this.d(180)
+      const [x, z] = e.world.nearestPassable(tx, tz)
+      if (q.order.type !== 'move' || Math.hypot(q.order.x - x, q.order.z - z) > 80) e.orderArmy(q.id, { type: 'move', x, z })
+      return
+    }
+    // Otherwise back to court.
+    if (inField && seat && seat.faction === this.id && !(q.order.type === 'station' && q.order.castleId === seat.id)) e.orderArmy(q.id, { type: 'station', castleId: seat.id })
+  }
+
+  /**
+   * The Grey Abbess: a band of light troops in pilgrims' grey slips behind the enemy's lines
+   * by the woods and valleys, to fall on their wagon trains or seize an empty outpost, then
+   * goes home. (Her band hides by the same rules as ours; see GameEngine.updateVeils.)
+   */
+  private spyNextAt = 0
+  private spyRaids() {
+    const e = this.engine
+    const st = this.s.commanders[SPY.foeKey]
+    if (!st || st.owner !== this.id) return
+    const band = this.s.armies.find((a) => a.faction === this.id && a.commanderKey === SPY.foeKey)
+    if (band) {
+      if (band.battleId || band.status === 'retreating') return
+      // Done, or the prey is gone: home, and back into the garrison.
+      const o = band.order
+      const preyGone =
+        (o.type === 'raidConvoy' && !e.convoy(o.convoyId)) ||
+        (o.type === 'move' && (band.status === 'idle' || !band.path.length) && Math.hypot(band.x - o.x, band.z - o.z) < 60) ||
+        o.type === 'hold'
+      // Found out, she presses on unless a stronger force is closing on her.
+      let danger = 0
+      if (!band.veil)
+        for (const a of this.s.armies) if (e.isHostile(a.faction, this.id) && this.sees(a) && Math.hypot(a.x - band.x, a.z - band.z) < this.d(500)) danger += this.foeArmy(a)
+      if (preyGone || danger > e.armyPower(band) * 0.8) {
+        const home = this.nearestOwn(band.x, band.z, (c) => !c.village && !c.battleId)
+        if (home && !(o.type === 'reinforce' && o.castleId === home.id)) e.orderArmy(band.id, { type: 'reinforce', castleId: home.id })
+      }
+      return
+    }
+    if (this.s.time < this.spyNextAt || st.armyId || st.woundedUntil > this.s.time) return
+    const diff = this.s.difficulty
+    this.spyNextAt = this.s.time + (diff === 'easy' ? 600 : diff === 'normal' ? 360 : diff === 'hard' ? 260 : 200) * (0.8 + this.rnd() * 0.4)
+    if (this.s.time < 240) return
+    // Prey: an enemy wagon train, or an outpost left empty, well away from their walls.
+    const foe = (f: Faction) => e.isHostile(f, this.id) && !e.atPeace(this.id, f) && f !== NEUTRAL
+    let target: { x: number; z: number; order: Army['order'] } | null = null
+    for (const w of this.s.convoys ?? []) {
+      if (!foe(w.faction)) continue
+      target = { x: w.x, z: w.z, order: { type: 'raidConvoy', convoyId: w.id } }
+      if ((w.gold ?? 0) > 0) break
+    }
+    if (!target) {
+      const empty = this.s.outposts.filter((p) => foe(p.faction) && p.progress >= 1 && !this.s.armies.some((a) => a.faction === p.faction && Math.hypot(a.x - p.x, a.z - p.z) < 120))
+      const p = empty[Math.floor(this.rnd() * empty.length)]
+      if (p) target = { x: p.x, z: p.z, order: { type: 'move', x: p.x, z: p.z } }
+    }
+    if (!target) return
+    const from = this.nearestOwn(target.x, target.z, (c) => !c.village && !c.battleId && total(c.garrison) > 400)
+    if (!from || Math.hypot(from.x - target.x, from.z - target.z) > this.d(3200)) return
+    const cap = SPY.cap[Math.max(0, Math.min(SPY.cap.length - 1, st.level - 1))]
+    const light: Troops = {}
+    let n = 0
+    for (const k of SPY.units) {
+      if (k === 'engineers') continue
+      const have = Math.floor((from.garrison[k] ?? 0) * 0.35)
+      const take = Math.min(have, Math.max(0, cap * 0.8 - n))
+      if (take >= 1) {
+        light[k] = take
+        n += take
+      }
+    }
+    if (n < 120) return
+    e.formArmy(from.id, this.id, light, { commanderKey: SPY.foeKey, name: 'Grey Pilgrims', retreatAt: 0.5, order: target.order })
   }
 }

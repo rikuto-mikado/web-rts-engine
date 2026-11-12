@@ -21,3 +21,20 @@ export function saveOverhead(on: boolean) {
     /* storage unavailable */
   }
 }
+
+/** Night mode (a darker screen for playing late), remembered per browser. */
+const NIGHT_KEY = 'warbox.night'
+export function loadNight(): boolean {
+  try {
+    return localStorage.getItem(NIGHT_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+export function saveNight(on: boolean) {
+  try {
+    localStorage.setItem(NIGHT_KEY, on ? '1' : '0')
+  } catch {
+    /* storage unavailable */
+  }
+}

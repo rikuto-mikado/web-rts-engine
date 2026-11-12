@@ -15,7 +15,37 @@ export const visionUniforms = {
   uPaint: { value: null as THREE.Texture | null },
 }
 
-export function applyVision<T extends THREE.Material>(mat: T, extraFragment = '', snowy = false, painted = false): T {
+/**
+ * Surface grain for buildings: soft world-space noise at a few scales, so a
+ * plastered wall, a stone course or a thatched roof shows the hand of its
+ * makers instead of a flat fill. Applied to the base colour, before lighting.
+ */
+const GRAIN_CHUNK = `
+  {
+    vec3 gp = vVisWorld;
+    float g1 = vgNoise(gp * 0.45);
+    float g2 = vgNoise(gp * vec3(2.6, 0.7, 2.6));
+    float g3 = vgNoise(gp * 6.5);
+    float grain = 0.9 + 0.1 * g1 + 0.07 * g2 + 0.05 * g3;
+    diffuseColor.rgb *= grain;
+    // Weathering: a faint cool-warm drift over larger patches.
+    diffuseColor.rgb *= mix(vec3(1.03, 1.0, 0.95), vec3(0.97, 1.0, 1.04), vgNoise(gp * 0.08));
+  }
+`
+const NOISE_FN = `
+float vgHash(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+float vgNoise(vec3 p) {
+  vec3 i = floor(p);
+  vec3 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(mix(vgHash(i), vgHash(i + vec3(1, 0, 0)), f.x), mix(vgHash(i + vec3(0, 1, 0)), vgHash(i + vec3(1, 1, 0)), f.x), f.y),
+    mix(mix(vgHash(i + vec3(0, 0, 1)), vgHash(i + vec3(1, 0, 1)), f.x), mix(vgHash(i + vec3(0, 1, 1)), vgHash(i + vec3(1, 1, 1)), f.x), f.y),
+    f.z);
+}
+`
+
+export function applyVision<T extends THREE.Material>(mat: T, extraFragment = '', snowy = false, painted = false, grain = false): T {
   if (snowy) {
     extraFragment += `
       {
@@ -46,9 +76,9 @@ export function applyVision<T extends THREE.Material>(mat: T, extraFragment = ''
     shader.fragmentShader = shader.fragmentShader
       .replace(
         '#include <common>',
-        '#include <common>\nvarying vec2 vVisUv;\nvarying vec3 vVisWorld;\nuniform sampler2D uVision;\nuniform float uTime;\nuniform float uSnow;\nuniform sampler2D uPaint;',
+        '#include <common>\nvarying vec2 vVisUv;\nvarying vec3 vVisWorld;\nuniform sampler2D uVision;\nuniform float uTime;\nuniform float uSnow;\nuniform sampler2D uPaint;' + (grain ? NOISE_FN : ''),
       )
-      .replace('#include <color_fragment>', painted ? `#include <color_fragment>\n${PAINT_CHUNK}` : '#include <color_fragment>')
+      .replace('#include <color_fragment>', `#include <color_fragment>\n${painted ? PAINT_CHUNK : ''}\n${grain ? GRAIN_CHUNK : ''}`)
       .replace(
         '#include <dithering_fragment>',
         `#include <dithering_fragment>
@@ -66,6 +96,6 @@ export function applyVision<T extends THREE.Material>(mat: T, extraFragment = ''
         gl_FragColor.rgb = mix(hidden, gl_FragColor.rgb, smoothstep(0.1, 0.75, vis));`,
       )
   }
-  mat.customProgramCacheKey = () => `vision:${extraFragment.length}:${snowy}:${painted}`
+  mat.customProgramCacheKey = () => `vision:${extraFragment.length}:${snowy}:${painted}:${grain}`
   return mat
 }

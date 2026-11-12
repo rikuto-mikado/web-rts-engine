@@ -1,6 +1,14 @@
-import { CircleArrowUp, Castle as CastleIcon, Coins, Combine, Flag, Hammer, Handshake, House, Megaphone, Package, Scissors, Shield, Swords, Tent, Undo2, Users, X } from 'lucide-react'
-import { useState, type ReactNode } from 'react'
+import { ChevronsLeft, ChevronsRight, CircleArrowUp, Castle as CastleIcon, Coins, Combine, Flag, Hammer, Handshake, House, Megaphone, Package, Scissors, Shield, Swords, Tent, Undo2, Users, X } from 'lucide-react'
+import { Glyph } from './Glyph'
+import { STANCES } from '../game/convoyai'
+import type { GlyphName } from '../render/glyphs'
+import { useCallback, useRef, useState, type ReactNode } from 'react'
 import {
+  BLADES,
+  SABOTAGE,
+  SABOTAGE_KINDS,
+  TRAIN,
+  SPY,
   OUTPOST,
   SCOUT,
   WORKS,
@@ -18,10 +26,11 @@ import { COLUMN, FORMATIONS, FORMATION_ORDER } from '../game/formations'
 import { OUTPOST_KINDS } from '../game/outposts'
 import { RESOURCE, RESOURCE_STOCK } from '../game/countryside'
 import { TRAIT_MAP } from '../game/traits'
-import { fmt, total, totalInt } from '../game/troops'
-import type { Army, Battle, Castle, Outpost, WorkJob } from '../game/types'
+import { fmt, roman, total, totalInt } from '../game/troops'
+import type { Army, Battle, Castle, Convoy, Outpost, StanceKind, WorkJob } from '../game/types'
 import type { Selection } from '../render/GameRenderer'
 import { compactPanelWidth, useViewport } from './viewport'
+import { panelFold, usePanelFolded } from './panelState'
 import { OutpostArt, WorkArt } from './art'
 import { PixelPortrait } from './PixelPortrait'
 import { Bar, FormationIcon, STATUS_TEXT, SectionTitle, Slider, StackBar, UnitGlyph, moraleColor, useEngine } from './common'
@@ -90,6 +99,7 @@ export function SelectionPanel({ engine, selection, onSelect, onFormArmy, toast 
     return (
       <Shell onClose={close}>
         <VassalPanel engine={engine} castle={c} onSelect={onSelect} />
+        <SanctuaryBox engine={engine} castle={c} toast={toast} />
       </Shell>
     )
   }
@@ -113,16 +123,35 @@ export function SelectionPanel({ engine, selection, onSelect, onFormArmy, toast 
 
 function Shell({ children, onClose }: { children: ReactNode; onClose: () => void }) {
   const vp = useViewport()
+  const folded = usePanelFolded()
   if (vp.compact) {
+    // Folded away (e.g. while steering with the thumb stick): just a tab at the edge to bring it back.
+    if (folded)
+      return (
+        <button
+          className="panel pointer-events-auto absolute top-1/2 right-0 z-30 flex -translate-y-1/2 flex-col items-center gap-1 rounded-l-md px-1.5 py-3 text-gold-300"
+          style={{ paddingRight: 'max(6px, env(safe-area-inset-right))' }}
+          onClick={() => panelFold.set(false)}
+          title="Show the panel"
+        >
+          <ChevronsLeft size={18} />
+          <span className="text-[11px] font-bold tracking-wider [writing-mode:vertical-rl]">DETAILS</span>
+        </button>
+      )
     // Landscape phones: a panel down the right side, below the top bar; the map stays in view on the left.
     return (
       <div
         className="panel animate-slide-in safe-bottom pointer-events-auto absolute top-[64px] right-0 bottom-0 z-30 flex flex-col overflow-hidden rounded-tl-md"
         style={{ width: compactPanelWidth(vp.w), paddingRight: 'env(safe-area-inset-right)' }}
       >
-        <button className="absolute top-2 right-2 z-10 rounded-sm bg-black/30 p-1.5 text-ink-300" style={{ marginRight: 'env(safe-area-inset-right)' }} onClick={onClose} title="Close">
-          <X size={18} />
-        </button>
+        <div className="absolute top-2 right-2 z-10 flex gap-1" style={{ marginRight: 'env(safe-area-inset-right)' }}>
+          <button className="rounded-sm bg-black/30 p-1.5 text-ink-300" onClick={() => panelFold.set(true)} title="Fold away">
+            <ChevronsRight size={18} />
+          </button>
+          <button className="rounded-sm bg-black/30 p-1.5 text-ink-300" onClick={onClose} title="Close">
+            <X size={18} />
+          </button>
+        </div>
         <div className="scroll-thin flex-1 overflow-y-auto p-3 pt-3">{children}</div>
       </div>
     )
@@ -338,6 +367,10 @@ function PlayerArmy({ engine, army, toast, onSelect }: { engine: GameEngine; arm
         return `Quartering in ${engine.outpost(o.outpostId)?.name ?? 'a depot'}`
       case 'raidConvoy':
         return 'Riding down enemy wagons'
+      case 'escort': {
+        const w = engine.convoy(o.convoyId)
+        return w?.race ? `Guarding gold wagon ${roman(w.race)}` : 'Guarding the wagons'
+      }
       case 'work':
         return `${WORKS[o.job].name} (${Math.round(o.progress * 100)}%)`
       case 'gather': {
@@ -358,7 +391,7 @@ function PlayerArmy({ engine, army, toast, onSelect }: { engine: GameEngine; arm
       <ArmyHeader engine={engine} army={army} />
       {army.royal && (
         <div className="mb-3 rounded-sm border border-gold-400/40 bg-gold-500/10 px-2.5 py-2 text-[12.5px] leading-snug">
-          <div className="font-bold text-gold-200">♛ The Royal Guard</div>
+          <div className="font-bold text-gold-200"><Glyph name="crown" size={13} className="mr-1 -mt-0.5 inline text-gold-300" />The Royal Guard</div>
           <p className="mt-0.5 text-ink-300">
             Household knights from the homeland: never reinforced, no upkeep. In the field the King's presence steadies every friendly army within 350m (+15% damage, -10% losses, morale holds). Allies answer his summons more readily; envoys near him do better. If the Guard is destroyed, the war is lost. In a castle it waits in the keep and rides out by the far gate if the castle falls.
           </p>
@@ -372,12 +405,15 @@ function PlayerArmy({ engine, army, toast, onSelect }: { engine: GameEngine; arm
       </div>
       {!army.supplied && (
         <div className="mt-2 rounded-sm border border-ember-400/40 bg-ember-700/25 px-3 py-2 text-[13px] text-ember-300">
-          ⚠ Out of supply: losing men and morale. Return within reach of a castle, or build a Supply Depot.
+          <Glyph name="warning" size={13} className="mr-1 -mt-0.5 inline " />Out of supply: losing men and morale. Return within reach of a castle, or build a Supply Depot.
         </div>
       )}
-      {engine.isHidden(army) && (
+      <SpyBox engine={engine} army={army} />
+      <AsheBox engine={engine} army={army} toast={toast} />
+      <StanceBox engine={engine} army={army} />
+      {engine.isHidden(army) && !engine.isSpyBand(army) && (
         <div className="mt-2 rounded-sm border border-emerald-400/30 bg-emerald-700/20 px-3 py-2 text-[13px] text-emerald-300">
-          🌲 Hidden in the woods. Enemies who blunder into this army will be ambushed.
+          <Glyph name="tree" size={13} className="mr-1 -mt-0.5 inline " />Hidden in the woods. Enemies who blunder into this army will be ambushed.
         </div>
       )}
 
@@ -414,7 +450,7 @@ function PlayerArmy({ engine, army, toast, onSelect }: { engine: GameEngine; arm
           onChange={(e) => e.target.value && engine.orderArmy(army.id, { type: 'attack', castleId: e.target.value })}
           className="mb-1.5 w-full rounded-lg border border-white/10 bg-ink-850 px-3 py-2 text-xs outline-none focus:border-gold-400"
         >
-          <option value="">⚔ Attack a castle…</option>
+          <option value="">Attack a castle…</option>
           {targets.map((c) => (
             <option key={c.id} value={c.id}>
               {c.name} · {engine.factionName(c.faction)} · {Math.round(Math.hypot(c.x - army.x, c.z - army.z))}m
@@ -563,6 +599,7 @@ function OtherArmy({ engine, army, onSelect }: { engine: GameEngine; army: Army;
               >
                 <span>{a.name}</span>
                 <span className="text-ink-400 tabular-nums">
+                  {a.blades && (engine.bladesReady(a) ? <span className="mr-1 text-gold-200">strike {Math.round(engine.strikeChance(a, army) * 100)}% ·</span> : <span className="mr-1 text-ink-500">regrouping ·</span>)}
                   {fmt(totalInt(a.troops))} · {Math.round(Math.hypot(a.x - army.x, a.z - army.z))}m
                 </span>
               </button>
@@ -586,7 +623,7 @@ function CastleHeader({ engine, castle }: { engine: GameEngine; castle: Castle }
         </span>
         <div className="min-w-0">
           <h3 className="panel-title truncate">
-            {castle.capital && <span className="mr-1 text-gold-300">♛</span>}
+            {castle.capital && <Glyph name="crown" size={14} className="mr-1 -mt-0.5 text-gold-300" />}
             {castle.name}
           </h3>
           <p className="text-xs text-ink-300">
@@ -765,7 +802,8 @@ function OtherCastle({ engine, castle, onFormArmy, toast }: { engine: GameEngine
           <KnownCount k={k} />
         </span>
       </div>
-      {k.troops ? <Composition engine={engine} troops={k.troops} /> : <p className="text-[12.5px] text-ink-400">Only a rumour. Send scouts (a party of 80 or fewer) to learn its true strength and make-up.</p>}
+      {k.troops ? <Composition engine={engine} troops={k.troops} /> : <p className="text-[12.5px] text-ink-400">Only a rumour. Send scouts to learn its true strength and make-up.</p>}
+      {hostile && castle.faction !== 'neutral' && <SendScouts engine={engine} targetId={castle.id} x={castle.x} z={castle.z} toast={toast} />}
       {hostile && (
         <>
           <div className="mt-2 flex items-center gap-1.5 text-[13px] text-ink-400">
@@ -846,7 +884,7 @@ function EngineersPanel({ engine, army, toast }: { engine: GameEngine; army: Arm
   ] as const
   return (
     <div className="mt-1.5">
-      {carried.length > 0 && <p className="mb-1 text-[12px] text-gold-200">⚙ Pushing along: {carried.join(', ')}</p>}
+      {carried.length > 0 && <p className="mb-1 text-[12px] text-gold-200"><Glyph name="gear" size={13} className="mr-1 -mt-0.5 inline " />Pushing along: {carried.join(', ')}</p>}
       {(working || building) && (
         <div className="well mb-1.5 flex items-center gap-2 rounded-sm px-2.5 py-1.5 text-[13px]">
           <Hammer size={14} className="text-gold-300" />
@@ -869,9 +907,10 @@ function EngineersPanel({ engine, army, toast }: { engine: GameEngine; army: Arm
 }
 
 function WorksList({ engine, army, toast, jobs, onDone }: { engine: GameEngine; army: Army; toast: (m: string) => void; jobs: WorkJob[]; onDone: () => void }) {
+  const reveal = useRevealOnce()
   const opts = engine.workOptions(army.id).filter((o) => jobs.includes(o.job))
   return (
-    <div className="mt-1.5 grid grid-cols-1 gap-1.5" ref={(el) => el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })}>
+    <div className="mt-1.5 grid grid-cols-1 gap-1.5" ref={reveal}>
       {opts.map((o) => {
         const def = WORKS[o.job]
         return (
@@ -902,6 +941,7 @@ function WorksList({ engine, army, toast, jobs, onDone }: { engine: GameEngine; 
 }
 
 function BuildOutpostButton({ engine, army, toast, onDone }: { engine: GameEngine; army: Army; toast: (m: string) => void; onDone: () => void }) {
+  const reveal = useRevealOnce()
   const setOpen = (v: boolean) => {
     if (!v) onDone()
   }
@@ -911,7 +951,7 @@ function BuildOutpostButton({ engine, army, toast, onDone }: { engine: GameEngin
   return (
     <div className="mt-1.5">
       {open && (
-        <div className="mt-1.5 grid grid-cols-1 gap-1.5" ref={(el) => el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })}>
+        <div className="mt-1.5 grid grid-cols-1 gap-1.5" ref={reveal}>
           {opts.map((o) => {
             const def = OUTPOST_KINDS[o.kind]
             return (
@@ -944,9 +984,78 @@ function BuildOutpostButton({ engine, army, toast, onDone }: { engine: GameEngin
 }
 
 /** A supply wagon train: where it comes from, where it goes, and a way to cut it off. */
+/** Convoy Raid: one wagon of the gold train. Ours: send guards to walk beside it. Theirs: send raiders after it. */
+function GoldWagonPanel({ engine, w, onSelect, toast }: { engine: GameEngine; w: Convoy; onSelect: Props['onSelect']; toast: (m: string) => void }) {
+  const mine = w.faction === PLAYER
+  const to = engine.castle(w.fromCastleId)
+  const pct = Math.round(engine.wagonProgress(w) * 100)
+  const guards = engine.state.armies.filter((a) => a.order.type === 'escort' && a.order.convoyId === w.id)
+  const free = engine.state.armies
+    .filter((a) => a.faction === PLAYER && a.status !== 'retreating' && !a.battleId && !(a.order.type === 'escort' && a.order.convoyId === w.id))
+    .map((a) => ({ a, d: Math.hypot(a.x - w.x, a.z - w.z) }))
+    .sort((x, y) => x.d - y.d)
+    .slice(0, 5)
+  return (
+    <div>
+      <div className="flex items-center gap-3 pr-6">
+        <span className="grid size-12 place-items-center rounded-sm text-gold-200" style={{ background: `linear-gradient(160deg, ${engine.factionColor(w.faction)}, #111)` }}>
+          <Glyph name="wagon" size={26} />
+        </span>
+        <div className="min-w-0">
+          <h3 className="panel-title truncate">Gold wagon {roman(w.race ?? 1)}</h3>
+          <p className={`text-[13px] ${mine ? 'text-royal-300' : 'text-ember-300'}`}>{mine ? 'Our gold train' : engine.factionName(w.faction)}</p>
+        </div>
+      </div>
+      <div className="mt-3">
+        <div className="flex justify-between text-[12px] text-ink-400">
+          <span>To {to?.name ?? 'the castle'}</span>
+          <span className="tabular-nums">{pct}%</span>
+        </div>
+        <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-black/40">
+          <i className="block h-full bg-gold-300" style={{ width: `${pct}%` }} />
+        </div>
+        {w.detour && <p className="mt-1 text-[12px] text-ember-300">The bridge is down: taking the ford.</p>}
+        {!!w.seize && (
+          <p className="mt-1 text-[12.5px] font-semibold text-ember-300">
+            {mine ? 'Being seized' : 'Unhitching'}: {Math.round((w.seize / TRAIN.seizeSeconds) * 100)}%
+          </p>
+        )}
+        {engine.state.train?.halted && <p className="mt-1 text-[12px] text-gold-200">The train is halted.</p>}
+      </div>
+      <p className="mt-3 text-[13px] leading-snug text-ink-400">
+        {mine
+          ? `Raiders who reach it need ${TRAIN.seizeSeconds} seconds to cut the team loose, and cannot while a guard stands beside it. A guard locked in a fight guards nothing.`
+          : `Stand at it for ${TRAIN.seizeSeconds} seconds to make off with it. While a free guard stands beside it, it cannot be taken: pin the guards in a fight, or beat them.`}
+      </p>
+      {mine && guards.length > 0 && <p className="mt-1 text-[12.5px] text-emerald-300">Guarded by {guards.map((g) => g.name).join(', ')}.</p>}
+      <section className="mt-3">
+        <SectionTitle>{mine ? 'Send a guard' : 'Seize it'}</SectionTitle>
+        {free.length === 0 && <p className="text-[13px] text-ink-500">No free army to send.</p>}
+        <div className="space-y-1">
+          {free.map(({ a, d }) => (
+            <button
+              key={a.id}
+              className="well flex w-full items-center justify-between rounded-sm px-2.5 py-1.5 text-[13px] hover:brightness-125"
+              onClick={() => {
+                engine.orderArmy(a.id, mine ? { type: 'escort', convoyId: w.id } : { type: 'raidConvoy', convoyId: w.id })
+                toast(mine ? `${a.name} falls in beside wagon ${roman(w.race ?? 1)}.` : `${a.name} rides to seize wagon ${roman(w.race ?? 1)}.`)
+                onSelect({ kind: 'army', id: a.id })
+              }}
+            >
+              <span className="truncate font-medium">{a.name}</span>
+              <span className="text-ink-400 tabular-nums">{Math.round(d)}m</span>
+            </button>
+          ))}
+        </div>
+      </section>
+    </div>
+  )
+}
+
 function ConvoyPanel({ engine, convoyId, onSelect, toast }: { engine: GameEngine; convoyId: string; onSelect: Props['onSelect']; toast: (m: string) => void }) {
   const w = engine.convoy(convoyId)
   if (!w) return null
+  if (w.race) return <GoldWagonPanel engine={engine} w={w} onSelect={onSelect} toast={toast} />
   const rel = engine.relation(w.faction)
   const to = engine.outpost(w.outpostId)
   const from = engine.castle(w.fromCastleId)
@@ -1056,20 +1165,20 @@ function OutpostPanel({
         <SectionTitle>Effects</SectionTitle>
         <ul className={`space-y-1 text-[13px] ${done ? 'text-ink-200' : 'text-ink-500'}`}>
           <li className="text-ink-300 italic">{kind.description}</li>
-          <li>🛡 Defenders inside take {Math.round((1 - 1 / kind.defense) * 100)}% fewer losses</li>
-          {kind.braces && <li>🪵 Its walls stop enemy charges</li>}
+          <li><Glyph name="shield" size={13} className="mr-1 -mt-0.5 inline text-gold-300" />Defenders inside take {Math.round((1 - 1 / kind.defense) * 100)}% fewer losses</li>
+          {kind.braces && <li><Glyph name="stakes" size={13} className="mr-1 -mt-0.5 inline text-gold-300" />Its walls stop enemy charges</li>}
           {kind.zoc > 0 && (
             <li>
-              🐌 Enemies within {kind.zoc}m march {Math.round((1 - kind.zocSlow) * 100)}% slower
+              <Glyph name="slow" size={13} className="mr-1 -mt-0.5 inline text-gold-300" />Enemies within {kind.zoc}m march {Math.round((1 - kind.zocSlow) * 100)}% slower
             </li>
           )}
-          {kind.bombard > 0 && <li>🪨 Manned, bombards enemies and walls within {kind.bombard}m (more from high ground)</li>}
-          {kind.archers > 1 && <li>🏹 Archers inside shoot {Math.round((kind.archers - 1) * 100)}% harder</li>}
-          {kind.hides && <li>🫥 Troops inside stay hidden; riding out, 20 s of 1.25x speed and a 1.6x first blow</li>}
-          {kind.refund > 0 && <li>🛞 Packs up again: {Math.round(kind.refund * 100)}% of the cost back</li>}
-          <li>📦 Supplies armies within {Math.round(engine.outpostSupplyRange(outpost))}m</li>
-          <li>❤ Armies here recover morale as in a castle</li>
-          <li className="text-ember-300/90">⚠ Left empty, an enemy standing on it takes it in {OUTPOST.razeSeconds}s</li>
+          {kind.bombard > 0 && <li><Glyph name="boulder" size={13} className="mr-1 -mt-0.5 inline text-gold-300" />Manned, bombards enemies and walls within {kind.bombard}m (more from high ground)</li>}
+          {kind.archers > 1 && <li><Glyph name="bow" size={13} className="mr-1 -mt-0.5 inline text-gold-300" />Archers inside shoot {Math.round((kind.archers - 1) * 100)}% harder</li>}
+          {kind.hides && <li><Glyph name="eyeClosed" size={13} className="mr-1 -mt-0.5 inline text-gold-300" />Troops inside stay hidden; riding out, 20 s of 1.25x speed and a 1.6x first blow</li>}
+          {kind.refund > 0 && <li><Glyph name="wheel" size={13} className="mr-1 -mt-0.5 inline text-gold-300" />Packs up again: {Math.round(kind.refund * 100)}% of the cost back</li>}
+          <li><Glyph name="crate" size={13} className="mr-1 -mt-0.5 inline text-gold-300" />Supplies armies within {Math.round(engine.outpostSupplyRange(outpost))}m</li>
+          <li><Glyph name="heart" size={13} className="mr-1 -mt-0.5 inline text-gold-300" />Armies here recover morale as in a castle</li>
+          <li className="text-ember-300/90"><Glyph name="warning" size={13} className="mr-1 -mt-0.5 inline " />Left empty, an enemy standing on it takes it in {OUTPOST.razeSeconds}s</li>
         </ul>
         {!done && <p className="mt-1 text-[12px] text-ink-400">Effects begin once construction is finished.</p>}
       </section>
@@ -1201,6 +1310,275 @@ function KnownCount({ k }: { k: ReturnType<GameEngine['knowledge']> }) {
   return <span title="A rumour, off by up to a third">~{fmt(k.total)}?</span>
 }
 
+/**
+ * Send scouts at this target with one tap: pick one of your castles or supply depots
+ * (nearest first) and a party of riders sets out from it on its own.
+ */
+function SendScouts({ engine, targetId, x, z, toast }: { engine: GameEngine; targetId: string; x: number; z: number; toast: (m: string) => void }) {
+  const [from, setFrom] = useState('')
+  const origins = engine.scoutOrigins(x, z)
+  const out = engine.state.armies.filter((a) => a.faction === PLAYER && a.order.type === 'scout' && a.order.targetId === targetId)
+  if (origins.length === 0) return null
+  const pick = origins.find((o) => o.id === from) ?? origins.find((o) => o.men >= SCOUT.party / 2) ?? origins[0]
+  return (
+    <div className="well mt-3 rounded-sm px-3 py-2.5">
+      <div className="mb-1.5 flex items-center justify-between text-[13px]">
+        <span className="font-semibold text-ink-100"><Glyph name="spyglass" size={13} className="mr-1 -mt-0.5 inline text-gold-300" />Scout this castle</span>
+        {out.length > 0 && <span className="text-[12px] text-gold-300">{out.length} party on the way</span>}
+      </div>
+      <div className="flex gap-1.5">
+        <select value={pick.id} onChange={(e) => setFrom(e.target.value)} className="well min-w-0 flex-1 rounded-sm px-2 py-1.5 text-[13px] outline-none" title="Where the scouts set out from">
+          {origins.map((o) => (
+            <option key={o.id} value={o.id} disabled={o.men < SCOUT.party / 2}>
+              {o.kind === 'depot' ? 'Depot · ' : ''}
+              {o.name} · {Math.round(o.d)}m{o.men < SCOUT.party / 2 ? ' · too few men' : ''}
+            </option>
+          ))}
+        </select>
+        <button
+          className="btn btn-gold shrink-0 px-3 text-[13px]"
+          disabled={pick.men < SCOUT.party / 2}
+          title={`${SCOUT.party} scouts (riders first) ride out, look around and bring the report home. Enemies who spot them send riders after them.`}
+          onClick={() => {
+            const err = engine.dispatchScouts(pick.id, targetId)
+            toast(err ?? `${SCOUT.party} scouts ride out of ${pick.name}.`)
+          }}
+        >
+          Send
+        </button>
+      </div>
+      <p className="mt-1 text-[12px] leading-snug text-ink-500">
+        {SCOUT.party} men ({Math.min(SCOUT.party, pick.riders)} riders) leave {pick.name}. The report counts only if they get home.
+      </p>
+    </div>
+  )
+}
+
+/**
+ * A ref that brings a freshly opened list into view once. (An inline ref callback would run
+ * again on every re-render, several times a second while the war runs, and keep yanking
+ * the panel back, so it could not be scrolled.)
+ */
+function useRevealOnce() {
+  const done = useRef(false)
+  return useCallback((el: HTMLElement | null) => {
+    if (!el || done.current) return
+    done.current = true
+    el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }, [])
+}
+
+/**
+ * Convoy Raid: standing orders. A band on one carries it out by itself (any order given by
+ * hand cancels it), so the player can steer the commander and leave the rest to their orders.
+ */
+function StanceBox({ engine, army }: { engine: GameEngine; army: Army }) {
+  if (!engine.state.train || army.faction !== PLAYER) return null
+  const side = engine.trainEscort() === PLAYER ? 'escort' : 'raid'
+  const kinds = (Object.keys(STANCES) as StanceKind[]).filter((k) => STANCES[k].side === side && (!STANCES[k].engineers || (army.troops.engineers ?? 0) >= 10))
+  const cur = army.stance?.kind
+  const glyph: Record<StanceKind, GlyphName> = { escort: 'wagon', hunt: 'horse', picket: 'flag', ambush: 'tree', harass: 'swords', bridge: 'stakes' }
+  return (
+    <div className="mt-2 rounded-sm border border-gold-500/25 bg-black/20 px-3 py-2 text-[13px]">
+      <div className="flex items-center gap-2">
+        <span className="font-semibold text-gold-200">Standing orders</span>
+        <span className="ml-auto text-[12px] text-ink-400">{cur ? `${STANCES[cur].name}${STANCES[cur].here ? ' (here)' : ''}` : 'By hand'}</span>
+      </div>
+      <div className="mt-1.5 grid grid-cols-3 gap-1">
+        {kinds.map((k) => (
+          <button
+            key={k}
+            title={STANCES[k].text}
+            className={`btn flex items-center justify-center gap-1 px-1 text-[12.5px] ${cur === k ? 'btn-gold' : ''}`}
+            onClick={() => {
+              // "Here" orders take the army's present ground as their post.
+              engine.setStance(army.id, STANCES[k].here ? { kind: k, x: army.x, z: army.z } : { kind: k })
+            }}
+          >
+            <Glyph name={glyph[k]} size={13} />
+            {STANCES[k].name}
+          </button>
+        ))}
+        {cur && (
+          <button className="btn px-1 text-[12.5px]" title="Cancel the standing order: the band waits for your orders." onClick={() => engine.setStance(army.id, null)}>
+            By hand
+          </button>
+        )}
+      </div>
+      <p className="mt-1.5 text-[12px] leading-snug text-ink-400">{cur ? STANCES[cur].text : 'Choose a standing order and the band carries it out on its own; any order you give by hand cancels it.'}</p>
+    </div>
+  )
+}
+
+/**
+ * The spymaster's band: whether the enemy can see it, and why. It hides on its own; the player
+ * only chooses the road (woods, valleys, foul weather) and the moment to strike.
+ */
+function SpyBox({ engine, army }: { engine: GameEngine; army: Army }) {
+  if (!engine.isSpyBand(army) || army.faction !== PLAYER) return null
+  const route = army.path.length > 0 ? engine.routeForecast(army) : null
+  const steps = route ? route.concealed + route.disguised + route.watched : 0
+  const n = Math.round(total(army.troops))
+  const cap = engine.spyCap(army)
+  const problem = engine.veilProblem(army)
+  const here = engine.veilHere(army)
+  const watcher = !problem && !army.veil ? engine.veilSpotter(army, here.veil) : null
+  const state = army.veil ?? 'seen'
+  const look = {
+    concealed: { glyph: 'eyeClosed', name: 'Concealed', tone: 'border-emerald-500/40 bg-emerald-950/40', text: 'text-emerald-300', say: `Unseen ${here.why}. The enemy cannot see them; walls (${SPY.castleWatch}m out), watch posts and blundering into a host give them away.` },
+    disguised: { glyph: 'eyeHalf', name: 'Disguised', tone: 'border-gold-500/40 bg-gold-600/15', text: 'text-gold-200', say: `Passing ${here.why}. The enemy pays them no heed, but scouts within ${SPY.scoutEye}m, walls (${SPY.castleWatchDisguised}m out) and watch posts look closer. Woods, river valleys or foul weather hide them better.` },
+    seen: { glyph: 'eye', name: 'Seen', tone: 'border-ember-500/40 bg-ember-700/25', text: 'text-ember-300', say: problem ?? watcher ?? 'In plain sight.' },
+  }[state] as { glyph: GlyphName; name: string; tone: string; text: string; say: string }
+  return (
+    <div className={`mt-2 rounded-sm border px-3 py-2 text-[13px] ${look.tone}`}>
+      <div className="flex items-center gap-2">
+        <Glyph name={look.glyph} size={18} className={look.text} />
+        <span className={`font-semibold ${look.text}`}>{look.name}</span>
+        <span className={`ml-auto text-[12px] tabular-nums ${n > cap ? 'text-ember-300' : 'text-ink-300'}`} title="Men he can hide at his rank">
+          {n} / {cap}
+        </span>
+      </div>
+      <p className="mt-1 text-[12px] leading-snug text-ink-400">{look.say}</p>
+      {route && steps > 0 && (
+        <div className="mt-1.5">
+          <div className="flex h-1.5 overflow-hidden rounded-full bg-black/40" title="The road ahead: under cover, in disguise, watched">
+            <i className="bg-emerald-400" style={{ width: `${(route.concealed / steps) * 100}%` }} />
+            <i className="bg-gold-300" style={{ width: `${(route.disguised / steps) * 100}%` }} />
+            <i className="bg-ember-400" style={{ width: `${(route.watched / steps) * 100}%` }} />
+          </div>
+          <p className={`mt-1 text-[12px] leading-snug ${route.watched > 0 ? 'text-ember-300' : 'text-ink-400'}`}>
+            {route.watched > 0
+              ? `The road passes under watch: ${route.watches.slice(0, 2).join(', ')}${route.watches.length > 2 ? ` and ${route.watches.length - 2} more` : ''}. They will be found there.`
+              : `The road ahead: ${Math.round((route.concealed / steps) * 100)}% under cover, the rest in disguise. No watch on it.`}
+          </p>
+        </div>
+      )}
+      {state !== 'seen' && <p className="mt-1 text-[12px] leading-snug text-ink-500">Their first blow from hiding strikes {state === 'concealed' ? SPY.strike : SPY.strikeDisguised}x as hard for {SPY.strikeSeconds}s.</p>}
+    </div>
+  )
+}
+
+/** Corvin Ashe: the Whisper Blades' strike, and sabotage at an enemy stronghold close by. */
+function AsheBox({ engine, army, toast }: { engine: GameEngine; army: Army; toast: (m: string) => void }) {
+  const [open, setOpen] = useState(false)
+  if (army.faction !== PLAYER || army.commanderKey !== BLADES.key) return null
+  const now = engine.state.time
+  const strikeIn = Math.max(0, Math.ceil((army.strikeReadyAt ?? 0) - now))
+  const job = army.sabotage
+  const problem = engine.sabotageProblem(army)
+  const targets = problem ? [] : engine.sabotageTargets(army)
+  const full = engine.fullStrength(army)
+  return (
+    <div className="mt-2 rounded-sm border border-violet-400/30 bg-violet-950/30 px-3 py-2 text-[13px]">
+      {army.blades && (
+        <>
+          <div className="flex items-center gap-2">
+            <Glyph name="dagger" size={16} className="text-violet-300" />
+            <span className="font-semibold text-violet-200">The Whisper Blades</span>
+            <span className={`ml-auto text-[12px] tabular-nums ${total(army.troops) < full - 0.5 ? 'text-ember-300' : 'text-ink-300'}`}>
+              {totalInt(army.troops)} / {Math.round(full)}
+            </span>
+          </div>
+          <p className="mt-1 text-[12px] leading-snug text-ink-400">
+            Ashe's own knife-men: never reinforced (an abbey of ours can take them in), no siege work. Send them after an enemy army and they go for its leader, not its ranks: a commander is carried from the field and the host breaks; the Usurper Queen herself can fall. Strikes from hiding are likelier; a large host or a seasoned commander is harder to reach.
+          </p>
+          <p className={`mt-1 text-[12px] ${strikeIn > 0 ? 'text-ink-500' : 'text-violet-200'}`}>{strikeIn > 0 ? `Regrouping: ready to strike in ${strikeIn}s.` : 'Ready to strike.'}</p>
+        </>
+      )}
+      {engine.state.rules.mode !== 'convoy' && (
+        <p className={`${army.blades ? 'mt-1.5 border-t border-white/10 pt-1.5' : ''} text-[12px] leading-snug text-ink-400`}>
+          Living off the land as pilgrims and players: never out of supply, and {Math.round((BLADES.pace - 1) * 100)}% faster than other armies.
+        </p>
+      )}
+      {job ? (
+        <p className="mt-1.5 text-[12.5px] text-violet-200">
+          <Glyph name="fire" size={13} className="mr-1 -mt-0.5 inline" />
+          {SABOTAGE_KINDS[job.kind].name}: {Math.max(0, Math.ceil(job.doneAt - now))}s more. They must stay unseen.
+        </p>
+      ) : problem ? (
+        <p className="mt-1.5 text-[12px] text-ink-500">Sabotage: {problem}</p>
+      ) : (
+        <div className="mt-1.5">
+          <button className="btn w-full text-[13px]" onClick={() => setOpen(!open)}>
+            <Glyph name="mask" size={14} /> Sabotage
+          </button>
+          {open && (
+            <div className="mt-1.5 space-y-1.5">
+              {targets.map((tg) => (
+                <div key={tg.id}>
+                  <div className="text-[12px] text-ink-300">{tg.name}</div>
+                  {tg.kinds.map((k) => (
+                    <button
+                      key={k}
+                      className="btn mt-1 w-full flex-col items-start px-2.5 py-1.5 text-left"
+                      onClick={() => {
+                        const err = engine.startSabotage(army.id, tg.id, k)
+                        if (err) toast(err)
+                        setOpen(false)
+                      }}
+                    >
+                      <span className="text-[13px] text-ink-100">{SABOTAGE_KINDS[k].name}</span>
+                      <span className="text-[11.5px] leading-snug text-ink-400">{SABOTAGE_KINDS[k].blurb}</span>
+                    </button>
+                  ))}
+                </div>
+              ))}
+              <p className="text-[11.5px] leading-snug text-ink-500">
+                {SABOTAGE.work}s of quiet work on the spot; if they are found out, it is abandoned. Afterwards the alarm may go up ({Math.round(SABOTAGE.alarm * 100)}%). Then they lie low for {SABOTAGE.cooldown}s.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** One of our abbeys: the Royal Guard or the Whisper Blades can rest here and fill their ranks. */
+function SanctuaryBox({ engine, castle, toast }: { engine: GameEngine; castle: Castle; toast: (m: string) => void }) {
+  if (castle.holding !== 'abbey') return null
+  const here = engine.sanctuaryArmies(castle)
+  const resting = engine.state.armies.filter((a) => a.sanctuary === castle.id)
+  return (
+    <div className="mt-3 rounded-sm border border-gold-400/30 bg-gold-500/10 px-3 py-2 text-[13px]">
+      <div className="font-semibold text-gold-200">
+        <Glyph name="chapel" size={14} className="mr-1 -mt-0.5 inline text-gold-300" />
+        Sanctuary
+      </div>
+      <p className="mt-0.5 text-[12px] leading-snug text-ink-400">
+        Bring the Royal Guard or the Whisper Blades here: the brothers nurse their wounded in the infirmary, and lay brothers sworn to the Crown take up the empty places. It costs gold for every man restored.
+      </p>
+      {resting.map((a) => (
+        <p key={a.id} className="mt-1.5 text-[12.5px] text-gold-200">
+          {a.name} in sanctuary: {totalInt(a.troops)} / {Math.round(engine.fullStrength(a))}
+        </p>
+      ))}
+      {here
+        .filter((a) => a.sanctuary !== castle.id)
+        .map((a) => {
+          const { rate, cost } = engine.sanctuaryTerms(a)
+          const need = Math.ceil(engine.fullStrength(a) - total(a.troops))
+          return (
+            <button
+              key={a.id}
+              className="btn mt-1.5 w-full flex-col items-start px-2.5 py-1.5 text-left"
+              onClick={() => {
+                const err = engine.seekSanctuary(a.id, castle.id)
+                if (err) toast(err)
+              }}
+            >
+              <span className="text-[13px] text-ink-100">Seek sanctuary: {a.name}</span>
+              <span className="text-[11.5px] text-ink-400">
+                {need} men short · {cost} gold a man · about {Math.ceil(need / rate)}s
+              </span>
+            </button>
+          )
+        })}
+      {here.length === 0 && resting.length === 0 && <p className="mt-1.5 text-[12px] text-ink-500">Neither the Guard nor the Blades stand here short of men.</p>}
+    </div>
+  )
+}
+
 /** Scouting orders for a small party, or the state of a pursuit party. */
 function ScoutBox({ engine, army, toast }: { engine: GameEngine; army: Army; toast: (m: string) => void }) {
   const [target, setTarget] = useState('')
@@ -1208,7 +1586,7 @@ function ScoutBox({ engine, army, toast }: { engine: GameEngine; army: Army; toa
     const scout = engine.army(army.pursuit.scoutId)
     return (
       <div className="well mt-1.5 rounded-sm px-3 py-2 text-[13px]">
-        <div className="text-ink-200">🏇 Chasing {scout ? scout.name : 'enemy scouts'}</div>
+        <div className="text-ink-200"><Glyph name="horse" size={13} className="mr-1 -mt-0.5 inline " />Chasing {scout ? scout.name : 'enemy scouts'}</div>
         <button className="btn mt-1.5 w-full text-[13px]" onClick={() => engine.recallPursuit(army.id)}>
           Call them back
         </button>
@@ -1220,7 +1598,7 @@ function ScoutBox({ engine, army, toast }: { engine: GameEngine; army: Army; toa
     const t = engine.castle(o.targetId) ?? engine.army(o.targetId) ?? engine.outpost(o.targetId)
     return (
       <div className="well mt-1.5 rounded-sm px-3 py-2 text-[13px] text-ink-200">
-        🔭 {o.phase === 'out' ? `Scouting ${t && 'name' in t ? t.name : 'the enemy'}` : 'Riding home with the report'}
+        <Glyph name="spyglass" size={13} className="mr-1 -mt-0.5 inline text-gold-300" />{o.phase === 'out' ? `Scouting ${t && 'name' in t ? t.name : 'the enemy'}` : 'Riding home with the report'}
         {army.spottedBy && <span className="text-ember-300"> · spotted!</span>}
         <div className="mt-0.5 text-[12px] text-ink-500">Seen so far: {Object.keys(army.scoutReport ?? {}).length} positions. The report only counts if they get home.</div>
       </div>
@@ -1256,7 +1634,7 @@ function ScoutBox({ engine, army, toast }: { engine: GameEngine; army: Army; toa
           if (err) toast(err)
         }}
       >
-        🔭 Scout
+        <Glyph name="spyglass" size={13} /> Scout
       </button>
     </div>
   )
@@ -1325,7 +1703,7 @@ function VassalPanel({ engine, castle, onSelect }: { engine: GameEngine; castle:
     <div>
       <div className="flex items-center gap-3 pr-6">
         <span className="grid size-12 place-items-center rounded-sm text-[24px]" style={{ background: 'linear-gradient(160deg, #4f6fae, #1d2a44)' }}>
-          {H.icon}
+          <Glyph name={H.icon} size={26} className="text-gold-200" />
         </span>
         <div className="min-w-0">
           <h3 className="panel-title truncate">{castle.name}</h3>
@@ -1418,7 +1796,7 @@ function VillagePanel({ engine, castle, toast }: { engine: GameEngine; castle: C
     <div>
       <div className="flex items-center gap-3 pr-6">
         <span className="grid size-12 place-items-center rounded-sm text-[24px]" style={{ background: castle.ruined ? '#2a2420' : 'linear-gradient(160deg, #8a7650, #2a2218)' }}>
-          {castle.ruined ? '🔥' : HOLDINGS[engine.holdingOf(castle)].icon}
+          <Glyph name={castle.ruined ? 'fire' : HOLDINGS[engine.holdingOf(castle)].icon} size={26} className="text-gold-200" />
         </span>
         <div className="min-w-0">
           <h3 className="panel-title truncate">{castle.name}</h3>
@@ -1512,7 +1890,7 @@ function SitePanel({ engine, siteId, onSelect, toast }: { engine: GameEngine; si
     <div>
       <div className="flex items-center gap-3 pr-6">
         <span className="grid size-12 place-items-center rounded-sm text-[24px]" style={{ background: 'linear-gradient(160deg, #6f6a62, #1d1a17)' }}>
-          {site.kind === 'mine' ? '⛏' : '🪓'}
+          <Glyph name={site.kind === 'mine' ? 'pick' : 'axe'} size={26} className="text-gold-200" />
         </span>
         <div className="min-w-0">
           <h3 className="panel-title truncate">{site.kind === 'mine' ? 'Mine' : 'Lumber camp'}</h3>

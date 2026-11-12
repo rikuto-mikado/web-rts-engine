@@ -24,7 +24,7 @@ export type ClimateKey =
   | 'wasteland'
   | 'lakeland'
 
-export type MapType = 'crown' | 'delta' | 'frostfire' | 'coast' | 'basin' | 'divide'
+export type MapType = 'crown' | 'delta' | 'frostfire' | 'coast' | 'basin' | 'divide' | 'greenwood' | 'kingsvale'
 
 type RGB = [number, number, number]
 
@@ -228,6 +228,20 @@ export function zoneWeights(map: MapType, u: number, v: number, n: number): [num
       const rim = sm(0.62, 0.76, r)
       return [lakes, Math.max(0, 1 - lakes - rim), rim]
     }
+    case 'kingsvale': {
+      // The Long Night: green fields round the royal city, the blighted waste where the rifts open beyond.
+      const r = Math.hypot(u, v) + n * 0.12
+      const waste = sm(0.62, 0.82, r)
+      const fields = 1 - sm(0.42, 0.6, r)
+      return [fields, Math.max(0, 1 - fields - waste), waste]
+    }
+    case 'greenwood': {
+      // Convoy Raid: open fields at the caravanserai (south), the deep forest, taiga by the castle (north).
+      const t = v + n * 0.12
+      const north = 1 - sm(-0.62, -0.46, t)
+      const south = sm(0.52, 0.68, t)
+      return [north, Math.max(0, 1 - north - south), south]
+    }
     case 'divide': {
       // Snowmelt taiga in the north, the old battlefield in the middle, golden plains in the south.
       const t = v + n * 0.15
@@ -254,10 +268,10 @@ export const MAPS: Record<MapType, MapDef> = {
   delta: {
     key: 'delta',
     name: 'Twin Sun Delta',
-    tagline: 'River of plenty',
-    description: 'Sand sea all round, where cavalry ride fast but supply lines stretch thin. The great river is rich in villages and jungle, slow to cross; its mouth is a sea of mud.',
+    tagline: 'One river, three crossings',
+    description: 'The Great River splits the sand sea, west bank against east. North of the delta it can be crossed only at a cold ford and the Great Bridge; at its mouth three channels wind through the mud flats, fordable anywhere but slow, where no charge can be made.',
     zones: ['desert', 'oasis', 'marsh'],
-    regions: ['Rim: sand sea (supply 0.8x)', 'River: jungle and villages', 'Mouth: mud flats (slow, no charge)'],
+    regions: ['Banks: sand sea (supply 0.8x)', 'River: the Great Bridge and a ford', 'Mouth: three fordable channels (slow)'],
     water: 0x3d8c9a,
     fog: 0xd8c9a8,
     gen: { forest: 0.55 },
@@ -266,10 +280,10 @@ export const MAPS: Record<MapType, MapDef> = {
   frostfire: {
     key: 'frostfire',
     name: 'Frostfire Reach',
-    tagline: 'Ice and ash',
-    description: 'Blizzard-swept ice to the north-east, volcanic ash to the south-west, steaming dead woods between. Winter cripples the ice but never touches the warm ground.',
+    tagline: 'The Long Wall',
+    description: 'An ancient wall runs the whole border between the ice (north-east) and the ash (south-west), corner to corner. Two gates and a breach are the only ways through: hold them, or break through where the enemy is thin.',
     zones: ['icefield', 'steam', 'volcanic'],
-    regions: ['North-east: ice (harsh winters)', 'Border: steaming deadwood', 'South-west: ash (no winter)'],
+    regions: ['North-east: ice (harsh winters)', 'The Long Wall: two gates and a breach', 'South-west: ash (no winter)'],
     water: 0x5b8aa3,
     fog: 0xb8b4b0,
     gen: { forest: 0.55 },
@@ -278,10 +292,10 @@ export const MAPS: Record<MapType, MapDef> = {
   coast: {
     key: 'coast',
     name: 'Gilded Coast',
-    tagline: 'Gold and canyons',
-    description: 'A rich, open coast thick with villages runs along the sea; inland, red mesas full of mines make a natural fortress of narrow valleys and high ground.',
+    tagline: 'Cliffs and canyons',
+    description: 'The red mesa country ends in a sheer escarpment across the land, climbed only by three narrow canyons. Below it, the open coast and its fast shore road: easy to cross, hard to hold.',
     zones: ['mesa', 'autumn', 'coast'],
-    regions: ['Inland: red mesas and mines', 'Middle: autumn woods', 'Seaward: rich coast'],
+    regions: ['North: mesas behind the cliffs', 'The escarpment: three canyons', 'South: the coast and its shore road'],
     water: 0x2f7fa8,
     fog: 0xcfc4ae,
     gen: { forest: 0.55 },
@@ -290,10 +304,10 @@ export const MAPS: Record<MapType, MapDef> = {
   basin: {
     key: 'basin',
     name: 'Whispering Basin',
-    tagline: 'Lakes in the ring',
-    description: 'A great bowl: misty lakes and fords at the heart, the shortest way across; a ring of autumn forest full of ambushes; open steppe round the rim for riders to go the long way.',
+    tagline: 'The isle in the ring',
+    description: 'A ring of lakes guards the island fortress of Heartmere at the heart of the basin, reached only over narrow necks of land. Around it the autumn forest hides ambushes; the steppe rim is the long way round.',
     zones: ['lakeland', 'autumn', 'highland'],
-    regions: ['Heart: misty lakes', 'Ring: autumn forest', 'Rim: steppe'],
+    regions: ['Heart: the lake ring and Heartmere', 'Ring: autumn forest', 'Rim: steppe and passes'],
     water: 0x3f7590,
     fog: 0xa9bccb,
     gen: { forest: 0.55 },
@@ -302,14 +316,40 @@ export const MAPS: Record<MapType, MapDef> = {
   divide: {
     key: 'divide',
     name: 'The Great Divide',
-    tagline: 'Rivers to the plain',
-    description: 'Two rivers run from the snowy north through an old battlefield of mud and rock to the golden plains of the south. In winter the north freezes and the war moves south.',
+    tagline: 'Two rivers, six crossings',
+    description: 'Two snowmelt rivers run the length of the land, west realm against east, with the old battlefield and the citadel of Gravewatch between them. Each river has three crossings: a cold northern ford, a bridge by the battlefield, one in the golden south.',
     zones: ['taiga', 'wasteland', 'grain'],
-    regions: ['North: snowmelt taiga', 'Centre: old battlefield', 'South: golden plains'],
+    regions: ['North: snowmelt taiga (fords)', 'Centre: the old battlefield, Gravewatch', 'South: golden plains'],
     water: 0x3b7ea1,
     fog: 0xbcc2b8,
     gen: { forest: 0.55 },
     swatch: ['#2f4f3c', '#6e6250', '#d9b84a'],
+  },
+  // Convoy Raid's own map (not offered for the other modes).
+  greenwood: {
+    key: 'greenwood',
+    name: 'The Greenwood Road',
+    tagline: 'One road through the forest',
+    description: 'A single road winds north from the caravanserai through deep forest, over the river and past the mountain to the castle. Every tree can hide a band of raiders.',
+    zones: ['taiga', 'autumn', 'grain'],
+    regions: ['North: taiga and the castle', 'Middle: the deep forest', 'South: fields and the caravanserai'],
+    water: 0x3b7ea1,
+    fog: 0xb8c4b4,
+    gen: { forest: 0.9 },
+    swatch: ['#2f4f3c', '#c0632a', '#d9b84a'],
+  },
+  // The Long Night's own map.
+  kingsvale: {
+    key: 'kingsvale',
+    name: 'The Royal Vale',
+    tagline: "The King's last city",
+    description: "The Sovereign's great walled capital, two rings of walls round a city of thousands of houses, a river at its feet and the mountains at its back. Beyond the farmland, the rifts of the Endless Night.",
+    zones: ['temperate', 'autumn', 'wasteland'],
+    regions: ['Heart: the royal city and its fields', 'Ring: the woods and villages', 'Beyond: the blighted waste and the rifts'],
+    water: 0x2f5f78,
+    fog: 0x8a8296,
+    gen: { forest: 0.4 },
+    swatch: ['#5f8a2e', '#c0632a', '#4a4250'],
   },
 }
 

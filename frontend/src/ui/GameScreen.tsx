@@ -1,21 +1,25 @@
-import { Skull, Trophy } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import { PLAYER, TICK, type GameEngine } from '../game/engine'
-import { fmt } from '../game/troops'
 import type { ChronicleEntry } from '../game/types'
+import { roman } from '../game/troops'
+import { ConvoyHUD } from './ConvoyHUD'
+import { NightHUD } from './NightHUD'
 import { GameRenderer, type Selection } from '../render/GameRenderer'
 import { ChronicleLog, Toasts } from './Chronicle'
 import { FormArmyModal } from './FormArmyModal'
 import { HelpOverlay } from './HelpOverlay'
 import { HoldingsBar } from './HoldingsBar'
+import { WarReport } from './WarReport'
 import { TraitChoice } from './TraitChoice'
 import { Minimap } from './Minimap'
 import { SelectionPanel } from './SelectionPanel'
 import { Sidebar } from './Sidebar'
 import { TopBar } from './TopBar'
-import { compactPanelWidth, minimapFootprint, useViewport } from './viewport'
-import { loadOverhead, saveOverhead } from './viewPref'
+import { compactPanelWidth, useViewport } from './viewport'
+import { Joystick } from './Joystick'
+import { panelFold, usePanelFolded } from './panelState'
+import { loadNight, loadOverhead, saveNight, saveOverhead } from './viewPref'
 
 export interface Match {
   /** Server-side record of this match (results and battle reports); null if it could not be created. */
@@ -47,6 +51,16 @@ export function GameScreen({ match, onExit }: Props) {
   const [gfxLost, setGfxLost] = useState(false)
   const lostRef = useRef(false)
   const [overhead, setOverhead] = useState(loadOverhead)
+  // Night mode: a dimmer map and darker paper for playing late. The UI follows a data attribute on <html>.
+  // The Long Night is fought in the dark (whatever the usual setting), until dawn.
+  const longNight = engine.state.rules.mode === 'nightfall'
+  const [night, setNight] = useState(() => longNight || loadNight())
+  useEffect(() => {
+    if (!longNight) saveNight(night)
+    renderer?.setNight(night)
+    document.documentElement.toggleAttribute('data-night', night)
+    return () => document.documentElement.removeAttribute('data-night')
+  }, [renderer, night, longNight])
   const overheadRef = useRef(overhead)
   const toggleView = useCallback(() => {
     setOverhead((v) => {
@@ -62,11 +76,12 @@ export function GameScreen({ match, onExit }: Props) {
   const vp = useViewport()
   const [sidebarOpen, setSidebarOpen] = useState(() => !vp.compact)
   const [mapShown, setMapShown] = useState(() => !vp.phone)
-  const [orderMode, setOrderMode] = useState(false)
-  const orderModeRef = useRef(false)
-  useEffect(() => {
-    orderModeRef.current = orderMode
-  }, [orderMode])
+  /** Touch: the army the camera is gliding after (set by the thumb stick, cleared by dragging the map). */
+  const followRef = useRef<string | null>(null)
+  /** The commander's view is on (toggled by tapping the thumb stick). */
+  const chaseRef = useRef(false)
+  const [chaseOn, setChaseOn] = useState(false)
+  const folded = usePanelFolded()
 
   // The war runs at one steady pace; it only holds still while a full-screen dialog is open.
   const modalRef = useRef(false)
@@ -103,7 +118,6 @@ export function GameScreen({ match, onExit }: Props) {
   const select = useCallback(
     (s: Selection, focus = false) => {
       setSelection(s)
-      setOrderMode(false)
       if (!renderer) return
       renderer.selection = s
       if (focus && s) {
@@ -117,8 +131,13 @@ export function GameScreen({ match, onExit }: Props) {
   // On phones the selection panel covers the right side: keep the view centred on the rest.
   useEffect(() => {
     if (!renderer) return
-    renderer.setRightInset(vp.compact && selection ? compactPanelWidth(vp.w) : 0)
-  }, [renderer, vp.compact, vp.w, selection])
+    renderer.setRightInset(vp.compact && selection && !folded ? compactPanelWidth(vp.w) : 0)
+  }, [renderer, vp.compact, vp.w, selection, folded])
+  // A new selection always opens its panel; the stick stops following once nothing of yours is selected.
+  useEffect(() => {
+    panelFold.set(false)
+    if (selection?.kind !== 'army') followRef.current = null
+  }, [selection])
 
   // Renderer + main loop.
   useEffect(() => {
@@ -168,6 +187,8 @@ export function GameScreen({ match, onExit }: Props) {
           else if (ev.type === 'battle_end' && match.id) api.postReport(match.id, ev.report).catch(() => {})
           else if (ev.type === 'game_over') {
             setGameOver(ev.status)
+            // Dawn: the sun comes up on the city that held.
+            if (longNight && ev.status === 'victory') setNight(false)
             recordResult()
           }
         }
@@ -177,6 +198,16 @@ export function GameScreen({ match, onExit }: Props) {
         lastNotify = now
         engine.notify()
       }
+      const follow = followRef.current
+      if (follow) {
+        const a = engine.army(follow)
+        if (a) {
+          // The commander's view (tap the stick to turn it on or off): behind and above the army, until turned off.
+          if (chaseRef.current) r.cam.chase(a.x, a.z, a.heading, dt)
+          else if (r.cam.chasing) r.cam.endChase()
+          if (!r.cam.chasing) r.cam.focus(a.x, a.z)
+        } else followRef.current = null
+      } else if (r.cam.chasing) r.cam.endChase()
       r.render(dt)
     }
     raf = requestAnimationFrame(frame)
@@ -184,7 +215,7 @@ export function GameScreen({ match, onExit }: Props) {
       cancelAnimationFrame(raf)
       r.dispose()
     }
-  }, [engine, match.id, recordResult])
+  }, [engine, match.id, recordResult, longNight])
 
   // Mouse input on the map.
   useEffect(() => {
@@ -195,8 +226,16 @@ export function GameScreen({ match, onExit }: Props) {
     const pointers = new Map<number, { x: number; y: number }>()
     let pinch: { dist: number; angle: number; mx: number; my: number } | null = null
     let longPress = 0
+    // Touch: with one of your armies selected, a tap waits a moment in case a second tap follows (a double tap marches the army there).
+    let pendingTap: { t: number; x: number; y: number; timer: number } | null = null
+    const armySelected = () => {
+      const sel = renderer.selection
+      if (sel?.kind !== 'army') return false
+      const a = engine.army(sel.id)
+      return !!a && a.faction === PLAYER && !a.vassalOf
+    }
 
-    /** Give the selected player army an order at a screen point (right-click, long-press, or tap in order mode). */
+    /** Give the selected player army an order at a screen point (right-click, long-press or double tap). */
     const issueOrder = (clientX: number, clientY: number): boolean => {
       const sel = renderer.selection
       if (sel?.kind !== 'army') return false
@@ -262,6 +301,13 @@ export function GameScreen({ match, onExit }: Props) {
           engine.orderArmy(army.id, { type: 'raidConvoy', convoyId: w.id })
           renderer.spawnClickMarker(w.x, w.z, 0xff5a3c)
           toast(`${army.name} rides to seize the wagons.`)
+          return true
+        }
+        // One of our own gold wagons: walk beside it.
+        if (w && w.race && w.faction === PLAYER) {
+          engine.orderArmy(army.id, { type: 'escort', convoyId: w.id })
+          renderer.spawnClickMarker(w.x, w.z, 0x9cc0ff)
+          toast(`${army.name} falls in beside gold wagon ${roman(w.race)}.`)
           return true
         }
       }
@@ -354,6 +400,8 @@ export function GameScreen({ match, onExit }: Props) {
           cancelLongPress()
         }
         if (down.dragging && down.button === 0 && down.grab) {
+          // Looking around by hand lets go of the army the camera was following.
+          followRef.current = null
           const g = renderer.groundAt(e.clientX, e.clientY)
           if (g) renderer.cam.panBy(down.grab.x - g.x, down.grab.z - g.z)
           host.style.cursor = 'grabbing'
@@ -381,9 +429,29 @@ export function GameScreen({ match, onExit }: Props) {
       down = null
       host.style.cursor = 'default'
       if (d.consumed || d.dragging || d.button !== 0 || e.type === 'pointercancel') return
-      // Touch "order mode": the next tap gives an order instead of selecting.
-      if (d.touch && orderModeRef.current) {
-        if (issueOrder(e.clientX, e.clientY)) setOrderMode(false)
+      if (d.touch && armySelected()) {
+        const now = performance.now()
+        if (pendingTap && now - pendingTap.t < 360 && Math.hypot(e.clientX - pendingTap.x, e.clientY - pendingTap.y) < 40) {
+          window.clearTimeout(pendingTap.timer)
+          pendingTap = null
+          if (issueOrder(e.clientX, e.clientY)) {
+            followRef.current = null
+            navigator.vibrate?.(15)
+          }
+          return
+        }
+        if (pendingTap) window.clearTimeout(pendingTap.timer)
+        const x = e.clientX
+        const y = e.clientY
+        pendingTap = {
+          t: now,
+          x,
+          y,
+          timer: window.setTimeout(() => {
+            pendingTap = null
+            select(renderer.pick(x, y))
+          }, 370),
+        }
         return
       }
       select(renderer.pick(e.clientX, e.clientY))
@@ -412,6 +480,7 @@ export function GameScreen({ match, onExit }: Props) {
     host.addEventListener('wheel', onWheel, { passive: false })
     return () => {
       cancelLongPress()
+      if (pendingTap) window.clearTimeout(pendingTap.timer)
       host.removeEventListener('pointerdown', onDown)
       host.removeEventListener('pointermove', onMove)
       host.removeEventListener('pointerup', onUp)
@@ -524,6 +593,8 @@ export function GameScreen({ match, onExit }: Props) {
         onHelp={() => setShowHelp(true)}
         overhead={overhead}
         onToggleView={toggleView}
+        night={night}
+        onToggleNight={() => setNight((v) => !v)}
         onMenu={() => setSidebarOpen((v) => !v)}
         campaignName={match.name}
       />
@@ -545,21 +616,22 @@ export function GameScreen({ match, onExit }: Props) {
       <Toasts entries={fresh} onFocus={focusEntry} />
       {showLog && <ChronicleLog engine={engine} onClose={() => setShowLog(false)} onFocus={focusEntry} />}
       <SelectionPanel engine={engine} selection={selection} onSelect={select} onFormArmy={(castleId, targetId) => setFormArmy({ castleId, targetId })} toast={toast} />
-      {!(vp.compact && selection) && <HoldingsBar engine={engine} selection={selection} onSelect={select} rightGap={minimapFootprint(vp.compact, vp.phone, mapShown)} />}
+      {!selection && !showLog && <HoldingsBar engine={engine} selection={selection} onSelect={select} mapShown={mapShown} />}
       <Minimap engine={engine} renderer={renderer} shown={mapShown} setShown={setMapShown} />
-      {vp.touch && selection?.kind === 'army' && engine.army(selection.id)?.faction === PLAYER && (
-        <div
-          className={`pointer-events-none absolute z-30 -translate-x-1/2 ${vp.compact ? 'safe-bottom bottom-3' : 'bottom-24 left-1/2'}`}
-          style={vp.compact ? { left: (vp.w - compactPanelWidth(vp.w)) / 2 } : undefined}
-        >
-          <button
-            className={`btn pointer-events-auto px-4 shadow-lg ${orderMode ? 'btn-gold animate-pulse' : ''}`}
-            onClick={() => setOrderMode((v) => !v)}
-          >
-            {orderMode ? 'Tap a target: ground · castle · enemy · your army' : '🎯 Give an order'}
-          </button>
-          {!orderMode && <div className="mt-1 text-center text-[12px] text-ink-300 [text-shadow:0_1px_2px_#000]">or long-press the map</div>}
-        </div>
+      {engine.state.night && <NightHUD engine={engine} onFocus={(x, z) => renderer?.cam.focus(x, z)} onSelect={(s) => select(s, false)} />}
+      {engine.state.train && <ConvoyHUD engine={engine} onFocus={(x, z) => renderer?.cam.focus(x, z)} onSelect={(s) => select(s, false)} />}
+      {vp.touch && renderer && selection?.kind === 'army' && engine.army(selection.id)?.faction === PLAYER && !engine.army(selection.id)?.vassalOf && (
+        <Joystick
+          engine={engine}
+          renderer={renderer}
+          armyId={selection.id}
+          followRef={followRef}
+          chase={chaseOn}
+          onToggleChase={() => {
+            chaseRef.current = !chaseRef.current
+            setChaseOn(chaseRef.current)
+          }}
+        />
       )}
 
       {flash && (
@@ -636,49 +708,7 @@ export function GameScreen({ match, onExit }: Props) {
 
       {showHelp && <HelpOverlay units={engine.unitList} onClose={() => setShowHelp(false)} />}
 
-      {gameOver && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="panel animate-fade-up w-[440px] rounded-2xl p-8 text-center">
-            {gameOver === 'victory' ? <Trophy size={44} className="mx-auto text-gold-300" /> : <Skull size={44} className="mx-auto text-ember-400" />}
-            <h2 className={`mt-3 font-display text-4xl font-bold ${gameOver === 'victory' ? 'text-gold-200' : 'text-ember-300'}`}>{gameOver === 'victory' ? 'Victory' : 'Defeat'}</h2>
-            <p className="mt-2 text-sm text-ink-300">
-              {gameOver === 'victory' ? 'The enemy seat has fallen. The war is won and the land is yours.' : 'Your realm has fallen. The crown passes into ash.'}
-            </p>
-            {(() => {
-              const h = engine.honours('A')
-              const rank = h.findIndex((x) => x.id === PLAYER) + 1
-              return h.length > 1 ? (
-                <p className="mt-3 font-display text-[15px] text-gold-200">
-                  Your war honours: rank {rank} of {h.length} lords
-                </p>
-              ) : null
-            })()}
-            <div className="mt-5 grid grid-cols-2 gap-2 text-sm">
-              <Stat label="Battles won" value={engine.state.stats.battlesWon} />
-              <Stat label="Battles lost" value={engine.state.stats.battlesLost} />
-              <Stat label="Enemies slain" value={fmt(engine.state.stats.enemyKilled)} />
-              <Stat label="Castles taken" value={engine.state.stats.castlesTaken} />
-            </div>
-            <div className="mt-6 flex justify-center gap-2">
-              <button className="btn" onClick={() => setGameOver(null)}>
-                View the map
-              </button>
-              <button className="btn btn-gold" onClick={onExit}>
-                Return to menu
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function Stat({ label, value }: { label: string; value: string | number }) {
-  return (
-    <div className="rounded-lg bg-white/4 py-2">
-      <div className="text-[12px] text-ink-400 uppercase">{label}</div>
-      <div className="font-bold tabular-nums">{value}</div>
+      {gameOver && <WarReport engine={engine} status={gameOver} onViewMap={() => setGameOver(null)} onExit={onExit} />}
     </div>
   )
 }

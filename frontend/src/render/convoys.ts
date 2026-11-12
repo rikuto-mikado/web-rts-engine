@@ -72,8 +72,8 @@ export class ConvoyRenderer {
         w = { group, flag, x: c.x, z: c.z }
         this.wagons.set(c.id, w)
 
-        // The supply line: a dashed band laid along the road the wagons follow.
-        const line = this.buildRoadLine(c)
+        // The supply line: a dashed band laid along the road the wagons follow (the gold train keeps to its road).
+        const line = c.race ? null : this.buildRoadLine(c)
         if (line) {
           this.group.add(line)
           this.lines.set(c.id, line)

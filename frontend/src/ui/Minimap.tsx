@@ -1,5 +1,8 @@
 import { Map as MapIcon, X } from 'lucide-react'
 import { useEffect, useRef, type PointerEvent } from 'react'
+import { drawShield } from '../render/heraldry'
+import { glyphPaths } from '../render/glyphs'
+import { paintTerrain } from './mapPaint'
 import { useViewport } from './viewport'
 import { PLAYER, type GameEngine } from '../game/engine'
 import { RELATION_COLOR } from './common'
@@ -16,38 +19,7 @@ export function Minimap({ engine, renderer, shown, setShown }: { engine: GameEng
   const bgRef = useRef<HTMLCanvasElement | null>(null)
 
   useEffect(() => {
-    const world = engine.world
-    const bg = document.createElement('canvas')
-    bg.width = bg.height = SIZE
-    const ctx = bg.getContext('2d')!
-    const img = ctx.createImageData(SIZE, SIZE)
-    const c: [number, number, number] = [0, 0, 0]
-    for (let j = 0; j < SIZE; j++) {
-      for (let i = 0; i < SIZE; i++) {
-        const x = -world.half + ((i + 0.5) / SIZE) * world.size
-        const z = -world.half + ((j + 0.5) / SIZE) * world.size
-        const h = world.heightAt(x, z)
-        world.colorAt(x, z, c)
-        if (h < 0.5 && !world.bridgeAt(x, z)) {
-          const w = world.biome.water
-          const ford = world.fordAt(x, z) ? 0.45 : 0
-          c[0] = (((w >> 16) & 255) / 255) * (1 - ford) + 0.78 * ford
-          c[1] = (((w >> 8) & 255) / 255) * (1 - ford) + 0.72 * ford
-          c[2] = ((w & 255) / 255) * (1 - ford) + 0.55 * ford
-        } else if (world.bridgeAt(x, z)) {
-          c[0] = 0.55
-          c[1] = 0.42
-          c[2] = 0.27
-        }
-        const shade = 0.85 + Math.min(0.3, h / 400)
-        const k = (j * SIZE + i) * 4
-        img.data[k] = Math.min(255, c[0] * 255 * shade)
-        img.data[k + 1] = Math.min(255, c[1] * 255 * shade)
-        img.data[k + 2] = Math.min(255, c[2] * 255 * shade)
-        img.data[k + 3] = 255
-      }
-    }
-    ctx.putImageData(img, 0, 0)
+    const bg = paintTerrain(engine.world, SIZE)
     bgRef.current = bg
   }, [engine])
 
@@ -102,18 +74,21 @@ export function Minimap({ engine, renderer, shown, setShown }: { engine: GameEng
         ctx.strokeStyle = c.battleId && Math.floor(now / 300) % 2 ? '#fff' : RELATION_COLOR[engine.relation(c.faction)]
         ctx.lineWidth = 1.5
         const mine = c.faction === 'player'
-        const rr = mine ? r + 1.5 : r
-        ctx.fillRect(x - rr, y - rr, rr * 2, rr * 2)
-        if (mine) {
-          ctx.strokeStyle = c.battleId && Math.floor(now / 300) % 2 ? '#ff6a4d' : '#f2d27a'
-          ctx.lineWidth = 2
+        if (c.village) {
+          // Villages: small marks; castles: their shields.
+          const rr = Math.min(r, 2.6)
+          ctx.fillRect(x - rr, y - rr, rr * 2, rr * 2)
+          ctx.strokeRect(x - rr, y - rr, rr * 2, rr * 2)
+          continue
         }
-        ctx.strokeRect(x - rr, y - rr, rr * 2, rr * 2)
-        if (mine && c.id === engine.state.factions.player?.capitalId) {
-          ctx.fillStyle = '#f2d27a'
-          ctx.font = 'bold 11px serif'
-          ctx.textAlign = 'center'
-          ctx.fillText('♛', x, y - rr - 3)
+        const rank = engine.seatRank(c)
+        drawShield(ctx, x, y, Math.max(9, r * 2.3) * (rank === 'royal' ? 1.35 : rank === 'lord' ? 1.1 : 1), engine.factionColor(c.faction), rank)
+        if (c.battleId && Math.floor(now / 300) % 2) {
+          ctx.strokeStyle = mine ? '#ff6a4d' : '#fff'
+          ctx.lineWidth = 1.6
+          ctx.beginPath()
+          ctx.arc(x, y, Math.max(7, r * 1.8), 0, Math.PI * 2)
+          ctx.stroke()
         }
       }
       for (const a of engine.state.armies) {
@@ -129,6 +104,26 @@ export function Minimap({ engine, renderer, shown, setShown }: { engine: GameEng
         ctx.strokeStyle = '#0b0c0e'
         ctx.lineWidth = 1
         ctx.stroke()
+      }
+      // The Usurper's last known whereabouts: a pulsing crown.
+      const sight = engine.state.foeSighting
+      if (sight && engine.foeRoyal()) {
+        const x = toPx(sight.x)
+        const y = toPx(sight.z)
+        const pulse = 5 + Math.sin(now / 250) * 1.5
+        ctx.strokeStyle = '#e0455a'
+        ctx.lineWidth = 1.6
+        ctx.beginPath()
+        ctx.arc(x, y, pulse + 3, 0, Math.PI * 2)
+        ctx.stroke()
+        ctx.save()
+        ctx.translate(x - 6, y - 6)
+        ctx.scale(0.5, 0.5)
+        ctx.strokeStyle = '#f2c75a'
+        ctx.lineWidth = 2.6
+        ctx.lineJoin = 'round'
+        ctx.stroke(new Path2D(glyphPaths('crown').s!))
+        ctx.restore()
       }
       if (renderer) {
         const fp = renderer.footprint()

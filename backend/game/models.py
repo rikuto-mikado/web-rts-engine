@@ -134,6 +134,8 @@ class Campaign(models.Model):
         CAMPAIGN = "campaign", "Campaign"
         ALLIANCE = "alliance", "Alliance War"
         SURVIVAL = "survival", "Survival"
+        CONVOY = "convoy", "Convoy Raid"
+        NIGHTFALL = "nightfall", "The Long Night"
 
     name = models.CharField(max_length=120)
     mode = models.CharField(max_length=10, choices=Mode.choices, default=Mode.CAMPAIGN)
@@ -148,7 +150,7 @@ class Campaign(models.Model):
     seed = models.PositiveIntegerField(null=True, blank=True)
     difficulty = models.CharField(
         max_length=10,
-        choices=[("easy", "Easy"), ("normal", "Normal"), ("hard", "Hard")],
+        choices=[("easy", "Easy"), ("normal", "Normal"), ("hard", "Hard"), ("brutal", "Last Stand")],
         default="normal",
     )
     status = models.CharField(

@@ -1,11 +1,13 @@
 import { Castle as CastleIcon, ChevronDown, ChevronsLeft, ChevronsRight, CircleAlert, Coins, Hammer, Handshake, Package, Plus, Swords, Users } from 'lucide-react'
+import { Glyph } from './Glyph'
 import { useState } from 'react'
 import { useViewport } from './viewport'
-import { HOLDING_EFFECTS, HOLDINGS, NEUTRAL, PLAYER, type GameEngine } from '../game/engine'
+import { HOLDING_EFFECTS, HOLDINGS, NEUTRAL, PLAYER, ROYAL, type GameEngine } from '../game/engine'
 import { FORMATIONS } from '../game/formations'
-import { fmt, total, totalInt } from '../game/troops'
+import { fmt, roman, total, totalInt } from '../game/troops'
 import type { Selection } from '../render/GameRenderer'
 import { PixelPortrait } from './PixelPortrait'
+import { Shield } from './Shield'
 import { Bar, FormationIcon, RELATION_COLOR, STATUS_TEXT, SectionTitle, StackBar, Tab, UnitGlyph, moraleColor, useEngine } from './common'
 
 interface Props {
@@ -312,7 +314,7 @@ function RealmTab({ engine, selection, onSelect }: { engine: GameEngine; selecti
                 className={`w-full rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${sel ? 'bg-gold-500/10 ring-1 ring-gold-400/60' : 'well hover:bg-white/6'}`}
               >
                 <div className="flex items-center gap-2">
-                  <CastleIcon size={14} className={c.battleId ? 'animate-pulse text-ember-400' : 'text-royal-300'} />
+                  <Shield rank={engine.seatRank(c)} color={engine.factionColor(c.faction)} size={c.capital ? 15 : 13} className={c.battleId ? 'animate-pulse' : ''} />
                   <span className="flex-1 font-medium">
                     {c.name} <span className="text-[12px] text-ink-500">T{c.tier}</span>
                   </span>
@@ -347,7 +349,7 @@ function RealmTab({ engine, selection, onSelect }: { engine: GameEngine; selecti
                 title={H.blurb}
                 className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${sel ? 'bg-gold-500/10 ring-1 ring-gold-400/60' : 'well hover:bg-white/6'}`}
               >
-                <span className="w-4 text-center">{H.icon}</span>
+                <Glyph name={H.icon} size={14} className="text-gold-300" />
                 <span className="min-w-0 flex-1 truncate font-medium">
                   {c.name} <span className="text-[12px] text-ink-500">{H.name}{c.tier >= 2 ? ' · walled' : ''}</span>
                 </span>
@@ -405,9 +407,11 @@ function ArmiesTab({ engine, selection, onSelect, onFormArmy }: { engine: GameEn
   return (
     <div className="space-y-5">
       <section>
-      <button className="btn btn-gold mb-3 w-full py-2" onClick={onFormArmy}>
-        <Plus size={14} /> Muster a new army <kbd className="ml-1 rounded bg-black/20 px-1 text-[12px]">F</kbd>
-      </button>
+      {s.rules.mode !== 'convoy' && (
+        <button className="btn btn-gold mb-3 w-full py-2" onClick={onFormArmy}>
+          <Plus size={14} /> Muster a new army <kbd className="ml-1 rounded bg-black/20 px-1 text-[12px]">F</kbd>
+        </button>
+      )}
       {armies.length === 0 && <p className="text-center text-xs leading-relaxed text-ink-400">No armies in the field. Draw troops from a castle garrison to form one.</p>}
       <div className="space-y-1.5">
         {armies.map((a) => {
@@ -509,14 +513,14 @@ function WarTab({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint: (x
         <button onClick={() => cap && onFocusPoint(cap.x, cap.z)} className={`flex w-full items-center gap-2 text-left text-[13px] hover:brightness-125 ${!f.alive ? 'line-through' : ''}`}>
           <i className="size-2.5 shrink-0 rounded-sm" style={{ background: f.color }} />
           <span className={`flex-1 truncate ${fid === PLAYER ? 'font-bold text-royal-300' : ''}`}>
-            {f.leader && <span className="mr-1 text-gold-300">♛</span>}
+            {f.leader && <Glyph name="crown" size={12} className="mr-1 -mt-0.5 text-gold-300" />}
             {fid === PLAYER ? `${f.name} (you)` : f.name}
           </span>
           <span className="w-7 text-center text-[11px] font-bold text-gold-300 tabular-nums" title="Realm rank">{f.alive ? engine.rankOf(fid) : '–'}</span>
           <span className="w-5 text-right text-ink-400 tabular-nums">{castles.length}</span>
           <span className="w-12 text-right text-ink-300 tabular-nums">~{fmt(Math.round(p / 50) * 50)}</span>
         </button>
-        {f.alive && pactLeft > 0 && <div className="pl-4.5 text-[12px] text-teal-300">🕊 Truce {Math.floor(pactLeft / 60)}:{String(Math.floor(pactLeft % 60)).padStart(2, '0')}</div>}
+        {f.alive && pactLeft > 0 && <div className="pl-4.5 text-[12px] text-teal-300"><Glyph name="dove" size={12} className="mr-1 -mt-0.5" />Truce {Math.floor(pactLeft / 60)}:{String(Math.floor(pactLeft % 60)).padStart(2, '0')}</div>}
       </div>
     )
   }
@@ -560,19 +564,30 @@ function WarTab({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint: (x
         </section>
       )}
 
+      <QueenCard engine={engine} onFocusPoint={onFocusPoint} />
       <section>
         <SectionTitle>Objectives</SectionTitle>
         <div className="space-y-1 text-xs">
+          {s.train && s.rules.convoy && <TrainObjectives engine={engine} onFocusPoint={onFocusPoint} />}
           {goals.map((c) => (
             <button key={c!.id} onClick={() => onFocusPoint(c!.x, c!.z)} className="flex w-full items-center gap-2 rounded-md well px-2 py-1.5 text-left hover:bg-white/6">
-              <span className={engine.team(c!.faction) === 'A' ? 'text-emerald-400' : 'text-gold-300'}>{engine.team(c!.faction) === 'A' ? '✓' : '⚔'}</span>
+              <span className={engine.team(c!.faction) === 'A' ? 'text-emerald-400' : 'text-gold-300'}><Glyph name={engine.team(c!.faction) === 'A' ? 'check' : 'swords'} size={13} /></span>
               Take <b>{c!.name}</b>
               <span className="ml-auto text-[12px] text-ink-500">{engine.factionName(c!.faction)}</span>
             </button>
           ))}
+          {s.rules.timeLimit && s.rules.timeoutWinner === 'A' && (
+            <div className="flex w-full items-center gap-2 rounded-md well px-2 py-1.5 text-left">
+              <Glyph name={s.rules.mode === 'nightfall' ? 'sun' : 'anchor'} size={13} className="text-gold-300" />
+              {s.rules.mode === 'nightfall' ? 'Hold until dawn' : 'Hold until the relief fleet lands'}
+              <span className="ml-auto text-[12px] text-gold-200 tabular-nums">
+                {Math.max(0, Math.floor((s.rules.timeLimit - s.time) / 60))}:{String(Math.max(0, Math.floor((s.rules.timeLimit - s.time) % 60))).padStart(2, '0')}
+              </span>
+            </div>
+          )}
           {guard.map((c) => (
             <button key={c!.id} onClick={() => onFocusPoint(c!.x, c!.z)} className="flex w-full items-center gap-2 rounded-md well px-2 py-1.5 text-left hover:bg-white/6">
-              <span className="text-royal-300">🛡</span>
+              <Glyph name="shield" size={13} className="text-royal-300" />
               Hold <b>{c!.name}</b>
               {c!.battleId && <span className="ml-auto rounded bg-ember-500 px-1 text-[11px] font-bold">SIEGE</span>}
             </button>
@@ -588,6 +603,46 @@ function WarTab({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint: (x
         <div>{realms.filter((f) => f.team === 'B').map((f) => row(f.id))}</div>
       </section>
     </div>
+  )
+}
+
+/** The enemy's crowned head: slay her and the war is won. Where she was last seen, and how. */
+function QueenCard({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint: (x: number, z: number) => void }) {
+  const s = engine.state
+  const q = engine.foeRoyal()
+  const def = engine.content.commanders.find((c) => c.key === ROYAL.foeKey)
+  if (!def || (!q && !s.foeFallen)) return null
+  const sight = s.foeSighting
+  const live = !!q && engine.canSee(engine.team(PLAYER), q) && !engine.inKeep(q)
+  const age = sight ? Math.max(0, s.time - sight.t) : 0
+  const when = age < 20 ? 'just now' : age < 60 ? `${Math.round(age)}s ago` : `${Math.round(age / 60)} min ago`
+  const where = sight ? engine.placeName(sight.x, sight.z) : ''
+  const status = s.foeFallen
+    ? 'Slain. The enemy alliance is broken.'
+    : live
+      ? `In sight now, riding ${where.replace(/^at /, 'by ')}.`
+      : sight?.how === 'court'
+        ? `Holds court ${where} (known ${when}).`
+        : sight
+          ? `${sight.how === 'scouts' ? 'Scouts saw her' : 'Last seen'} ${where}, ${when}.`
+          : 'Nobody knows where she is.'
+  return (
+    <section className={`rounded-lg border px-3 py-2.5 ${s.foeFallen ? 'border-emerald-500/40 bg-emerald-900/20' : 'border-[#c9464f]/50 bg-[#3a0a12]/50'}`}>
+      <div className="flex items-center gap-2.5">
+        <PixelPortrait spec={def.portrait} size={40} className={`ring-1 ring-[#c9464f]/60 ${s.foeFallen ? 'grayscale' : ''}`} />
+        <div className="min-w-0 flex-1">
+          <div className="text-[11px] tracking-wider text-[#f2a0a6] uppercase">{s.foeFallen ? 'The Usurper is dead' : 'Slay the Usurper to win'}</div>
+          <div className="truncate font-display text-[14px] font-bold text-ink-100">{def.name}</div>
+          <div className="text-[12px] leading-snug text-ink-300">{status}</div>
+        </div>
+      </div>
+      {!s.foeFallen && sight && (
+        <button className="btn mt-2 h-auto min-h-0 w-full py-1 text-[12px]" onClick={() => onFocusPoint(live && q ? q.x : sight.x, live && q ? q.z : sight.z)}>
+          <Glyph name="crown" size={13} /> Show {live ? 'her' : 'where she was seen'}
+        </button>
+      )}
+      {!s.foeFallen && <p className="mt-1.5 text-[11.5px] leading-snug text-ink-500">She rides out with some of the Great Hosts. Scouts near her report where she is; lie in wait in woods or a hidden camp. Take her castle and she flees by the far gate.</p>}
+    </section>
   )
 }
 
@@ -635,7 +690,7 @@ function IntrigueTab({ engine, onSelect }: { engine: GameEngine; onSelect: Props
           {abbeys.length > 0 ? (
             <div className="mt-1.5">
               <div className="flex justify-between text-[12px] text-ink-300">
-                <span>⛪ Abbey prayers ({abbeys.length})</span>
+                <span><Glyph name="chapel" size={12} className="mr-1 -mt-0.5" />Abbey prayers ({abbeys.length})</span>
                 <span className="tabular-nums">{infamy > 0 && nextCleanse !== null ? `−1 in ${clock(Math.max(0, nextCleanse))}` : 'nothing to forgive'}</span>
               </div>
               {infamy > 0 && nextCleanse !== null && (
@@ -671,19 +726,19 @@ function IntrigueTab({ engine, onSelect }: { engine: GameEngine; onSelect: Props
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-1">
                   {pactLeft > 0 ? (
-                    <span className="rounded-sm bg-teal-700/30 px-1.5 py-0.5 text-[12px] text-teal-200">🕊 Truce · {clock(pactLeft)} left</span>
+                    <span className="rounded-sm bg-teal-700/30 px-1.5 py-0.5 text-[12px] text-teal-200"><Glyph name="dove" size={12} className="mr-1 -mt-0.5" />Truce · {clock(pactLeft)} left</span>
                   ) : cooldown > 0 ? (
                     <span className="text-[12px] text-ink-500">Envoys refused · {clock(cooldown)}</span>
                   ) : (
                     <>
                       {pact && (
                         <button className="btn h-auto min-h-0 px-2 py-0.5 text-[12px]" disabled={gold < pact.price} onClick={() => act(() => engine.signPact(f.id))} title="They will not attack your lands or armies for 4 minutes">
-                          🕊 Truce · {fmt(pact.price)}g
+                          <Glyph name="dove" size={12} /> Truce · {fmt(pact.price)}g
                         </button>
                       )}
                       {bribe && (
                         <button className="btn h-auto min-h-0 px-2 py-0.5 text-[12px]" disabled={gold < bribe.price} onClick={() => act(() => engine.bribeLord(f.id))} title="Pay them to join your alliance. If they refuse, 40% of the gold is lost.">
-                          💰 Turn · {fmt(bribe.price)}g
+                          <Glyph name="purse" size={12} /> Turn · {fmt(bribe.price)}g
                         </button>
                       )}
                       {bribe && (
@@ -732,7 +787,7 @@ function IntrigueTab({ engine, onSelect }: { engine: GameEngine; onSelect: Props
             return (
               <div key={c.id} className="well flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px]">
                 <button className="flex min-w-0 flex-1 items-center gap-2 text-left hover:brightness-125" onClick={() => onSelect({ kind: 'castle', id: c.id }, true)} title={H.blurb}>
-                  <span className="w-4 shrink-0 text-center">{H.icon}</span>
+                  <Glyph name={H.icon} size={14} className="text-gold-300" />
                   <span className="truncate font-medium">{c.name}</span>
                   <span className={`text-[12px] font-bold tabular-nums ${t.chance >= 0.6 ? 'text-emerald-400' : t.chance >= 0.4 ? 'text-gold-300' : 'text-ink-400'}`}>{Math.round(t.chance * 100)}%</span>
                 </button>
@@ -740,7 +795,7 @@ function IntrigueTab({ engine, onSelect }: { engine: GameEngine; onSelect: Props
                   <span className="text-[12px] text-ink-500">{t.reason!.match(/\d+s/)?.[0]}</span>
                 ) : (
                   <button className="btn h-auto min-h-0 px-2 py-0.5 text-[12px]" disabled={!!t.reason} onClick={() => act(() => engine.negotiateVillage(c.id))} title="Send envoys: on success the village swears to you; on refusal, part of the gold is lost.">
-                    ✉ {fmt(t.price)}g
+                    <Glyph name="envelope" size={12} /> {fmt(t.price)}g
                   </button>
                 )}
               </div>
@@ -800,5 +855,54 @@ function Metric({ label, value, accent }: { label: string; value: string; accent
       <div className="text-[11px] tracking-wider text-ink-400 uppercase">{label}</div>
       <div className={`text-base font-bold tabular-nums ${accent ? 'text-gold-300' : 'text-ink-100'}`}>{value}</div>
     </div>
+  )
+}
+
+/** Convoy Raid: the goal, each wagon's fate, and the state of the road. */
+function TrainObjectives({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint: (x: number, z: number) => void }) {
+  const s = engine.state
+  const cv = s.rules.convoy!
+  const tr = s.train!
+  const escort = engine.trainEscort() === PLAYER
+  const to = engine.castle(cv.toId)
+  const need = escort ? cv.needed : cv.wagons - cv.needed + 1
+  const got = escort ? tr.delivered : tr.seized
+  const bridgeDown = engine.trainBridgeDown()
+  return (
+    <>
+      <div className="flex w-full items-center gap-2 rounded-md well px-2 py-1.5">
+        <Glyph name="wagon" size={14} className="text-gold-300" />
+        {escort ? (
+          <span>
+            Bring <b>{need}</b> gold wagons into <b>{to?.name}</b>
+          </span>
+        ) : (
+          <span>
+            Seize <b>{need}</b> of the {cv.wagons} gold wagons
+          </span>
+        )}
+        <span className="ml-auto text-[12px] text-gold-200 tabular-nums">
+          {got} / {need}
+        </span>
+      </div>
+      {tr.wagons.map((st, i) => {
+        const w = st !== 'waiting' && st !== 'delivered' && st !== 'seized' ? engine.convoy(st) : undefined
+        const label = st === 'waiting' ? (i === tr.sent ? `leaves in ${Math.max(0, Math.ceil(tr.nextAt - s.time))}s` : 'waiting') : st === 'delivered' ? 'safely in' : st === 'seized' ? 'seized' : `${Math.round(engine.wagonProgress(w!) * 100)}% of the way${w?.detour ? ', by the ford' : ''}`
+        const tone = st === 'delivered' ? (escort ? 'text-emerald-300' : 'text-ember-300') : st === 'seized' ? (escort ? 'text-ember-300' : 'text-emerald-300') : w ? 'text-gold-200' : 'text-ink-500'
+        return (
+          <button key={i} disabled={!w} onClick={() => w && onFocusPoint(w.x, w.z)} className="flex w-full items-center gap-2 rounded-md well px-2 py-1 text-left enabled:hover:bg-white/6">
+            <span className="w-7 font-display text-[12px] font-bold text-ink-300">{roman(i + 1)}</span>
+            <span className={`text-[12px] ${tone}`}>{label}</span>
+          </button>
+        )
+      })}
+      <div className={`flex w-full items-center gap-2 rounded-md well px-2 py-1.5 ${bridgeDown ? 'text-ember-300' : 'text-ink-300'}`}>
+        <Glyph name={bridgeDown ? 'warning' : 'check'} size={13} />
+        {bridgeDown ? 'The bridge is down: wagons wade the ford (slowly).' : 'The bridge over the river stands.'}
+        <button className="ml-auto text-[12px] text-ink-400 hover:text-ink-200" onClick={() => onFocusPoint(cv.bridge[0], cv.bridge[1])}>
+          Show
+        </button>
+      </div>
+    </>
   )
 }

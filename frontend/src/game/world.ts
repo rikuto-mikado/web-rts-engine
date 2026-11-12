@@ -1,8 +1,10 @@
 import { CLIMATES, biomeOf, mapOf, zoneWeights, type Biome, type Climate, type ClimateRules, type MapDef } from './biomes'
 import { Simplex, clamp, lerp, smoothstep } from './noise'
-import type { FeatureKind, Scenario, ScenarioDefinition, TerrainFeature } from './types'
+import type { CityWall, Escarpment, FeatureKind, Scenario, ScenarioDefinition, TerrainFeature } from './types'
 
 export const NAV_CELL = 20
+/** A great wall's gates and breaches are this wide (radius). */
+export const RAMPART_GATE = 75
 export const WATER_LEVEL = 0
 export const BRIDGE_DECK = 7
 /** Wading a ford: slow, and no charging or squares in the water. */
@@ -13,7 +15,15 @@ export const CASTLE_SCALE = 1.9
 /** Half-width of a gate passage through the walls. */
 export const GATE_HALF = 18
 
+/**
+ * A royal seat: the castle where a crowned head (the King, or the Usurper Queen) keeps court
+ * in this far-off land. Far from their home citadels, but grander than any lord's castle.
+ */
+export const ROYAL_SEAT_TIER = 5
+
 export function castleRadius(tier: number): number {
+  // A royal seat covers about 1.75x the ground of a lord's greatest castle.
+  if (tier >= ROYAL_SEAT_TIER) return (34 + 4 * 12) * CASTLE_SCALE * 1.32
   return (34 + tier * 12) * CASTLE_SCALE
 }
 /** Radius of the curtain wall (armies pass it only through the four gates). */
@@ -122,7 +132,8 @@ export class World {
       }
     }
 
-    for (const c of this.def.castles) if (!c.village) this.walls.set(c.id, { x: c.x, z: c.z, r: wallRadius(c.tier) })
+    // (A city's gatehouses and wards stand in the city's own walls: no curtain of their own.)
+    for (const c of this.def.castles) if (!c.village && !c.gate && !c.district) this.walls.set(c.id, { x: c.x, z: c.z, r: wallRadius(c.tier) })
     this.navRes = Math.round(this.size / NAV_CELL)
     this.navCost = new Float32Array(this.navRes * this.navRes)
     this.buildNav()
@@ -175,13 +186,35 @@ export class World {
 
     // Castles sit on flattened plateaus.
     for (const c of this.def.castles) {
-      const r = castleRadius(Math.min(4, c.tier + 1))
+      const r = castleRadius(Math.max(c.tier, Math.min(4, c.tier + 1)))
       const d = Math.hypot(x - c.x, z - c.z)
       if (d < r * 1.7) {
         const plateau = Math.max(10, 16 + n.fbm(c.x * 0.0014, c.z * 0.0014, 4) * 22) + 2
         h = lerp(plateau, h, smoothstep(r * 1.05, r * 1.7, d))
       }
     }
+
+    // A royal city rises in tiers: the lower city on a terrace under its outer wall, the royal quarter
+    // higher behind the inner wall (which holds the ground up like a dam), the Citadel on its own
+    // rocky mount at the heart.
+    if (town?.poly && this.def.walls?.length === 2 && Math.hypot(x - town.x, z - town.z) < town.r + 80) {
+      const [innerW, outerW] = this.def.walls
+      const signed = (w: CityWall) => (this.insideWall(w, x, z) ? 1 : -1) * this.polyDist(this.wallLoop(w), x, z)
+      const sO = signed(outerW)
+      if (sO > -70) {
+        const sI = signed(innerW)
+        let t = 14 + this.detail.noise(x * 0.008, z * 0.008) * 0.9
+        t += 7 * smoothstep(-34, 12, sO)
+        t += 22 * smoothstep(-14, 30, sI)
+        const dk = Math.hypot(x - town.x, z - town.z)
+        const mount = castleRadius(ROYAL_SEAT_TIER)
+        t += 30 * (1 - smoothstep(mount * 0.98, mount * 1.22, dk)) + 4 * (1 - smoothstep(mount * 1.22, mount * 1.6, dk))
+        h = lerp(h, t, smoothstep(-66, -22, sO))
+      }
+    }
+
+    // Escarpments: the tableland to the north stands higher, its edge a cliff; ravines climb it.
+    for (const e of this.def.escarpments ?? []) h += this.escarpRise(e, x, z)
 
     const { d: dr, width } = this.distToRiver(x, z)
     const half = width * 0.5
@@ -215,10 +248,122 @@ export class World {
     return h
   }
 
+  /** How far north of an escarpment's edge a point lies (negative: south, on the plain). */
+  escarpSide(e: Escarpment, x: number, z: number): number {
+    const p = e.points
+    let ez = p[0][1]
+    for (let k = 0; k < p.length - 1; k++) {
+      if (x >= p[k][0] && x <= p[k + 1][0]) {
+        ez = p[k][1] + ((p[k + 1][1] - p[k][1]) * (x - p[k][0])) / (p[k + 1][0] - p[k][0] || 1)
+        break
+      }
+      if (x > p[k + 1][0]) ez = p[k + 1][1]
+    }
+    // Bays and spurs: the edge wanders at two scales, as a real cliff line does.
+    ez += this.detail.noise(x * 0.0032, 7.3) * 85 + this.detail.noise(x * 0.011, 3.1) * 26
+    return ez - z
+  }
+  /** Ravine factor at x (1 inside a pass, 0 clear of it). */
+  private ravine(e: Escarpment, x: number, z: number): number {
+    let r = 0
+    for (const p of e.passes) {
+      if (Math.abs(z - p.z) > e.ramp + 300) continue
+      r = Math.max(r, 1 - smoothstep(p.w, p.w + 34, Math.abs(x - p.x)))
+    }
+    return r
+  }
+  /** The height an escarpment adds here. */
+  private escarpRise(e: Escarpment, x: number, z: number): number {
+    const s = this.escarpSide(e, x, z)
+    if (s < -e.ramp) return 0
+    const cliff = smoothstep(-e.cliff / 2, e.cliff / 2, s)
+    const r = this.ravine(e, x, z)
+    const ramp = smoothstep(-e.ramp * 0.12, e.ramp, s)
+    const k = cliff + (ramp - cliff) * r
+    // The cliff is not the same height all along.
+    return e.height * (0.78 + 0.22 * this.detail.noise(x * 0.0021, 11.7)) * k
+  }
+  /** On an escarpment's cliff face (not in one of its ravines): impassable. */
+  onCliff(x: number, z: number): boolean {
+    for (const e of this.def.escarpments ?? []) {
+      const s = this.escarpSide(e, x, z)
+      if (Math.abs(s) < e.cliff / 2 + NAV_CELL * 0.8 && this.ravine(e, x, z) < 0.5) return true
+    }
+    return false
+  }
+
+  /** Distance from a point to a polyline. */
+  polyDist(pts: [number, number][], x: number, z: number): number {
+    let best = Infinity
+    for (let k = 0; k < pts.length - 1; k++) {
+      const [ax, az] = pts[k]
+      const [bx, bz] = pts[k + 1]
+      if (x < Math.min(ax, bx) - 400 || x > Math.max(ax, bx) + 400 || z < Math.min(az, bz) - 400 || z > Math.max(az, bz) + 400) continue
+      best = Math.min(best, distToSegment(x, z, ax, az, bx, bz))
+    }
+    return best
+  }
+  /** The unit direction of a polyline at its point nearest (x, z). */
+  polyDir(pts: [number, number][], x: number, z: number): [number, number] {
+    let best = Infinity
+    let dir: [number, number] = [1, 0]
+    for (let k = 0; k < pts.length - 1; k++) {
+      const [ax, az] = pts[k]
+      const [bx, bz] = pts[k + 1]
+      const d = distToSegment(x, z, ax, az, bx, bz)
+      if (d < best) {
+        best = d
+        const l = Math.hypot(bx - ax, bz - az) || 1
+        dir = [(bx - ax) / l, (bz - az) / l]
+      }
+    }
+    return dir
+  }
+  /** On a great wall (not at one of its gates): impassable. */
+  onRampart(x: number, z: number, pad = 0): boolean {
+    for (const r of this.def.ramparts ?? []) {
+      if (this.polyDist(r.points, x, z) > r.width / 2 + pad) continue
+      if (r.gates.some((g) => Math.hypot(g.x - x, g.z - z) < RAMPART_GATE)) continue
+      return true
+    }
+    return false
+  }
+
+  /** Distance to the nearest road, and that road's width (Infinity off any road). */
+  roadDist(x: number, z: number): { d: number; width: number } {
+    let best = Infinity
+    let width = 0
+    for (const road of this.def.roads ?? []) {
+      const pts = road.points
+      for (let k = 0; k < pts.length - 1; k++) {
+        const [ax, az] = pts[k]
+        const [bx, bz] = pts[k + 1]
+        // Cheap reject: far from this segment's box.
+        if (x < Math.min(ax, bx) - 120 || x > Math.max(ax, bx) + 120 || z < Math.min(az, bz) - 120 || z > Math.max(az, bz) + 120) continue
+        const d = distToSegment(x, z, ax, az, bx, bz)
+        if (d < best) {
+          best = d
+          width = road.width
+        }
+      }
+    }
+    return { d: best, width }
+  }
+  /** On a road (within its width, plus a margin). */
+  onRoad(x: number, z: number, margin = 0): boolean {
+    if (!this.def.roads?.length) return false
+    const r = this.roadDist(x, z)
+    return r.d < r.width / 2 + margin
+  }
+
   private computeForest(x: number, z: number, h: number): number {
     if (h < 4 || h > 115) return 0
     // No woods inside a fortress.
-    for (const w of this.def.walls ?? []) if (Math.hypot(x - w.x, z - w.z) < w.r + 90) return 0
+    for (const w of this.def.walls ?? []) {
+      if (!w.points) {
+        if (Math.hypot(x - w.x, z - w.z) < w.r + 90) return 0
+      } else if (Math.hypot(x - w.x, z - w.z) < w.r + 90 && (this.insideWall(w, x, z) || this.polyDist(this.wallLoop(w), x, z) < 90)) return 0
+    }
     let f = this.forestNoise.fbm(x * 0.0035, z * 0.0035, 3)
     // Each climate is more or less wooded than the map as a whole.
     const zi = this.zoneIndex(x, z)
@@ -229,11 +374,29 @@ export class World {
     if (f <= 0) return 0
     for (const c of this.def.castles) {
       const d = Math.hypot(x - c.x, z - c.z)
-      const R = castleRadius(Math.min(4, c.tier + 1))
+      const R = castleRadius(Math.max(c.tier, Math.min(4, c.tier + 1)))
       f *= smoothstep(R * 1.4, R * 2.3, d)
     }
     for (const b of [...this.fords, ...this.stoneBridges]) {
       f *= smoothstep(60, 140, Math.hypot(x - b.x, z - b.z))
+    }
+    if (this.def.roads?.length) {
+      // The road is cut through the trees, with a narrow verge either side.
+      const r = this.roadDist(x, z)
+      if (r.d < 200) f *= smoothstep(r.width / 2 + 8, r.width / 2 + 46, r.d)
+    }
+    for (const c of this.def.clearings ?? []) {
+      const d = Math.hypot(x - c.x, z - c.z)
+      if (d < c.r) f *= smoothstep(c.r * 0.6, c.r, d)
+    }
+    // A cleared strip along the great walls (and wide aprons at their gates).
+    for (const r of this.def.ramparts ?? []) {
+      const d = this.polyDist(r.points, x, z)
+      if (d < r.width / 2 + 70) f *= smoothstep(r.width / 2 + 10, r.width / 2 + 70, d)
+      for (const g of r.gates) {
+        const dg = Math.hypot(g.x - x, g.z - z)
+        if (dg < 220) f *= smoothstep(110, 220, dg)
+      }
     }
     f *= smoothstep(4, 10, h)
     return f
@@ -267,6 +430,38 @@ export class World {
     return { x: px, z: pz, dirX: -dir[1], dirZ: dir[0], length: width + 110, width: 26 }
   }
 
+  /**
+   * Level a patch of ground for a village or other holding (generated after the
+   * height field): a gentle terrace at the average height, easing back into the
+   * land around it, so the compound and its fields sit on the ground instead of
+   * floating over one side of a slope and burying the other.
+   */
+  levelGround(x: number, z: number, r: number) {
+    let sum = this.heightAt(x, z)
+    let n = 1
+    for (let k = 0; k < 12; k++) {
+      sum += this.heightAt(x + Math.cos((k / 12) * Math.PI * 2) * r * 0.6, z + Math.sin((k / 12) * Math.PI * 2) * r * 0.6)
+      n++
+    }
+    const level = Math.max(4, sum / n)
+    const R = r * 1.6
+    const i0 = Math.max(0, Math.floor((x - R + this.half) / this.cell))
+    const i1 = Math.min(this.hRes - 1, Math.ceil((x + R + this.half) / this.cell))
+    const j0 = Math.max(0, Math.floor((z - R + this.half) / this.cell))
+    const j1 = Math.min(this.hRes - 1, Math.ceil((z + R + this.half) / this.cell))
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const d = Math.hypot(-this.half + i * this.cell - x, -this.half + j * this.cell - z)
+        if (d >= R) continue
+        const k = j * this.hRes + i
+        const h = this.heights[k]
+        // Never raise the bed of a river or lake: only the dry land is levelled.
+        if (h < 2) continue
+        this.heights[k] = lerp(level, h, smoothstep(r, R, d))
+      }
+    }
+  }
+
   /** Bilinear sample of the precomputed height field (terrain surface, ignoring bridges). */
   heightAt(x: number, z: number): number {
     const fx = clamp((x + this.half) / this.cell, 0, this.hRes - 1.001)
@@ -293,9 +488,12 @@ export class World {
   readonly broken = new Set<number>()
 
   /** Burn or rebuild a bridge: updates the navigation grid around it. */
+  /** Bumped whenever a bridge goes up or comes down (wagons re-plan their road). */
+  bridgeVersion = 0
   setBridgeBroken(index: number, broken: boolean) {
     const b = this.bridges[index]
     if (!b) return
+    this.bridgeVersion++
     if (broken) this.broken.add(index)
     else this.broken.delete(index)
     const R = this.navRes
@@ -334,16 +532,20 @@ export class World {
   /** The terrain feature at a point, if any. */
   featureAt(x: number, z: number): TerrainFeature | null {
     for (const f of this.def.features ?? []) {
-      const reach = (f.len ?? 0) / 2 + f.r
-      if (Math.abs(x - f.x) > reach || Math.abs(z - f.z) > reach) continue
-      if (f.len) {
-        const dx = x - f.x
-        const dz = z - f.z
-        const ca = Math.cos(f.angle ?? 0)
-        const sa = Math.sin(f.angle ?? 0)
-        if (Math.abs(dx * ca + dz * sa) < f.len / 2 && Math.abs(-dx * sa + dz * ca) < f.r) return f
-      } else if (Math.hypot(x - f.x, z - f.z) < f.r) return f
+      if (Math.abs(x - f.x) > f.r || Math.abs(z - f.z) > f.r) continue
+      if (Math.hypot(x - f.x, z - f.z) < f.r) return f
     }
+    return null
+  }
+  /** What hides a band of men here, if anything: woods, a thicket, a river valley or a mountain's flank. */
+  coverAt(x: number, z: number): 'woods' | 'thicket' | 'valley' | 'mountain' | null {
+    if (this.forestAt(x, z) > 0.3) return 'woods'
+    const f = this.featureKindAt(x, z)
+    if (f === 'thicket') return 'thicket'
+    if (f === 'crag') return 'mountain'
+    for (const m of this.def.mountains) if (Math.hypot(x - m.x, z - m.z) < m.r * 1.3) return 'mountain'
+    const { d, width } = this.distToRiver(x, z)
+    if (d < width * 0.5 + 150) return 'valley'
     return null
   }
   featureKindAt(x: number, z: number): FeatureKind | null {
@@ -511,6 +713,30 @@ export class World {
         b = lerp(b, street ? 0.48 : B.earth[2] * 0.95 + (c - 0.42) * 0.1, t)
       }
     }
+    // The great walls: grey stone (so they read on every map), tumbled rubble at the breaches.
+    if (this.def.ramparts?.length) {
+      for (const rp of this.def.ramparts) {
+        const d = this.polyDist(rp.points, x, z)
+        if (d > rp.width / 2 + 8) continue
+        const gate = rp.gates.find((gt) => Math.hypot(gt.x - x, gt.z - z) < RAMPART_GATE)
+        const t = 1 - smoothstep(rp.width / 2, rp.width / 2 + 8, d)
+        const [cr, cg, cb] = gate ? (gate.breach ? [0.5, 0.47, 0.42] : [0.46, 0.4, 0.31]) : [0.36, 0.35, 0.36]
+        r = lerp(r, cr, t)
+        g = lerp(g, cg, t)
+        b = lerp(b, cb, t)
+      }
+    }
+    // Roads: packed earth with paler wheel ruts.
+    if (this.def.roads?.length) {
+      const rd = this.roadDist(x, z)
+      const t = 1 - smoothstep(rd.width / 2 - 4, rd.width / 2 + 6, rd.d)
+      if (t > 0 && h > 1) {
+        const rut = Math.abs(rd.d - rd.width * 0.22) < 2.2 ? 0.05 : 0
+        r = lerp(r, B.earth[0] * 0.82 + rut, t * 0.92)
+        g = lerp(g, B.earth[1] * 0.78 + rut, t * 0.92)
+        b = lerp(b, B.earth[2] * 0.72 + rut * 0.8, t * 0.92)
+      }
+    }
     // Plateaus around castles get trampled earth.
     for (const c of this.def.castles) {
       const d = Math.hypot(x - c.x, z - c.z)
@@ -590,8 +816,31 @@ export class World {
   }
 
   /** True if the point lies on a curtain wall (outside its gate openings). */
+  /** A city wall's outline as a closed loop (for outline walls). */
+  wallLoop(w: CityWall): [number, number][] {
+    const p = w.points!
+    return [...p, p[0]]
+  }
+  /** Is (x, z) inside a city wall? */
+  insideWall(w: CityWall, x: number, z: number): boolean {
+    if (!w.points) return Math.hypot(x - w.x, z - w.z) < w.r
+    const p = w.points
+    let inside = false
+    for (let i = 0, j = p.length - 1; i < p.length; j = i++) {
+      const [xi, zi] = p[i]
+      const [xj, zj] = p[j]
+      if (zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside
+    }
+    return inside
+  }
   onWall(x: number, z: number, pad = 0): boolean {
     for (const w of this.def.walls ?? []) {
+      if (w.points) {
+        if (Math.abs(x - w.x) > w.r + 40 || Math.abs(z - w.z) > w.r + 40) continue
+        if (this.polyDist(this.wallLoop(w), x, z) > 16 + pad) continue
+        if (!(w.gatePts ?? []).some(([gx, gz]) => Math.hypot(gx - x, gz - z) < 62)) return true
+        continue
+      }
       const d = Math.hypot(x - w.x, z - w.z)
       if (Math.abs(d - w.r) > 16 + pad) continue
       const ang = Math.atan2(z - w.z, x - w.x)
@@ -607,6 +856,9 @@ export class World {
     if (edge > this.half - 60) return 0
     if (this.onWall(x, z, 4)) return 0
     if (this.onCastleWall(x, z)) return 0
+    // (A broad band of blocked cells: a thin diagonal line of them would let paths slip between corners.)
+    if (this.def.ramparts?.length && this.onRampart(x, z, NAV_CELL * 0.8)) return 0
+    if (this.def.escarpments?.length && this.onCliff(x, z)) return 0
     if (this.bridgeAt(x, z, 6)) return 1
     if (this.fordAt(x, z, 4)) return 2.2
     const h = this.heightAt(x, z)
@@ -614,6 +866,8 @@ export class World {
     if (h > 125) return 0
     const slope = this.slopeAt(x, z)
     if (slope > 1.25) return 0
+    // Roads are the quick way through.
+    if (this.def.roads?.length && this.onRoad(x, z, 6)) return 0.7 + slope
     return 1 + this.forestAt(x, z) * 0.6 + slope * 1.5
   }
 

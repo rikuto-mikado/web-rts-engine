@@ -41,9 +41,3 @@ export function isTouchDevice() {
 export function compactPanelWidth(screenW: number) {
   return Math.round(Math.min(400, Math.max(300, screenW * 0.44)))
 }
-
-/** On phones and tablets the map folds away to a button; both sit at the bottom right. */
-export function minimapFootprint(compact: boolean, phone: boolean, shown: boolean): number {
-  if (!compact) return 0
-  return shown ? (phone ? 132 : 160) + 12 + 8 : 48 + 8
-}

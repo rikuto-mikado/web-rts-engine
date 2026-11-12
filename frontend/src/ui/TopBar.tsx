@@ -1,9 +1,11 @@
-import { Coins, Crown, Ellipsis, Hourglass, Keyboard, LogOut, Menu, Rotate3d, ScrollText, Square, Swords, Users } from 'lucide-react'
+import { Coins, Crown, Ellipsis, Hourglass, Keyboard, LogOut, Menu, Moon, Rotate3d, ScrollText, Square, Sun, Swords, Users } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { PLAYER, type GameEngine } from '../game/engine'
 import { calendar, fmt, total } from '../game/troops'
 import { WEATHER_LABEL, describeClimate } from '../game/weather'
 import { RELATION_COLOR, useEngine } from './common'
+import { Glyph } from './Glyph'
+import { SEASON_GLYPH, SEASON_TONE } from './seasonGlyph'
 import { useViewport } from './viewport'
 
 interface Props {
@@ -14,13 +16,15 @@ interface Props {
   onMenu: () => void
   overhead: boolean
   onToggleView: () => void
+  night: boolean
+  onToggleNight: () => void
   campaignName: string
 }
 
-const MODE_NAME = { campaign: 'Conquest', alliance: 'Alliance War', survival: 'Conquest' }
+const MODE_NAME = { campaign: 'Conquest', alliance: 'Alliance War', survival: 'Conquest', convoy: 'Convoy Raid', nightfall: 'The Long Night' }
 
 /** One information bar: realm status on the left, chronicle / manual / leave tucked at its end. */
-export function TopBar({ engine, onQuit, onToggleLog, onHelp, onMenu, overhead, onToggleView, campaignName }: Props) {
+export function TopBar({ engine, onQuit, onToggleLog, onHelp, onMenu, overhead, onToggleView, night, onToggleNight, campaignName }: Props) {
   useEngine(engine)
   const vp = useViewport()
   const [more, setMore] = useState(false)
@@ -35,11 +39,13 @@ export function TopBar({ engine, onQuit, onToggleLog, onHelp, onMenu, overhead, 
   const clockText = clock && `${clock} left`
   const season = engine.season()
   const wx = s.weather.kind
-  const wxIcon = wx === 'rain' ? '🌧' : wx === 'storm' ? '⛈' : wx === 'snow' ? '❄' : season === 'Winter' ? '🌨' : season === 'Autumn' ? '🍂' : season === 'Spring' ? '🌱' : '☀'
+  // Bad weather shows itself; on a fair day, the season.
+  const wxIcon = wx === 'rain' || wx === 'storm' || wx === 'snow' ? wx : SEASON_GLYPH[season]
+  const wxTone = wx === 'clear' ? SEASON_TONE[season] : 'text-sky-200'
   const wxTip = describeClimate(season, wx).join('\n')
   const weatherChip = (
     <div className="flex items-center gap-1.5 text-[13px] text-ink-200" title={wxTip}>
-      <span className="text-[16px] leading-none">{wxIcon}</span>
+      <Glyph name={wxIcon} size={18} className={wxTone} />
       <span className="leading-tight">
         <span className="block">{season}</span>
         <span className="block text-[11px] text-ink-400">{WEATHER_LABEL[wx]}</span>
@@ -63,7 +69,10 @@ export function TopBar({ engine, onQuit, onToggleLog, onHelp, onMenu, overhead, 
           ) : (
             <div className="ml-auto hidden text-[12px] leading-tight text-ink-300 min-[460px]:block">{calendar(s.time).split(' · ')[0]}</div>
           )}
-          <button className="btn ml-auto h-9 px-2.5 min-[460px]:ml-0" onClick={() => setMore((v) => !v)} title="More">
+          <button className="btn ml-auto h-9 px-2.5 min-[460px]:ml-0" onClick={onToggleNight} title={night ? 'Day mode' : 'Night mode'}>
+            {night ? <Sun size={16} /> : <Moon size={16} />}
+          </button>
+          <button className="btn h-9 px-2.5" onClick={() => setMore((v) => !v)} title="More">
             <Ellipsis size={16} />
           </button>
           {more && (
@@ -120,6 +129,9 @@ export function TopBar({ engine, onQuit, onToggleLog, onHelp, onMenu, overhead, 
           </button>
           <button className="btn h-9 px-2.5" onClick={onHelp} title="Field manual (H)">
             <Keyboard size={15} />
+          </button>
+          <button className="btn h-9 px-2.5" onClick={onToggleNight} title={night ? 'Day mode: a bright map' : 'Night mode: a darker map, easier on the eyes'}>
+            {night ? <Sun size={15} /> : <Moon size={15} />}
           </button>
           <button className="btn h-9 px-2.5" onClick={onToggleView} title={overhead ? 'Switch to tilted view (V)' : 'Switch to overhead view (V)'}>
             {overhead ? <Rotate3d size={15} /> : <Square size={15} />}

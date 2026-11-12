@@ -1,5 +1,11 @@
 @import 'tailwindcss';
 
+/* Screen-height variants for the one-screen menu: short (phones held sideways, small laptops) and tall. */
+@custom-variant short (@media (max-height: 620px));
+@custom-variant tall (@media (min-height: 860px));
+/* The smallest phones held sideways (about 360 tall): every line counts. */
+@custom-variant tiny (@media (max-height: 400px));
+
 /*
  * Visual identity: a war table. Dark tooled leather and blackened iron frames,
  * gold-leaf headings with ornamental rules, parchment for dispatches.
@@ -605,4 +611,260 @@ input:not([type]) {
 }
 .animate-fade-up {
   animation: fade-up 0.3s ease-out;
+}
+
+/* Night mode: the parchment and the brightest surfaces dim to candlelit tones. */
+[data-night] .parchment {
+  color: #e9dcbc;
+  background-color: #3a3024;
+  border-color: #6d5430;
+  box-shadow:
+    inset 0 0 0 1px rgb(255 230 180 / 0.08),
+    0 6px 18px rgb(0 0 0 / 0.5);
+}
+/* Ink-coloured icons would vanish on the dark paper: lift them. */
+[data-night] .parchment svg {
+  filter: brightness(2) saturate(0.85);
+}
+[data-night] .btn-gold {
+  filter: brightness(0.82) saturate(0.9);
+}
+[data-night] .panel canvas {
+  filter: brightness(0.75) saturate(0.85);
+}
+
+/* The Usurper's last known whereabouts. */
+.queen-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px 3px 5px;
+  border-radius: 4px;
+  border: 1px solid #c9464f;
+  background: linear-gradient(180deg, rgb(70 12 22 / 0.92), rgb(40 6 12 / 0.92));
+  box-shadow: 0 0 14px rgb(220 60 70 / 0.45);
+  color: #f6dfe0;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.queen-label .ql-crown {
+  font-size: 18px;
+  color: #f2c75a;
+  animation: queen-pulse 1.6s ease-in-out infinite;
+}
+.queen-label .ql-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.1;
+  font-size: 11px;
+}
+.queen-label .ql-text b {
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+.queen-label[data-stale='1'] {
+  opacity: 0.7;
+  border-style: dashed;
+}
+@keyframes queen-pulse {
+  50% {
+    transform: scale(1.18);
+    text-shadow: 0 0 8px #f2c75a;
+  }
+}
+
+/* Castle heraldry on the map labels (see render/heraldry.ts). */
+.cl-shield {
+  display: inline-block;
+  margin-right: 5px;
+  vertical-align: -3px;
+  filter: drop-shadow(0 1px 1px rgb(0 0 0 / 0.7));
+}
+
+/* ---- Main menu: a war table of oak, iron and parchment ------------------------------- */
+.iron-frame {
+  box-shadow:
+    inset 0 0 0 1px rgb(209 167 63 / 0.28),
+    inset 0 0 0 3px #0c0907,
+    inset 0 0 0 4px rgb(140 140 150 / 0.18),
+    inset 0 0 30px rgb(0 0 0 / 0.6),
+    0 14px 34px rgb(0 0 0 / 0.6);
+}
+.wordmark {
+  font-size: clamp(30px, 7.2vh, 76px);
+  letter-spacing: 0.06em;
+  background: linear-gradient(180deg, #fff3cc 0%, #f0cd78 38%, #c69434 62%, #8a5f16 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 2px 0 #2a1806) drop-shadow(0 6px 14px rgb(0 0 0 / 0.75));
+}
+.wordmark-o {
+  height: 1.12em;
+  width: auto;
+  margin: 0 0.04em 0 0.02em;
+  transform: translateY(-0.05em);
+  filter: drop-shadow(0 2px 0 #2a1806);
+}
+.menu-card {
+  border-radius: 3px;
+  padding: clamp(6px, 1.3vh, 14px) clamp(8px, 1vw, 14px);
+  border: 1px solid #070504;
+  background: linear-gradient(180deg, #2a2119, #1a140e);
+  box-shadow: inset 0 0 0 1px rgb(209 167 63 / 0.18), inset 0 0 18px rgb(0 0 0 / 0.5);
+  color: var(--color-ink-200);
+  transition: filter 0.15s;
+}
+.menu-card:hover {
+  filter: brightness(1.18);
+}
+.menu-card .menu-card-icon {
+  color: var(--color-gold-300);
+}
+.menu-card .menu-card-tag {
+  color: rgb(222 186 100 / 0.9);
+}
+.menu-card .menu-card-text {
+  color: var(--color-ink-400);
+}
+/* The chosen mode reads as a parchment order with a gilt edge. */
+.menu-card.is-active {
+  color: #2a1c0e;
+  background-color: #e7d6ae;
+  background-image:
+    var(--paper-grain),
+    radial-gradient(130% 120% at 50% 40%, transparent 50%, rgb(120 84 36 / 0.45) 100%);
+  border-color: #6d5430;
+  box-shadow:
+    inset 0 0 0 1px rgb(255 248 228 / 0.55),
+    0 0 0 2px #c9a24a,
+    0 0 16px rgb(230 180 80 / 0.35);
+}
+.menu-card.is-active .menu-card-icon,
+.menu-card.is-active .menu-card-tag {
+  color: #7a4a10;
+}
+.menu-card.is-active .menu-card-text {
+  color: #4a3420;
+}
+.map-card {
+  overflow: hidden;
+  border-radius: 3px;
+  border: 1px solid #070504;
+  color: #2a1c0e;
+  background-color: #d8c59a;
+  background-image:
+    var(--paper-grain),
+    radial-gradient(130% 140% at 50% 30%, transparent 55%, rgb(110 76 30 / 0.45) 100%);
+  box-shadow: inset 0 0 0 1px rgb(255 248 228 / 0.35);
+  filter: saturate(0.85) brightness(0.86);
+  transition: filter 0.15s;
+}
+.map-card .map-card-tag {
+  color: #6a4818;
+}
+.map-card:hover {
+  filter: none;
+}
+.map-card.is-active {
+  filter: none;
+  box-shadow:
+    inset 0 0 0 1px rgb(255 248 228 / 0.55),
+    0 0 0 2px #e0b85a,
+    0 0 14px rgb(230 180 80 / 0.4);
+}
+.menu-btn {
+  padding-top: clamp(4px, 0.9vh, 7px);
+  padding-bottom: clamp(4px, 0.9vh, 7px);
+  font-size: clamp(11.5px, 1.6vh, 13px);
+}
+.map-frame {
+  padding: clamp(6px, 1.1vh, 12px);
+  border-radius: 4px;
+  background: linear-gradient(135deg, #5a3e22, #3a2614 45%, #4a321c);
+  box-shadow:
+    inset 0 0 0 2px #1a1008,
+    inset 0 0 0 4px rgb(200 150 80 / 0.25),
+    inset 0 0 14px rgb(0 0 0 / 0.7),
+    0 10px 24px rgb(0 0 0 / 0.6);
+}
+.scroll-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  padding: clamp(3px, 0.7vh, 6px) 16px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: clamp(11.5px, 1.6vh, 13.5px);
+  color: #2a1c0e;
+  border-radius: 999px;
+  border: 1px solid #4a3208;
+  background: linear-gradient(180deg, #f3e2b8, #d9bf86 55%, #b8955a);
+  box-shadow:
+    inset 0 1px 0 rgb(255 250 230 / 0.7),
+    0 0 0 3px #6a4a18,
+    0 4px 10px rgb(0 0 0 / 0.6);
+}
+.scroll-btn:hover {
+  filter: brightness(1.08);
+}
+.parchment-card {
+  color: #2e2010;
+  background-color: #e3d1a6;
+  background-image:
+    var(--paper-grain),
+    radial-gradient(130% 160% at 50% 30%, transparent 55%, rgb(110 76 30 / 0.4) 100%);
+  border: 1px solid #6d5430;
+  box-shadow: inset 0 0 0 1px rgb(255 248 228 / 0.5), 0 6px 16px rgb(0 0 0 / 0.5);
+}
+.plaque {
+  background: linear-gradient(180deg, #2c2620, #1a1612);
+  border: 1px solid #0a0806;
+  box-shadow:
+    inset 0 0 0 1px rgb(150 150 160 / 0.25),
+    inset 0 1px 0 rgb(255 255 255 / 0.08);
+}
+.begin-btn {
+  box-shadow:
+    inset 0 1px 0 rgb(255 248 220 / 0.65),
+    inset 0 -3px 0 rgb(80 50 5 / 0.4),
+    0 0 0 2px #4a3208,
+    0 0 22px rgb(230 180 80 / 0.35),
+    0 4px 10px rgb(0 0 0 / 0.6);
+}
+@media (max-height: 620px) {
+  .diff-btn {
+    font-size: 10.5px;
+    letter-spacing: -0.01em;
+  }
+}
+.al-status.infil {
+  color: #a7f3c8;
+  background: rgb(6 60 36 / 0.85);
+}
+.al-status.disguise {
+  color: #f3dfa7;
+  background: rgb(70 52 16 / 0.85);
+}
+.al-status.stance {
+  color: #f3dfa7;
+  background: rgb(40 34 24 / 0.88);
+}
+.al-status.seen {
+  color: #fcb4a0;
+  background: rgb(80 24 16 / 0.85);
+}
+/* Engraved glyphs inside map labels sit on the text line. */
+.al-status .glyph,
+.cl-name .glyph,
+.cl-gar .glyph,
+.cl-home .glyph {
+  display: inline-block;
+  vertical-align: -2px;
+  margin-right: 2px;
+}
+.ql-crown .glyph {
+  display: block;
 }

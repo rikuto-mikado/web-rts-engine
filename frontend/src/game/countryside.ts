@@ -24,7 +24,24 @@ export function generateCountryside(world: World, castles: CastleDef[], seed: nu
   const villageCount = Math.max(4, Math.round(10 * area))
   const siteCount = Math.max(4, Math.round(12 * area))
   const taken: { x: number; z: number; r: number }[] = castles.map((c) => ({ x: c.x, z: c.z, r: holdingRadius(c) + 260 }))
+  // A walled city keeps the countryside outside its walls.
+  const town = world.def.town
+  if (town) taken.push({ x: town.x, z: town.z, r: town.r + 220 })
   const free = (x: number, z: number, r: number) => taken.every((t) => Math.hypot(t.x - x, t.z - z) > t.r + r)
+  // Terrain features (standing stones, terraces, windfall, crags) keep their ground to themselves.
+  const features = world.def.features ?? []
+  const clearOfFeatures = (x: number, z: number, r: number) => features.every((f) => Math.hypot(f.x - x, f.z - z) > f.r + r)
+  // A compound (and the fields round it) must stand on dry, passable, fairly even ground.
+  const dryRing = (x: number, z: number, r: number, maxSlope: number) => {
+    const h0 = world.heightAt(x, z)
+    for (let k = 0; k < 12; k++) {
+      const px = x + Math.cos((k / 12) * Math.PI * 2) * r
+      const pz = z + Math.sin((k / 12) * Math.PI * 2) * r
+      const h = world.heightAt(px, pz)
+      if (h < 3 || !world.isPassable(px, pz) || Math.abs(h - h0) > r * maxSlope) return false
+    }
+    return true
+  }
   const names = new Set(castles.map((c) => c.name))
   const name = () => {
     for (let k = 0; k < 50; k++) {
@@ -42,8 +59,8 @@ export function generateCountryside(world: World, castles: CastleDef[], seed: nu
   for (let tries = 0; tries < 900 && villages.length < villageCount; tries++) {
     const x = (rnd() * 2 - 1) * (half - 260)
     const z = (rnd() * 2 - 1) * (half - 260)
-    if (!world.isPassable(x, z) || world.forestAt(x, z) > 0.45 || world.slopeAt(x, z) > 0.35 || world.bridgeAt(x, z, 60)) continue
-    if (!free(x, z, 120)) continue
+    if (!world.isPassable(x, z) || world.forestAt(x, z) > 0.45 || world.slopeAt(x, z) > 0.35 || world.bridgeAt(x, z, 150)) continue
+    if (!free(x, z, 120) || !clearOfFeatures(x, z, 110) || !dryRing(x, z, 70, 0.32) || !dryRing(x, z, 40, 0.3)) continue
     // Rich climates (coast, river jungle, golden plains) are thick with villages; deserts and mesas are not.
     if (rnd() > Math.min(1, world.rulesAt(x, z).villages / 1.8)) continue
     const militia = 90 + Math.floor(rnd() * 120)
@@ -76,9 +93,9 @@ export function generateCountryside(world: World, castles: CastleDef[], seed: nu
     for (let placed = 0, tries = 0; placed < want && tries < 1200; tries++) {
       const x = (rnd() * 2 - 1) * (half - 280)
       const z = (rnd() * 2 - 1) * (half - 280)
-      if (!world.isPassable(x, z) || world.forestAt(x, z) > 0.4 || world.slopeAt(x, z) > 0.3 || world.bridgeAt(x, z, 80) || world.featureKindAt(x, z)) continue
+      if (!world.isPassable(x, z) || world.forestAt(x, z) > 0.4 || world.slopeAt(x, z) > 0.3 || world.bridgeAt(x, z, 160)) continue
       if (sp.likes.length && !sp.likes.includes(world.climateAt(x, z).key)) continue
-      if (!free(x, z, 140)) continue
+      if (!free(x, z, 140) || !clearOfFeatures(x, z, 120) || !dryRing(x, z, 72, 0.3) || !dryRing(x, z, 40, 0.28)) continue
       const m = HOLDINGS_MIX[sp.kind]
       const militia = sp.militia[0] + Math.floor(rnd() * (sp.militia[1] - sp.militia[0]))
       villages.push({
@@ -99,10 +116,10 @@ export function generateCountryside(world: World, castles: CastleDef[], seed: nu
   }
 
   const sites: ResourceSite[] = []
-  for (let tries = 0; tries < 1400 && sites.length < siteCount; tries++) {
+  for (let tries = 0; tries < 1900 && sites.length < siteCount; tries++) {
     const x = (rnd() * 2 - 1) * (half - 220)
     const z = (rnd() * 2 - 1) * (half - 220)
-    if (!world.isPassable(x, z) || world.bridgeAt(x, z, 60)) continue
+    if (!world.isPassable(x, z) || world.bridgeAt(x, z, 110) || !clearOfFeatures(x, z, 80) || !dryRing(x, z, 26, 1.5)) continue
     const forest = world.forestAt(x, z)
     const high = world.heightAt(x, z) > 38 || world.slopeAt(x, z) > 0.3
     // Alternate kinds so both appear; mines on high ground, lumber camps in forest.

@@ -7,8 +7,8 @@ export type UnitCategory = 'infantry' | 'ranged' | 'cavalry' | 'siege'
 export type Faction = string
 /** Alliance id: 'A' is the player's side, 'B' the enemy side, 'N' neutral. */
 export type Team = 'A' | 'B' | 'N'
-export type Difficulty = 'easy' | 'normal' | 'hard'
-export type GameMode = 'campaign' | 'alliance' | 'survival'
+export type Difficulty = 'easy' | 'normal' | 'hard' | 'brutal'
+export type GameMode = 'campaign' | 'alliance' | 'survival' | 'convoy' | 'nightfall'
 export type FormationKey = 'line' | 'wedge' | 'square' | 'loose'
 export type MapSize = 'small' | 'medium' | 'large'
 
@@ -40,7 +40,7 @@ export interface PortraitSpec {
   beard?: 'none' | 'full' | 'short' | 'forked' | 'goatee' | 'mustache' | 'stubble'
   beard_color?: string
   /** No helms: a crown or circlet, a cloth hat or headband at most. */
-  headgear?: 'none' | 'crown' | 'circlet' | 'chaperon' | 'headband'
+  headgear?: 'none' | 'crown' | 'circlet' | 'chaperon' | 'headband' | 'hood'
   hat?: string
   clothing?: 'gambeson' | 'tabard' | 'fur' | 'cloak' | 'robe' | 'jerkin'
   cloth?: string
@@ -110,6 +110,8 @@ export interface FactionDef {
   /** Periodically gathers a Great Host from several castles. */
   musters?: boolean
   personality?: 'aggressive' | 'balanced' | 'defensive'
+  /** The Endless Night: pays no upkeep, needs no supply, holds nothing and is never wiped out; its broken bands crumble to dust. */
+  undying?: boolean
 }
 
 export interface ScenarioDefinition {
@@ -119,7 +121,7 @@ export interface ScenarioDefinition {
   factions?: FactionDef[]
   castles: CastleDef[]
   rivers: { width: number; points: [number, number][] }[]
-  /** Terrain features scattered over the map: standing stones, bogs, terraces, windfall, wadis, crags. */
+  /** Terrain features scattered over the map: standing stones, terraces, windfall, crags. */
   features?: TerrainFeature[]
   /** River crossings: permanent bridges, or shallow fords where `ford` is set. */
   bridges: { x: number; z: number; ford?: boolean }[]
@@ -127,11 +129,55 @@ export interface ScenarioDefinition {
   lakes: { x: number; z: number; r: number }[]
   forest_density: number
   /** Siege mode: concentric curtain walls; impassable except through their gates. */
-  walls?: { x: number; z: number; r: number; gates: number[]; height: number }[]
+  walls?: CityWall[]
   /** Siege mode: a walled town with houses and streets around the citadel. */
-  town?: { x: number; z: number; r: number; inner: number; streets: number[] }
+  town?: { x: number; z: number; r: number; inner: number; streets: number[]; poly?: [number, number][]; lanes?: [number, number][][] }
   /** Map type / biome key (see biomes.ts); defaults to green vales. */
   biome?: string
+  /** Roads: cleared of trees, drawn as packed earth, quicker to march along. */
+  roads?: { width: number; points: [number, number][] }[]
+  /** Glades: round patches kept clear of trees. */
+  clearings?: { x: number; z: number; r: number }[]
+  /** Great walls across the land (Frostfire's Long Wall): impassable but at their gates and breaches. */
+  ramparts?: Rampart[]
+  /** Escarpments: a long, sheer-sided plateau, crossed only through the canyons cut in it. */
+  escarpments?: Escarpment[]
+}
+
+/**
+ * A city wall. A circle round (x, z) of radius r with gates at the given angles; or, when `points`
+ * is set, a closed outline following the lie of the land, with its gates at `gatePts` (x, z, r
+ * then only bound it).
+ */
+export interface CityWall {
+  x: number
+  z: number
+  r: number
+  gates: number[]
+  height: number
+  points?: [number, number][]
+  gatePts?: [number, number][]
+}
+
+export interface Rampart {
+  points: [number, number][]
+  width: number
+  height: number
+  /** Ways through: a gatehouse, or (breach) a tumbled gap. */
+  gates: { x: number; z: number; breach?: boolean }[]
+}
+/**
+ * An escarpment: the edge of a tableland. Everything to its north stands `height` higher, and the
+ * step between is a cliff face `cliff` wide. Ravines (passes) climb from the plain to the top at a
+ * walkable slope over `ramp`, between walls of rock.
+ */
+export interface Escarpment {
+  /** The rough line of the edge, west to east (the land wanders well off it). */
+  points: [number, number][]
+  height: number
+  cliff: number
+  ramp: number
+  passes: { x: number; z: number; w: number }[]
 }
 
 export interface Scenario {
@@ -260,9 +306,13 @@ export type ArmyOrder =
   | { type: 'build'; outpostId: string } // stay and raise a field fortification
   | { type: 'garrison'; outpostId: string } // march into a supply depot and quarter there
   | { type: 'raidConvoy'; convoyId: string } // chase down an enemy supply train
+  | { type: 'escort'; convoyId: string; ahead?: number } // walk beside one of our own wagons (Convoy Raid's gold train)
   | { type: 'work'; job: WorkJob; x: number; z: number; bridge: number | null; progress: number; tx?: number; tz?: number; then?: ArmyOrder } // engineers' field works (tx/tz: the river point a new bridge spans; then: the order to resume)
   | { type: 'gather'; siteId: string } // engineers work a mine or lumber camp
   | { type: 'scout'; targetId: string; x: number; z: number; phase: 'out' | 'back' } // spy out an enemy position and bring the news home
+
+/** Corvin Ashe's sabotage: on a castle (wells, granary, postern) or a field work (stores, works). */
+export type SabotageKind = 'wells' | 'granary' | 'postern' | 'stores' | 'works'
 
 export type ArmyStatus = 'idle' | 'marching' | 'battle' | 'sieging' | 'retreating'
 
@@ -301,14 +351,43 @@ export interface Army {
   flankUntil?: number
   /** Hidden army uncovered by enemy scouts until this time. */
   revealedUntil?: number
+  /** A spymaster's band out of the enemy's sight: under cover (concealed) or passing as pilgrims and pedlars (disguised). */
+  veil?: 'concealed' | 'disguised'
+  /** Found out: it cannot slip back into hiding before this time. */
+  unveiledUntil?: number
+  /**
+   * Steered by hand (the thumb stick): the way it is being pushed (a world direction) and how hard
+   * (0-1). The army turns and gathers speed towards it; let go (mag 0), it rolls to a halt.
+   */
+  steer?: { dx: number; dz: number; mag: number }
+  /** Steered by hand: how fast it is moving now (world units a second). */
+  vel?: number
+  /** The Endless Night: what kind of host this is (drawn as such: the dead, wraith riders, bone archers, demons, a giant). */
+  horde?: 'thralls' | 'wraiths' | 'bones' | 'demons' | 'giant'
+  /** Convoy Raid: a standing order the army carries out by itself (cleared by any order given by hand). */
+  stance?: Stance
   /** Scouts: what they have seen so far, delivered when they get home. */
   scoutReport?: Record<string, Intel>
+  /** Scouts who glimpsed the enemy's crowned head: where and when. */
+  scoutQueen?: { x: number; z: number; t: number }
   /** Already spotted by the enemy (only one pursuit per scouting party). */
   spottedBy?: string | null
   /** An allied contingent answering a call for aid (the call's id). */
   aidFor?: string | null
   /** The Royal Guard: the Sovereign's household knights. Never reinforced; if they fall, the war is lost. */
   royal?: boolean
+  /** The Whisper Blades: Corvin Ashe's own knife-men. Never reinforced (bar an abbey's sanctuary); they strike at commanders, not walls. */
+  blades?: boolean
+  /** Royal Guard / Whisper Blades: their full number (what an abbey's sanctuary fills them back up to). */
+  fullStrength?: number
+  /** Whisper Blades: ready to strike again at this time. */
+  strikeReadyAt?: number
+  /** Corvin Ashe's band at work on an enemy stronghold (done at `doneAt`). */
+  sabotage?: { targetId: string; kind: SabotageKind; doneAt: number }
+  /** Corvin Ashe's band: ready for the next piece of sabotage at this time. */
+  sabotageReadyAt?: number
+  /** Resting in one of our abbeys: the wounded tended, the empty places filled. */
+  sanctuary?: string | null
   /** Fleeing a fallen castle: a burst of speed until this time. */
   fleeUntil?: number
   /** Siege engines built on the spot and pushed along with the army. */
@@ -395,6 +474,8 @@ export interface Outpost {
   faction: Faction
   x: number
   z: number
+  /** A hidden camp raised by a spymaster's band: the enemy does not know it is there until they stumble on it. */
+  secret?: boolean
   /** 0..1 construction progress; only a finished outpost gives its bonuses. */
   progress: number
   /** 0..1 progress of enemies burning it down while it stands undefended. */
@@ -453,20 +534,25 @@ export interface Convoy {
   route: [number, number][]
   cargo: number
   heading: number
+  /** Convoy Raid: this is gold-train wagon number n (1-based). */
+  race?: number
+  /** Convoy Raid: the river crossing it is heading for was pulled down; it has turned for a ford. */
+  detour?: boolean
+  /** Convoy Raid: raiders are unhitching it (seconds so far; it is theirs at TRAIN.seizeSeconds). */
+  seize?: number
+  seizer?: string
 }
 
 /** Small holdings between the castles: all are won by envoys (or plundered) and run themselves as vassals. */
 export type HoldingKind = 'village' | 'caravanserai' | 'abbey' | 'keep' | 'guildhall'
 
-export type FeatureKind = 'stones' | 'terraces' | 'thicket' | 'wadi' | 'crag'
-/** A terrain feature. Wadis are strips (length `len` along `angle`, half-width `r`); the rest are round. */
+export type FeatureKind = 'stones' | 'terraces' | 'thicket' | 'crag'
+/** A terrain feature: a round patch of ground with its own rules. */
 export interface TerrainFeature {
   kind: FeatureKind
   x: number
   z: number
   r: number
-  angle?: number
-  len?: number
 }
 
 /** A call for aid: allies who can spare men send them to stand in the castle until the danger passes. */
@@ -518,6 +604,74 @@ export interface GameRules {
   /** Who wins when time runs out. */
   timeoutWinner?: 'A' | 'B'
   size?: MapSize
+  /** Convoy Raid: the gold train and the road it takes. */
+  convoy?: ConvoyRules
+  /** The Long Night: where the dead come from. */
+  night?: { rifts: { x: number; z: number; name: string }[] }
+}
+
+/** Convoy Raid: a train of gold wagons runs the forest road; one side guards it, the other robs it. */
+export interface ConvoyRules {
+  /** The side the player takes. */
+  side: 'escort' | 'raid'
+  /** The commander the player chose (escorts; raiders always follow the spymaster). */
+  commander: string
+  wagons: number
+  /** Seconds between departures. */
+  every: number
+  /** Wagons the escort must bring in (the raiders win by seizing wagons - needed + 1). */
+  needed: number
+  /** Wagon speed (world units per second). */
+  speed: number
+  fromId: string
+  toId: string
+  /** The road, south to north. */
+  road: [number, number][]
+  /** Where the road crosses the river: an engineers' bridge that can be pulled down. */
+  bridge: [number, number]
+  /** Index of the first road point past the river (where wagons rejoin the road after a ford). */
+  rejoin: number
+  /** The raiders' hidden camps in the forest. */
+  camps: [number, number][]
+}
+
+/**
+ * Convoy Raid standing orders. Escort side: escort (walk beside the next wagon nobody guards),
+ * hunt (ride down raiders seen near the wagons), picket (watch a stretch of road from a post; engineers
+ * there rebuild the bridge). Raiders: ambush (lie in the trees at a spot and fall on a weakly guarded
+ * wagon), harass (pin a wagon's guards in a fight so others can take it), bridge (engineers pull the
+ * bridge down as the wagons near it, then wait at the ford).
+ */
+export type StanceKind = 'escort' | 'hunt' | 'picket' | 'ambush' | 'harass' | 'bridge'
+export interface Stance {
+  kind: StanceKind
+  /** Where to wait (picket, ambush, harass). */
+  x?: number
+  z?: number
+}
+
+/** The Long Night: how the night goes. */
+export interface NightState {
+  /** Surges so far (the Great Rift's eruptions), and when the next one comes. */
+  wave: number
+  nextWaveAt: number
+  /** The dead slain (in battle and by the walls). */
+  slain: number
+  /** What the host is about: shown to the player as a warning ("A host gathers before the West Gate"). */
+  intent?: { text: string; x: number; z: number; until: number } | null
+}
+
+/** Convoy Raid: how the gold train stands. */
+export interface TrainState {
+  sent: number
+  delivered: number
+  seized: number
+  /** When the next wagon leaves. */
+  nextAt: number
+  /** The escort has stopped the train. */
+  halted: boolean
+  /** Each wagon: waiting, on the road (its convoy id), delivered or seized. */
+  wagons: ('waiting' | 'delivered' | 'seized' | string)[]
 }
 
 export interface GameState {
@@ -546,8 +700,22 @@ export interface GameState {
   explored: string // base64 of the explored grid
   /** The Sovereign's Royal Guard (army id); null once it has fallen. */
   royalId?: string | null
+  /** Corvin Ashe's Whisper Blades (null: none in this war, or they are gone). */
+  bladesId?: string | null
+  /** Attempts made on the Usurper Queen's life: each one makes her guard warier. */
+  foeAttempts?: number
+  /** Convoy Raid: the gold train. */
+  train?: TrainState
+  /** The Long Night: the waves of the dead. */
+  night?: NightState
   /** The Sovereign has fallen: the war is lost. */
   kingFallen?: boolean
+  /** The enemy's crowned head (the Usurper Queen) and her Thorn Guard (army id); null once they have fallen. */
+  foeRoyalId?: string | null
+  /** The Usurper has fallen: the war is won. */
+  foeFallen?: boolean
+  /** Where the player's side last knew the Usurper to be. */
+  foeSighting?: { x: number; z: number; t: number; castleId: string | null; how: 'seen' | 'scouts' | 'court' } | null
   armyCounter: number
   status: 'active' | 'victory' | 'defeat'
   /** Alliance-wide target requested by the player ("call to arms"). */
@@ -565,6 +733,10 @@ export interface GameState {
   pacts: Record<Faction, number>
   /** Diplomatic cooldowns after failed or completed approaches. */
   diploCooldown: Record<Faction, number>
+  /** How the war unfolded, for the timelapse on the war report. */
+  history?: WarHistory
+  /** Deeds worth honouring at the end of the war. */
+  tally?: WarTally
   stats: {
     battlesWon: number
     battlesLost: number
@@ -572,6 +744,27 @@ export interface GameState {
     playerLost: number
     castlesTaken: number
   }
+}
+
+/** Ownership of every castle and village through the war, sampled every few seconds, and where battles flared. */
+export interface WarHistory {
+  every: number
+  castleIds: string[]
+  factionIds: string[]
+  /** Per frame: the time, and for each castle an index into `factionIds` (-1: free or ruined). */
+  frames: { t: number; owners: number[] }[]
+  /** Battles as they began: where, when and how many fought. */
+  sparks: { t: number; x: number; z: number; n: number }[]
+}
+
+export interface WarTally {
+  /** Enemy soldiers slain by armies under each of the player's commanders. */
+  commanderKills: Record<string, number>
+  /** Wall damage done by each of the player's armies and engines (by id, with the name it bore). */
+  wallBreakers: Record<string, { name: string; damage: number }>
+  /** Gold taken by seizing enemy wagons, and how many wagons in all. */
+  raidGold: number
+  wagonsTaken: number
 }
 
 /** Emitted by the engine for the renderer (visual effects) and UI (toasts, reports). */

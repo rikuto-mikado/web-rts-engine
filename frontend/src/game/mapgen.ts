@@ -1,8 +1,8 @@
 import { MAPS, type MapType } from './biomes'
 import { PLAYER } from './engine'
 import { mulberry32 } from './noise'
-import type { CastleDef, FactionDef, GameMode, GameRules, MapSize, Scenario, ScenarioDefinition, Team, Troops, FeatureKind, TerrainFeature } from './types'
-import { World, distToSegment, holdingRadius } from './world'
+import type { CastleDef, Difficulty, Escarpment, FactionDef, GameMode, GameRules, MapSize, Rampart, Scenario, ScenarioDefinition, Team, Troops, FeatureKind, TerrainFeature } from './types'
+import { ROYAL_SEAT_TIER, World, distToSegment, holdingRadius } from './world'
 
 /**
  * Procedural maps for Alliance War and Survival. Everything derives from the
@@ -39,7 +39,17 @@ export interface MapOptions {
   factions?: number // total factions in Alliance War, including the player
   mapType?: MapType
   size?: MapSize
+  /** Alliance War: sets how much of the map the player's alliance holds at the start. */
+  difficulty?: Difficulty
 }
+
+/**
+ * Alliance War: the enemy is always strong (the "hard" foe); the difficulty is how much
+ * of the map your alliance still holds when the war begins.
+ */
+export const ALLIANCE_SHARE: Record<Difficulty, number> = { easy: 0.5, normal: 0.4, hard: 0.3, brutal: 0.2 }
+/** Last Stand: hold out until the relief fleet lands, at the start of the second spring. */
+export const RELIEF_AT = 120 * 30
 
 /** Map-size presets. Medium is the original size; the others are rebalanced around it. */
 export const SIZE_PRESETS: Record<MapSize, { conquest: { map: number; castles: number; vassals: number; playerCastles: number; enemyLine: number }; alliance: { map: number; realms: number } }> = {
@@ -78,6 +88,18 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
   const mountains: ScenarioDefinition['mountains'] = []
   const rivers: ScenarioDefinition['rivers'] = []
   const lakes: ScenarioDefinition['lakes'] = []
+  const ramparts: Rampart[] = []
+  const escarpments: Escarpment[] = []
+  const roads: { width: number; points: [number, number][] }[] = []
+  /** Castles every map of this kind has in the same place (the island fortress, the battlefield citadel): always free towns. */
+  const fixedSites: { x: number; z: number; name: string; subtitle: string }[] = []
+  /** Rivers whose crossings are laid down by the map (fractions along the river), not every ~450 units. */
+  const fixedCross = new Map<number, { t: number; ford?: boolean }[]>()
+  /**
+   * The way the land faces: the two sides start on either side of the map's great obstacle,
+   * along this direction (u, v) from one to the other.
+   */
+  let axis: [number, number] = [0, -1]
   const count = (n: number) => Math.max(1, Math.round(n * Math.sqrt(areaScale)))
   const peak = (u: number, v: number, r: [number, number], h: [number, number]) => {
     const [x, z] = at(u, v)
@@ -111,6 +133,29 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
       pts.push([ax + (bx - ax) * t + nx * off, az + (bz - az) * t + nz * off])
     }
     rivers.push({ width, points: pts })
+    return rivers.length - 1
+  }
+  /** A gently wavering line across the map from (u0, v0) to (u1, v1), in world units. */
+  const wavyLine = (u0: number, v0: number, u1: number, v1: number, step: number, wobble: number): [number, number][] => {
+    const pts: [number, number][] = []
+    const n = Math.max(2, Math.round(Math.hypot(u1 - u0, v1 - v0) / step))
+    const nu = -(v1 - v0)
+    const nv = u1 - u0
+    const l = Math.hypot(nu, nv) || 1
+    const ph = R(0, 6.28)
+    for (let k = 0; k <= n; k++) {
+      const t = k / n
+      const w = Math.sin(t * Math.PI * 2.2 + ph) * wobble * Math.sin(Math.PI * t * 0.98 + 0.02)
+      pts.push(at(u0 + (u1 - u0) * t + (nu / l) * w, v0 + (v1 - v0) * t + (nv / l) * w))
+    }
+    return pts
+  }
+  /** The point of a polyline nearest (u, v). */
+  const onLine = (pts: [number, number][], u: number, v: number): [number, number] => {
+    const [x, z] = at(u, v)
+    let best = pts[0]
+    for (const p of pts) if (Math.hypot(p[0] - x, p[1] - z) < Math.hypot(best[0] - x, best[1] - z)) best = p
+    return best
   }
   const lake = (u: number, v: number, r: number) => {
     const [x, z] = at(u, v)
@@ -127,7 +172,8 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
   }
   switch (mapType) {
     case 'crown': {
-      // The snowbound spine, broken by three passes.
+      // The snowbound spine, broken by three passes. North against south.
+      axis = [0, -1]
       for (let u = -1.05; u <= 1.05; u += 0.1) {
         if ([-0.5, 0, 0.5].some((p) => Math.abs(u - p) < 0.1)) continue
         peak(u + R(-0.03, 0.03), R(-0.06, 0.06), [half * 0.09, half * 0.13], [210, 280])
@@ -140,42 +186,99 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
       break
     }
     case 'delta': {
-      river(R(-0.12, 0.12), -1.1, R(-0.12, 0.12), 1.1, 74, 0.035)
-      scatterLakes(count(7), (u, v) => v > 0.55 && Math.abs(u) < 0.42, [55, 115])
-      scatter(count(6), (u) => Math.abs(u) > 0.5, [140, 240], [60, 110])
-      if (alliance) river(-1.1, R(-0.6, -0.3), R(-0.15, -0.05), R(-0.2, 0.1), 40, 0.03)
+      // The Great River: west bank against east. North of the delta it can be crossed only at a
+      // northern ford and the Great Bridge; at its mouth it splits into three channels through the
+      // mud flats, fordable anywhere along them but slow going, where no charge can be made.
+      axis = [1, 0]
+      const su = R(-0.06, 0.06)
+      const sv = R(0.36, 0.44)
+      const main = river(R(-0.1, 0.1), -1.1, su, sv, 84, 0.03)
+      fixedCross.set(main, [{ t: 0.17, ford: true }, { t: 0.56 }])
+      for (const du of [-0.42, 0, 0.42]) {
+        const b = river(su, sv, su + du + R(-0.05, 0.05), 1.12, 36, 0.015)
+        fixedCross.set(b, [{ t: 0.3, ford: true }, { t: 0.55, ford: true }, { t: 0.8, ford: true }])
+      }
+      // Sand-sea buttes out on the flanks, far from the water.
+      scatter(count(6), (u) => Math.abs(u) > 0.55, [140, 240], [60, 110])
       break
     }
     case 'frostfire': {
-      scatter(count(7), (u, v) => u - v < -0.35, [160, 260], [160, 240])
-      scatter(count(3), (u, v) => u - v > 0.45, [150, 240], [110, 170])
-      river(-1.1, -0.95, 1.1, 1.0, R(42, 50), 0.04)
-      scatterLakes(count(4), (u, v) => u - v > 0.3, [70, 140])
+      // The Long Wall: an ancient wall along the whole border between ice (north-east) and ash
+      // (south-west), corner to corner. Two gates and one breach are the only ways across.
+      axis = [Math.SQRT1_2, -Math.SQRT1_2]
+      const pts = wavyLine(-1.12, -1.12, 1.12, 1.12, 0.07, 0.05)
+      const ts = [R(-0.62, -0.48), R(-0.08, 0.08), R(0.48, 0.62)]
+      const breach = Math.floor(R(0, 3))
+      const gates = ts.map((t, k) => {
+        const [x, z] = onLine(pts, t, t)
+        return { x, z, ...(k === breach ? { breach: true } : {}) }
+      })
+      ramparts.push({ points: pts, width: 14, height: 20, gates })
+      // Fire peaks and ice crags, kept well back from the wall.
+      scatter(count(6), (u, v) => u - v < -0.5, [150, 240], [150, 220])
+      scatter(count(3), (u, v) => u - v > 0.55, [140, 220], [110, 170])
+      // A river through the ash lands, running along the wall; meltwater lakes on the ice.
+      river(-1.1, -0.42, 0.42, 1.1, R(42, 50), 0.03)
+      scatterLakes(count(4), (u, v) => u - v > 0.5, [70, 130])
       break
     }
     case 'coast': {
-      // The sea: great overlapping bowls beyond the southern shore.
+      // The Red Escarpment: the mesa country (north) ends in a sheer wall of cliffs across the land,
+      // passable only up three narrow canyons. Below it, the open coast with its fast shore road.
+      axis = [0, -1]
       for (let u = -1.4; u <= 1.4; u += 0.35) lake(u + R(-0.08, 0.08), R(1.42, 1.55), half * R(0.66, 0.74))
-      scatter(count(11), (_u, v) => v < -0.15, [110, 200], [90, 140])
-      river(R(-0.7, -0.4), -1.1, R(-0.6, -0.3), 0.9, R(40, 48))
-      river(R(0.3, 0.7), -1.1, R(0.3, 0.6), 0.9, R(40, 48))
+      const ev = R(-0.24, -0.14)
+      const edge = wavyLine(-1.12, ev, 1.12, ev, 0.08, 0.06)
+      const passes = [R(-0.68, -0.52), R(-0.06, 0.06), R(0.52, 0.68)].map((u) => {
+        const [x, z] = onLine(edge, u, ev)
+        return { x, z, w: alliance ? 62 : 52 }
+      })
+      escarpments.push({ points: edge, height: 115, cliff: 74, ramp: alliance ? 600 : 520, passes })
+      // Tall mesas in the hinterland behind it.
+      scatter(count(8), (_u, v) => v < ev - 0.3, [110, 200], [90, 140])
+      // Two rivers falling from the cliffs to the sea, and the shore road over them.
+      river(R(-0.82, -0.32), ev + 0.16, R(-0.75, -0.3), 0.96, R(38, 46))
+      river(R(0.28, 0.8), ev + 0.16, R(0.25, 0.75), 0.96, R(38, 46))
+      const sv = R(0.5, 0.56)
+      roads.push({ width: 26, points: wavyLine(-1.08, sv, 1.08, sv, 0.06, 0.025) })
+      for (const p of passes) {
+        const pu = p.x / half
+        roads.push({ width: 22, points: [at(pu, ev - 0.2), [p.x, p.z], at(pu + R(-0.04, 0.04), sv)] })
+      }
       break
     }
     case 'basin': {
-      scatterLakes(count(7), (u, v) => Math.hypot(u, v) < 0.34, [100, 210])
+      // The Mere Isle: a ring of lakes round the island fortress at the heart of the basin. The narrow
+      // necks between the lakes are the short way across; the autumn forest ring is the ambusher's
+      // road; the steppe rim the long way round for riders.
+      axis = [1, 0]
+      const ring = 0.3
+      const n = 6
+      const gap = Math.max(190, half * 0.055)
+      const lr = ((2 * Math.PI * ring * half) / n - gap) / 2
+      const ph = R(0, Math.PI / n) + Math.PI / n / 2
+      for (let k = 0; k < n; k++) lake(Math.cos(ph + (k / n) * Math.PI * 2) * ring, Math.sin(ph + (k / n) * Math.PI * 2) * ring, lr)
+      fixedSites.push({ x: 0, z: 0, name: 'Heartmere', subtitle: 'The Isle Fortress' })
       for (let a = 0; a < Math.PI * 2; a += Math.PI / (alliance ? 7 : 5)) {
-        const rr = R(0.82, 0.92)
-        peak(Math.cos(a) * rr, Math.sin(a) * rr, [180, 300], [120, 190])
+        const rr = R(0.84, 0.93)
+        peak(Math.cos(a) * rr, Math.sin(a) * rr, [170, 280], [120, 190])
       }
-      river(R(-0.2, 0.2), -1.1, R(-0.05, 0.05), -0.05, R(38, 46))
       break
     }
     case 'divide': {
-      river(R(-0.45, -0.3), -1.1, R(-0.45, -0.25), 1.1, R(42, 50))
-      river(R(0.25, 0.45), -1.1, R(0.25, 0.45), 1.1, R(42, 50))
-      scatter(count(6), (_u, v) => v < -0.45, [160, 260], [190, 260])
-      scatter(count(4), (_u, v) => Math.abs(v) < 0.25, [120, 200], [70, 120])
-      scatterLakes(count(2), (_u, v) => v > 0.45, [70, 130])
+      // The Two Rivers: snowmelt rivers run the length of the land, west realm against east, the old
+      // battlefield between them with its citadel. Each river has only three crossings: a cold
+      // northern ford, a bridge at the battlefield, and one in the golden south.
+      axis = [1, 0]
+      for (const u0 of [R(-0.42, -0.34), R(0.34, 0.42)]) {
+        const r = river(u0, -1.1, u0 + R(-0.06, 0.06), 1.1, R(46, 54), 0.03)
+        fixedCross.set(r, [{ t: 0.14, ford: true }, { t: 0.5 }, { t: 0.84 }])
+      }
+      fixedSites.push({ x: 0, z: Math.round(R(-0.08, 0.08) * half), name: 'Gravewatch', subtitle: 'Citadel of the Old Battlefield' })
+      scatter(count(6), (_u, v) => v < -0.5, [160, 260], [190, 260])
+      // Barrow hills on the old battlefield, clear of the citadel.
+      scatter(count(3), (u, v) => Math.abs(u) < 0.2 && Math.abs(v) > 0.3 && Math.abs(v) < 0.7, [110, 170], [55, 90])
+      scatterLakes(count(2), (u, v) => v > 0.45 && Math.abs(u) > 0.55, [70, 130])
       break
     }
   }
@@ -193,11 +296,21 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
   // --- Castle sites (Poisson-like rejection sampling) -----------------------
   const targetCastles = alliance ? Math.round(factionCount * 1.65 + 4) : preset.conquest.castles
   const dmin = alliance ? (size * 0.62) / Math.sqrt(targetCastles) : Math.min(800, (size * 0.6) / Math.sqrt(targetCastles))
-  const sites: { x: number; z: number }[] = []
+  // Distance from a point to a polyline (for the walls and cliffs).
+  const lineDist = (pts: [number, number][], x: number, z: number) => {
+    let best = Infinity
+    for (let k = 0; k < pts.length - 1; k++) best = Math.min(best, distToSegment(x, z, pts[k][0], pts[k][1], pts[k + 1][0], pts[k + 1][1]))
+    return best
+  }
+  const sites: { x: number; z: number }[] = fixedSites.map((f) => ({ x: f.x, z: f.z }))
   const margin = 320
   for (let tries = 0; tries < 20000 && sites.length < targetCastles; tries++) {
     const x = R(-half + margin, half - margin)
     const z = R(-half + margin, half - margin)
+    // No castle on (or crowding) a great wall, nor on the cliffs or up a canyon.
+    if (ramparts.some((r) => lineDist(r.points, x, z) < r.width / 2 + 260)) continue
+    // (Clear of the cliff edge, which wanders up to ~110 off its line, and of the ravines.)
+    if (escarpments.some((e) => lineDist(e.points, x, z) < 300 || e.passes.some((p) => Math.hypot(p.x - x, p.z - z) < e.ramp + 160))) continue
     if (mountains.some((m) => Math.hypot(x - m.x, z - m.z) < m.r * 1.1 + 120)) continue
     if (lakes.some((l) => Math.hypot(x - l.x, z - l.z) < l.r + 230)) continue
     if (riverDist(x, z) < 230) continue
@@ -208,7 +321,43 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
 
   // Bridges every ~450 units along each river.
   const bridges: { x: number; z: number; ford?: boolean }[] = []
-  for (const r of rivers) {
+  rivers.forEach((r, ri) => {
+    const fixed = fixedCross.get(ri)
+    if (!fixed) return
+    // Crossings the map lays down itself, at fractions along the river's length.
+    const lens = r.points.slice(1).map((p, k) => Math.hypot(p[0] - r.points[k][0], p[1] - r.points[k][1]))
+    const total = lens.reduce((a, b) => a + b, 0)
+    for (const c of fixed) {
+      let t = c.t * total
+      for (let k = 0; k < lens.length; k++) {
+        if (t > lens[k]) {
+          t -= lens[k]
+          continue
+        }
+        const [ax, az] = r.points[k]
+        const [bx, bz] = r.points[k + 1]
+        const x = ax + ((bx - ax) * t) / lens[k]
+        const z = az + ((bz - az) * t) / lens[k]
+        if (Math.abs(x) < half - 150 && Math.abs(z) < half - 150) bridges.push(c.ford ? { x, z, ford: true } : { x, z })
+        break
+      }
+    }
+  })
+  // Where a road meets a river there is always a bridge.
+  for (const road of roads)
+    for (const r of rivers)
+      for (let a = 0; a < road.points.length - 1; a++)
+        for (let k = 0; k < r.points.length - 1; k++) {
+          const [p1, p2] = [road.points[a], road.points[a + 1]]
+          const [q1, q2] = [r.points[k], r.points[k + 1]]
+          const d = (p2[0] - p1[0]) * (q2[1] - q1[1]) - (p2[1] - p1[1]) * (q2[0] - q1[0])
+          if (Math.abs(d) < 1e-6) continue
+          const t = ((q1[0] - p1[0]) * (q2[1] - q1[1]) - (q1[1] - p1[1]) * (q2[0] - q1[0])) / d
+          const u = ((q1[0] - p1[0]) * (p2[1] - p1[1]) - (q1[1] - p1[1]) * (p2[0] - p1[0])) / d
+          if (t >= 0 && t <= 1 && u >= 0 && u <= 1) bridges.push({ x: p1[0] + (p2[0] - p1[0]) * t, z: p1[1] + (p2[1] - p1[1]) * t })
+        }
+  rivers.forEach((r, ri) => {
+    if (fixedCross.has(ri)) return
     let acc = R(150, 300)
     for (let k = 0; k < r.points.length - 1; k++) {
       const [ax, az] = r.points[k]
@@ -226,7 +375,7 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
       }
       acc = t - len
     }
-  }
+  })
 
   // --- Political map --------------------------------------------------------
   const castles: CastleDef[] = []
@@ -249,11 +398,17 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
   let rules: GameRules
 
   if (!alliance) {
-    // Survival: the player starts in one corner, a coalition holds the far side.
-    const corner = [R(-1, -0.6) * half, R(0.6, 1) * half]
-    const pIdx = nearestIndex(sites, corner[0], corner[1])
+    // Survival: the player starts on one side of the map's great obstacle, the coalition holds the far side.
+    const flip = rnd() < 0.5 ? 1 : -1
+    const [au, av] = [axis[0] * flip, axis[1] * flip]
+    const along = R(-0.35, 0.35)
+    const corner = [(-au * 0.82 - av * along) * half, (-av * 0.82 + au * along) * half]
+    const free = (i: number) => !fixedSites.some((f) => f.x === sites[i].x && f.z === sites[i].z)
+    const pIdx = sites.reduce((best, s, i) => (free(i) && Math.hypot(s.x - corner[0], s.z - corner[1]) < Math.hypot(sites[best].x - corner[0], sites[best].z - corner[1]) ? i : best), sites.findIndex((_, i) => free(i)))
     const p = sites[pIdx]
-    const eIdx = sites.reduce((best, s, i) => (Math.hypot(s.x - p.x, s.z - p.z) > Math.hypot(sites[best].x - p.x, sites[best].z - p.z) ? i : best), 0)
+    // The enemy seat: furthest across, along the axis.
+    const across = (s: { x: number; z: number }) => (s.x - p.x) * au + (s.z - p.z) * av
+    const eIdx = sites.reduce((best, s, i) => (free(i) && across(s) > across(sites[best]) ? i : best), pIdx)
     const e = sites[eIdx]
     const ratio = sites.map((s) => {
       const dp = Math.hypot(s.x - p.x, s.z - p.z)
@@ -267,10 +422,10 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
     for (let v = 0; v < vassals; v++) factions.push({ id: `v${v}`, name: realmName(), color: vassalColors[v], team: 'B', personality: personality(), musters: v === 0 && rnd() < 0.5 })
     factions.push({ id: 'neutral', name: 'Free Towns', color: '#a08a56', team: 'N' })
 
-    assign[pIdx] = { faction: PLAYER, tier: 4, capital: true }
+    assign[pIdx] = { faction: PLAYER, tier: ROYAL_SEAT_TIER, capital: true }
     const extra = sites.map((_, i) => i).filter((i) => i !== pIdx).sort((a, b) => ratio[a] - ratio[b]).slice(0, preset.conquest.playerCastles - 1)
     for (const i of extra) assign[i] = { faction: PLAYER, tier: 2, capital: false }
-    assign[eIdx] = { faction: 'ashen', tier: 4, capital: true, staging: false }
+    assign[eIdx] = { faction: 'ashen', tier: ROYAL_SEAT_TIER, capital: true, staging: false }
     // Enemy territory: everything past the midline. Vassals take the flanks.
     const enemyIdx = sites.map((_, i) => i).filter((i) => i !== eIdx && assign[i].faction === 'neutral' && ratio[i] > preset.conquest.enemyLine)
     const vassalSeeds: number[] = []
@@ -302,20 +457,22 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
     rules = { mode: 'survival', victoryCastles: enemyCapitals.map((i) => `c${i}`), defeatCastles: [`c${pIdx}`], defeatOnEliminated: true, size: opts.size ?? 'medium' }
   } else {
     // Alliance War: a wavering front splits the map; each half is carved into realms.
-    const theta = rnd() * Math.PI * 2
+    // The front runs across the map's great obstacle (which side is which changes from war to war).
+    const theta = Math.atan2(axis[1], axis[0]) + R(-0.12, 0.12) + (rnd() < 0.5 ? Math.PI : 0)
     const dx = Math.cos(theta)
     const dz = Math.sin(theta)
     const proj = sites.map((s) => s.x * dx + s.z * dz + Math.sin((s.x * -dz + s.z * dx) / (size * 0.18)) * size * 0.06)
     const order = sites.map((_, i) => i).sort((a, b) => proj[a] - proj[b])
     const neutralCount = Math.max(2, Math.round(sites.length * 0.08))
-    const mid = order.length / 2
+    const mid = Math.round(order.length * ALLIANCE_SHARE[opts.difficulty ?? 'easy'])
     const neutralSet = new Set(order.slice(Math.floor(mid - neutralCount / 2), Math.floor(mid - neutralCount / 2) + neutralCount))
     const teamOf = (i: number): Team => (neutralSet.has(i) ? 'N' : order.indexOf(i) < mid ? 'A' : 'B')
     const perTeam = Math.floor(factionCount / 2)
     const hueA = [195, 165, 140, 210, 180, 150, 225, 175]
     const hueB = [5, 25, 340, 285, 15, 355, 300, 35]
     for (const team of ['A', 'B'] as const) {
-      const members = sites.map((_, i) => i).filter((i) => teamOf(i) === team)
+      // (The map's own fortresses stay free towns, whichever side of the front they fall.)
+      const members = sites.map((_, i) => i).filter((i) => teamOf(i) === team && !fixedSites.some((f) => f.x === sites[i].x && f.z === sites[i].z))
       // The castle deepest behind the front becomes the alliance's High Seat.
       const depth = (i: number) => (team === 'A' ? -proj[i] : proj[i])
       const seeds: number[] = [members.reduce((b, i) => (depth(i) > depth(b) ? i : b), members[0])]
@@ -353,7 +510,8 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
           musters: leader,
           personality: leader ? 'aggressive' : personality(),
         })
-        assign[s] = { faction: id, tier: leader ? 4 : 3, capital: true }
+        // The King's court and the Usurper's are royal seats; the other lords keep lesser castles.
+        assign[s] = { faction: id, tier: id === PLAYER || (leader && team === 'B') ? ROYAL_SEAT_TIER : leader ? 4 : 3, capital: true }
       })
       for (const i of members) {
         if (seeds.includes(i)) continue
@@ -365,15 +523,20 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
     for (const i of neutralSet) assign[i] = { faction: 'neutral', tier: rnd() < 0.4 ? 2 : 1, capital: false }
     const seatOf = (team: Team) => sites.findIndex((_, i) => assign[i].capital && factions.find((f) => f.id === assign[i].faction)?.leader && factions.find((f) => f.id === assign[i].faction)?.team === team)
     rules = { mode: 'alliance', victoryCastles: [`c${seatOf('B')}`], defeatCastles: [`c${seatOf('A')}`], defeatOnEliminated: true, size: opts.size ?? 'medium' }
+    // Last Stand: hold out until the relief fleet lands (or slay the Usurper first).
+    if (opts.difficulty === 'brutal') Object.assign(rules, { timeLimit: RELIEF_AT, timeoutWinner: 'A' as const })
   }
 
   sites.forEach((s, i) => {
+    // The map's own fortresses stay free towns, strong ones (unless one became a realm's seat).
+    const fixed = fixedSites.find((f) => f.x === s.x && f.z === s.z)
+    if (fixed && !assign[i].capital) assign[i] = { faction: 'neutral', tier: 3, capital: false }
     const a = assign[i]
     const f = factions.find((x) => x.id === a.faction)
     castles.push({
       id: `c${i}`,
-      name: castleName(),
-      subtitle: a.capital ? (f?.leader ? 'High Seat' : a.faction === PLAYER ? 'Royal Seat' : 'Seat of the Realm') : a.staging ? 'War Camp' : SUBTITLE[a.tier - 1],
+      name: fixed && !a.capital ? fixed.name : castleName(),
+      subtitle: fixed && !a.capital ? fixed.subtitle : a.capital ? (a.faction === PLAYER ? "The King's Court" : a.tier >= ROYAL_SEAT_TIER ? "The Usurper's Court" : f?.leader ? 'High Seat' : 'Seat of the Realm') : a.staging ? 'War Camp' : SUBTITLE[a.tier - 1],
       faction: a.faction,
       tier: a.tier,
       x: Math.round(s.x),
@@ -396,6 +559,9 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
     lakes,
     forest_density: mapDef.gen.forest,
     biome: mapType,
+    ...(ramparts.length ? { ramparts } : {}),
+    ...(escarpments.length ? { escarpments } : {}),
+    ...(roads.length ? { roads } : {}),
   }
   const scenario: Scenario = {
     key: `${mode}-${mapType}-${opts.size ?? 'medium'}-${seed}`,
@@ -421,23 +587,22 @@ const FEATURE_CLIMATES: Record<FeatureKind, string[]> = {
   stones: ['highland', 'taiga', 'temperate', 'grain', 'wasteland', 'alpine', 'lakeland', 'icefield', 'volcanic', 'desert', 'coast'],
   terraces: ['grain', 'coast', 'autumn', 'temperate', 'mesa', 'oasis', 'volcanic'],
   thicket: ['taiga', 'autumn', 'steam', 'wasteland', 'temperate', 'icefield', 'oasis'],
-  wadi: ['desert', 'mesa', 'highland', 'wasteland', 'volcanic', 'grain'],
   crag: ['highland', 'desert', 'mesa', 'temperate', 'grain', 'volcanic', 'icefield', 'wasteland', 'coast', 'alpine'],
 }
 
-/** Scatter standing stones, terraces, windfall, wadis and crags over the land. */
+/** Scatter standing stones, terraces, windfall and crags over the land. */
 function placeFeatures(world: World, castles: CastleDef[], rnd: () => number): TerrainFeature[] {
   const out: TerrainFeature[] = []
   const half = world.half
   const area = (world.size * world.size) / (5540 * 5540)
   const each = Math.max(2, Math.round(3 * Math.sqrt(area)))
-  const kinds: FeatureKind[] = ['stones', 'terraces', 'thicket', 'wadi', 'crag']
+  const kinds: FeatureKind[] = ['stones', 'terraces', 'thicket', 'crag']
   const clear = (x: number, z: number, r: number) =>
     Math.abs(x) < half - 260 &&
     Math.abs(z) < half - 260 &&
     castles.every((c) => Math.hypot(c.x - x, c.z - z) > holdingRadius(c) + r + 160) &&
     world.crossings().every((b) => Math.hypot(b.x - x, b.z - z) > r + 160) &&
-    out.every((f) => Math.hypot(f.x - x, f.z - z) > f.r + (f.len ?? 0) / 2 + r + 200)
+    out.every((f) => Math.hypot(f.x - x, f.z - z) > f.r + r + 200)
   for (const kind of kinds) {
     for (let placed = 0, tries = 0; placed < each && tries < 600; tries++) {
       const x = (rnd() * 2 - 1) * (half - 300)
@@ -447,51 +612,24 @@ function placeFeatures(world: World, castles: CastleDef[], rnd: () => number): T
       if (!FEATURE_CLIMATES[kind].includes(world.climateAt(x, z).key)) continue
       const slope = world.slopeAt(x, z)
       const forest = world.forestAt(x, z)
-      const r = kind === 'wadi' ? 26 : kind === 'crag' ? 34 : kind === 'stones' ? 70 : kind === 'terraces' ? 110 : 100
+      const r = kind === 'crag' ? 34 : kind === 'stones' ? 70 : kind === 'terraces' ? 110 : 100
       if (kind === 'terraces' && (slope < 0.12 || slope > 0.6)) continue
-      // Round features sit wholly on dry land.
-      if (kind !== 'wadi') {
-        let dry = true
-        for (let k = 0; k < 8; k++) {
-          const px = x + Math.cos((k / 8) * Math.PI * 2) * r
-          const pz = z + Math.sin((k / 8) * Math.PI * 2) * r
-          if (world.heightAt(px, pz) < 4 || !world.isPassable(px, pz)) dry = false
-        }
-        if (!dry) continue
+      // Features sit wholly on dry land.
+      let dry = true
+      for (let k = 0; k < 8; k++) {
+        const px = x + Math.cos((k / 8) * Math.PI * 2) * r
+        const pz = z + Math.sin((k / 8) * Math.PI * 2) * r
+        if (world.heightAt(px, pz) < 4 || !world.isPassable(px, pz)) dry = false
       }
+      if (!dry) continue
       if (kind === 'thicket' && forest < 0.25) continue
-      if ((kind === 'stones' || kind === 'crag' || kind === 'wadi') && (forest > 0.35 || slope > 0.4)) continue
-      const len = kind === 'wadi' ? 380 + rnd() * 240 : 0
-      const angle = rnd() * Math.PI
-      if (!clear(x, z, r + len / 2)) continue
-      // A strip must lie on dry, passable ground along its length.
-      if (len) {
-        let ok = true
-        for (let t = -0.5; t <= 0.5; t += 0.125) {
-          const px = x + Math.cos(angle) * len * t
-          const pz = z + Math.sin(angle) * len * t
-          if (!world.isPassable(px, pz) || world.heightAt(px, pz) < 4) ok = false
-        }
-        if (!ok) continue
-      }
-      out.push(len ? { kind, x: Math.round(x), z: Math.round(z), r, angle, len: Math.round(len) } : { kind, x: Math.round(x), z: Math.round(z), r })
+      if ((kind === 'stones' || kind === 'crag') && (forest > 0.35 || slope > 0.4)) continue
+      if (!clear(x, z, r)) continue
+      out.push({ kind, x: Math.round(x), z: Math.round(z), r })
       placed++
     }
   }
   return out
-}
-
-function nearestIndex(pts: { x: number; z: number }[], x: number, z: number) {
-  let bi = 0
-  let bd = Infinity
-  pts.forEach((p, i) => {
-    const d = Math.hypot(p.x - x, p.z - z)
-    if (d < bd) {
-      bd = d
-      bi = i
-    }
-  })
-  return bi
 }
 
 function garrisonFor(tier: number, capital: boolean, personality: string, neutral: boolean, rnd: () => number, survivalEnemy: boolean): Troops {

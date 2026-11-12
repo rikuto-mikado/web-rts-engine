@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { mulberry32, Simplex } from '../game/noise'
-import { BRIDGE_DECK, WATER_LEVEL, castleRadius, type BridgeInfo, type World } from '../game/world'
+import { BRIDGE_DECK, WATER_LEVEL, castleRadius, distToSegment, type BridgeInfo, type World } from '../game/world'
 import { box, cone, cyl, merge, part, sphere } from './geo'
 import { applyVision } from './vision'
 
@@ -127,7 +127,7 @@ export function buildVegetation(world: World): THREE.Group {
     for (const c of world.def.castles) if (Math.hypot(x - c.x, z - c.z) < castleRadius(c.tier) * 1.25) return false
     if (world.def.walls && world.onWall(x, z, 30)) return false
     const k = world.featureKindAt(x, z)
-    return !world.bridgeAt(x, z, 30) && !world.fordAt(x, z, 25) && k !== 'stones' && k !== 'wadi' && k !== 'crag'
+    return !world.bridgeAt(x, z, 30) && !world.fordAt(x, z, 25) && k !== 'stones' && k !== 'crag'
   }
   for (let z = -world.half + 20; z < world.half - 20; z += step) {
     for (let x = -world.half + 20; x < world.half - 20; x += step) {
@@ -203,6 +203,38 @@ export function buildVegetation(world: World): THREE.Group {
   add(rockGeometry(), rocks, null, true)
   add(bushGeometry(), bushes, null, false)
   return group
+}
+
+/**
+ * Hide the trees, bushes and rocks that would grow through buildings: villages
+ * and other holdings, mines and lumber camps, and outposts (which come and go,
+ * so this is re-run when they change; cleared trees grow back when they go).
+ */
+export function clearVegetation(group: THREE.Group, circles: { x: number; z: number; r: number }[]) {
+  for (const o of group.children) {
+    const m = o as THREE.InstancedMesh
+    if (!m.isInstancedMesh) continue
+    const arr = m.instanceMatrix.array as Float32Array
+    let orig = m.userData.orig as Float32Array | undefined
+    if (!orig) orig = m.userData.orig = Float32Array.from(arr)
+    for (let i = 0; i < m.count; i++) {
+      const b = i * 16
+      const x = orig[b + 12]
+      const z = orig[b + 14]
+      let hide = false
+      for (const c of circles) {
+        const dx = x - c.x
+        const dz = z - c.z
+        if (dx * dx + dz * dz < c.r * c.r) {
+          hide = true
+          break
+        }
+      }
+      if (hide) for (let k = 0; k < 16; k++) arr[b + k] = k === 15 ? 1 : 0
+      else for (let k = 0; k < 16; k++) arr[b + k] = orig[b + k]
+    }
+    m.instanceMatrix.needsUpdate = true
+  }
 }
 
 const bridgeMat = applyVision(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.85 }))
@@ -353,7 +385,7 @@ export function buildStoneBridges(world: World): THREE.Group {
 
 /**
  * Terrain features: rings of standing stones,
- * terraced slopes, windfall thickets, dry wadis and crag overlooks.
+ * terraced slopes, windfall thickets and crag overlooks.
  * Built in world space as one merged mesh.
  */
 export function buildFeatures(world: World): THREE.Group {
@@ -365,8 +397,6 @@ export function buildFeatures(world: World): THREE.Group {
   const rnd = mulberry32(world.def.castles.length * 977 + feats.length)
   const y = (x: number, z: number) => world.heightAt(x, z)
   for (const f of feats) {
-    const ca = Math.cos(f.angle ?? 0)
-    const sa = Math.sin(f.angle ?? 0)
     switch (f.kind) {
       case 'stones': {
         // A low mound crowned with a ring of tall mossy stones.
@@ -431,23 +461,6 @@ export function buildFeatures(world: World): THREE.Group {
         }
         break
       }
-      case 'wadi': {
-        // A pale dry streambed with darker cut banks and boulders.
-        const L = f.len ?? 400
-        for (let t = -L / 2; t < L / 2; t += 16) {
-          const w = f.r * (1.4 + Math.sin(t * 0.03) * 0.25)
-          const x = f.x + ca * t + -sa * Math.sin(t * 0.02) * 10
-          const z = f.z + sa * t + ca * Math.sin(t * 0.02) * 10
-          parts.push(part(box(17, 0.7, w), 0xc9b78e, { x, y: y(x, z) + 0.25, z, ry: -(f.angle ?? 0) }))
-          for (const s of [-1, 1]) {
-            const bx = x - sa * s * (w / 2 + 2)
-            const bz = z + ca * s * (w / 2 + 2)
-            parts.push(part(box(17, 4, 4), 0x8c6a48, { x: bx, y: y(bx, bz) + 1.4, z: bz, ry: -(f.angle ?? 0), rx: s * 0.4 }))
-          }
-          if (rnd() < 0.4) parts.push(part(new THREE.DodecahedronGeometry(2 + rnd() * 2, 0), 0x9a8a72, { x, y: y(x, z) + 1.5, z }))
-        }
-        break
-      }
       case 'crag': {
         // A lone rock pinnacle with a winding path and a beacon brazier on top.
         const h0 = y(f.x, f.z)
@@ -488,25 +501,46 @@ export function buildWalls(world: World): THREE.Group {
   const walls = world.def.walls ?? []
   if (walls.length === 0) return group
   const mat = applyVision(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.92 }))
+  const flames: THREE.BufferGeometry[] = []
   for (const w of walls) {
     const parts: THREE.BufferGeometry[] = []
-    const circumference = Math.PI * 2 * w.r
     const segLen = 26
-    const n = Math.round(circumference / segLen)
-    const gateHalf = 62 / w.r
-    for (let i = 0; i < n; i++) {
-      const a = (i / n) * Math.PI * 2
-      if (w.gates.some((g) => Math.abs(Math.atan2(Math.sin(a - g), Math.cos(a - g))) < gateHalf)) continue
-      const x = w.x + Math.cos(a) * w.r
-      const z = w.z + Math.sin(a) * w.r
+    // Stations along the wall: (x, z) and the direction the wall runs there. A ring wall goes round
+    // its circle; an outline wall follows its corners. None in a gateway.
+    const stations: { x: number; z: number; tx: number; tz: number; len: number }[] = []
+    if (w.points) {
+      const loop = world.wallLoop(w)
+      for (let k = 0; k < loop.length - 1; k++) {
+        const [ax, az] = loop[k]
+        const [bx, bz] = loop[k + 1]
+        const L = Math.hypot(bx - ax, bz - az)
+        const n = Math.max(1, Math.round(L / segLen))
+        for (let i = 0; i < n; i++) {
+          const x = ax + ((bx - ax) * (i + 0.5)) / n
+          const z = az + ((bz - az) * (i + 0.5)) / n
+          if ((w.gatePts ?? []).some(([gx, gz]) => Math.hypot(gx - x, gz - z) < 62)) continue
+          stations.push({ x, z, tx: (bx - ax) / L, tz: (bz - az) / L, len: L / n })
+        }
+      }
+    } else {
+      const n = Math.round((Math.PI * 2 * w.r) / segLen)
+      const gateHalf = 62 / w.r
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2
+        if (w.gates.some((g) => Math.abs(Math.atan2(Math.sin(a - g), Math.cos(a - g))) < gateHalf)) continue
+        stations.push({ x: w.x + Math.cos(a) * w.r, z: w.z + Math.sin(a) * w.r, tx: -Math.sin(a), tz: Math.cos(a), len: segLen })
+      }
+    }
+    for (let i = 0; i < stations.length; i++) {
+      const { x, z, tx, tz, len } = stations[i]
       const base = world.heightAt(x, z) - 2
       const h = w.height
-      const ry = -a + Math.PI / 2
-      parts.push(part(box(segLen + 1, h + 2, 8), 0xa9a294, { x, y: base + (h + 2) / 2, z, ry }))
+      const ry = -Math.atan2(tz, tx)
+      parts.push(part(box(len + 1.5, h + 2, 8), 0xa9a294, { x, y: base + (h + 2) / 2, z, ry }))
       // Crenellations along the top.
       for (const off of [-9, 0, 9]) {
-        const ox = -Math.sin(a) * off
-        const oz = Math.cos(a) * off
+        const ox = tx * off * (len / segLen)
+        const oz = tz * off * (len / segLen)
         parts.push(part(box(4, 3, 9), 0x8d877b, { x: x + ox, y: base + h + 3.5, z: z + oz, ry }))
       }
       // A round tower every few segments.
@@ -514,55 +548,129 @@ export function buildWalls(world: World): THREE.Group {
         parts.push(part(cyl(7, 8, h + 10, 8), 0xb1aa9c, { x, y: base + (h + 10) / 2, z }))
         parts.push(part(cone(8.5, 8, 8), 0x6b4a35, { x, y: base + h + 14, z }))
       }
+      // Braziers burn along the walk between the towers.
+      if (i % 7 === 3) {
+        parts.push(part(cyl(1.2, 0.8, 1.2, 6), 0x3a3936, { x, y: base + h + 2.6, z }))
+        flames.push(part(cone(1.1, 2.4, 6), 0xff8a3a, { x, y: base + h + 4.2, z }))
+      }
     }
     const mesh = new THREE.Mesh(merge(parts), mat)
     mesh.castShadow = true
     mesh.receiveShadow = true
     group.add(mesh)
   }
+  if (flames.length) group.add(new THREE.Mesh(merge(flames), new THREE.MeshBasicMaterial({ color: 0xffa04a })))
   return group
 }
 
 /** Siege mode: a dense town of timber-and-plaster houses along radial streets. */
-export function buildTown(world: World): THREE.Group {
+export function buildTown(world: World, mobile = false): THREE.Group {
   const group = new THREE.Group()
   const town = world.def.town
   if (!town) return group
   const rnd = mulberry32(991)
-  const roofs = [0x9a4a32, 0x6e4a3a, 0x5f5a55]
+  const roofs = [0x9a4a32, 0x6e4a3a, 0x5f5a55, 0x7a3a2a, 0x4f5560]
+  const walls = [0xe8dcc0, 0xd9c9a8, 0xcfc2a6, 0xe3d2b0, 0xbfb29a]
+  // Houses of many kinds (merged once, then drawn by the thousand as instances).
   const variants: THREE.BufferGeometry[] = []
-  for (const roof of roofs) {
-    variants.push(merge([part(box(7, 6, 9), 0xe8dcc0, { y: 3 }), part(cyl(5.2, 5.2, 9.6, 3), roof, { y: 7.6, rx: Math.PI / 2, rz: Math.PI / 2 }), part(box(7.2, 0.8, 9.2), 0x5a3d22, { y: 4.2 })]))
-    variants.push(merge([part(box(8, 9, 8), 0xd9c9a8, { y: 4.5 }), part(cone(6.6, 6, 4), roof, { y: 12, ry: Math.PI / 4 }), part(box(8.2, 0.8, 8.2), 0x5a3d22, { y: 5 })]))
-    variants.push(merge([part(box(6, 5, 12), 0xcfc2a6, { y: 2.5 }), part(cyl(4.6, 4.6, 12.6, 3), roof, { y: 6.4, rx: Math.PI / 2, rz: Math.PI / 2 })]))
-  }
+  roofs.forEach((roof, i) => {
+    const wc = walls[i]
+    // Cottage, gabled.
+    variants.push(merge([part(box(7, 6, 9), wc, { y: 3 }), part(cyl(5.2, 5.2, 9.6, 3), roof, { y: 7.6, rx: Math.PI / 2, rz: Math.PI / 2 }), part(box(7.2, 0.8, 9.2), 0x5a3d22, { y: 4.2 })]))
+    // Square house, pyramid roof.
+    variants.push(merge([part(box(8, 9, 8), wc, { y: 4.5 }), part(cone(6.6, 6, 4), roof, { y: 12, ry: Math.PI / 4 }), part(box(8.2, 0.8, 8.2), 0x5a3d22, { y: 5 })]))
+    // Tall town house, steep gable, a jettied upper floor.
+    variants.push(merge([part(box(6, 7, 8), wc, { y: 3.5 }), part(box(6.8, 6, 8.6), walls[(i + 2) % 5], { y: 10 }), part(cyl(4.6, 4.6, 9, 3), roof, { y: 15, rx: Math.PI / 2, rz: Math.PI / 2, sy: 1.25 }), part(box(1, 4, 1), 0x6a5a4a, { x: 2, y: 18, z: 2.5 })]))
+  })
+  // A row of three houses under one long roof.
+  variants.push(merge([part(box(6, 6, 22), walls[1], { y: 3 }), part(cyl(4.6, 4.6, 22.6, 3), roofs[0], { y: 7.2, rx: Math.PI / 2, rz: Math.PI / 2 }), part(box(6.2, 0.6, 0.6), 0x5a3d22, { y: 6, z: -3.6 }), part(box(6.2, 0.6, 0.6), 0x5a3d22, { y: 6, z: 3.6 })]))
+  const houses = variants.length
+  // Parish churches and their bell towers, scattered through the city.
+  variants.push(
+    merge([
+      part(box(10, 11, 22), 0xbdb5a5, { y: 5.5 }),
+      part(cyl(7.4, 7.4, 22.6, 3), 0x5f6670, { y: 13.8, rx: Math.PI / 2, rz: Math.PI / 2 }),
+      part(box(7, 22, 7), 0xa49c8c, { y: 11, z: -13 }),
+      part(cone(5.4, 12, 4), 0x565c66, { y: 28, z: -13, ry: Math.PI / 4 }),
+      part(box(4, 6, 0.3), 0x23201c, { y: 4, z: -16.6 }),
+    ]),
+  )
+  // A tower house of the old families.
+  variants.push(merge([part(box(8, 26, 8), 0xa49c8c, { y: 13 }), part(box(9, 1.2, 9), 0x847c6f, { y: 26.4 }), part(cone(6.8, 8, 4), 0x7a3a2a, { y: 31, ry: Math.PI / 4 })]))
+  const church = houses
+  const towerHouse = houses + 1
   const mats = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.85 })
   applyVision(mats, '', true)
   const lists: { m: THREE.Matrix4; c: THREE.Color }[][] = variants.map(() => [])
   const tmp = new THREE.Object3D()
   const near = (x: number, z: number) => {
-    for (const c of world.def.castles) if (Math.hypot(x - c.x, z - c.z) < castleRadius(c.tier) + 22) return true
+    for (const c of world.def.castles) if (Math.hypot(x - c.x, z - c.z) < castleRadius(c.tier) * (c.gate ? 0.9 : 1) + 24) return true
     return false
   }
-  for (let r = town.inner + 16; r < town.r - 14; r += 15) {
-    const ring = Math.abs(r - (town.inner + town.r) / 2) < 20
-    if (ring) continue
-    const step = 15 / r
+  // Ring roads and the streets from the gates keep their line; small squares here and there.
+  const ringRoads = (world.def.walls ?? []).map((w) => w.r).flatMap((r) => [r - 46, r + 46])
+  const squares: [number, number][] = []
+  for (let i = 0; i < 14; i++) {
+    const a = rnd() * Math.PI * 2
+    const r = town.inner + 60 + rnd() * (town.r - town.inner - 120)
+    squares.push([town.x + Math.cos(a) * r, town.z + Math.sin(a) * r])
+  }
+  const STEP = mobile ? 17 : 13.5
+  const place = (x: number, z: number, face: number) => {
+    const roll = rnd()
+    const v = roll < 0.012 ? church : roll < 0.022 ? towerHouse : Math.floor(rnd() * houses)
+    const s = v >= houses ? 1 : 0.82 + rnd() * 0.4
+    tmp.position.set(x, world.heightAt(x, z) - 0.3, z)
+    tmp.rotation.set(0, -face + (v === church ? 0 : rnd() < 0.7 ? 0 : Math.PI / 2), 0)
+    tmp.scale.set(s, v >= houses ? 1 : 0.85 + rnd() * 0.45, s)
+    tmp.updateMatrix()
+    const shade = 0.82 + rnd() * 0.24
+    lists[v].push({ m: tmp.matrix.clone(), c: new THREE.Color(shade, shade * (0.97 + rnd() * 0.05), shade * (0.94 + rnd() * 0.06)) })
+  }
+  if (town.poly) {
+    // A city inside an outline wall: blocks of houses on a slightly skewed grid, streets from the gates
+    // to the Citadel left open, a lane inside every wall, small squares here and there.
+    const outer = (world.def.walls ?? []).find((w) => w.points && Math.abs(w.r - town.r) < 30) ?? (world.def.walls ?? [])[1]
+    const skew = rnd() * Math.PI
+    const [cs, sn] = [Math.cos(skew), Math.sin(skew)]
+    for (let i = -town.r; i <= town.r; i += STEP)
+      for (let j = -town.r; j <= town.r; j += STEP) {
+        if (rnd() < 0.07) continue
+        const lx = i + (rnd() - 0.5) * 3
+        const lz = j + (rnd() - 0.5) * 3
+        // Every few rows a cross street.
+        if (Math.abs(Math.round(i / STEP)) % 6 === 0 || Math.abs(Math.round(j / STEP)) % 7 === 0) continue
+        const x = town.x + lx * cs - lz * sn
+        const z = town.z + lx * sn + lz * cs
+        if (outer && !world.insideWall(outer, x, z)) continue
+        if (Math.hypot(x - town.x, z - town.z) < town.inner) continue
+        if ((town.lanes ?? []).some((l) => distToSegment(x, z, l[0][0], l[0][1], l[1][0], l[1][1]) < 16)) continue
+        if (squares.some(([sx, sz]) => Math.hypot(sx - x, sz - z) < 26)) continue
+        if (near(x, z) || world.onWall(x, z, 24)) continue
+        place(x, z, skew)
+      }
+  }
+  for (let r = town.inner + 12; !town.poly && r < town.r - 12; r += STEP) {
+    if (ringRoads.some((rr) => Math.abs(r - rr) < 9)) continue
+    const step = STEP / r
     for (let a = 0; a < Math.PI * 2; a += step) {
-      if (rnd() < 0.12) continue // small yards and gaps
-      const rr = r + (rnd() - 0.5) * 4
+      if (rnd() < 0.07) continue // yards and gaps
+      const rr = r + (rnd() - 0.5) * 3
       const x = town.x + Math.cos(a) * rr
       const z = town.z + Math.sin(a) * rr
-      if (town.streets.some((s) => Math.abs(Math.atan2(Math.sin(a - s), Math.cos(a - s))) * rr < 22)) continue
-      if (near(x, z) || world.onWall(x, z, 18)) continue
-      const v = Math.floor(rnd() * variants.length)
-      const s = 0.8 + rnd() * 0.45
+      if (town.streets.some((st) => Math.abs(Math.atan2(Math.sin(a - st), Math.cos(a - st))) * rr < 20)) continue
+      if (squares.some(([sx, sz]) => Math.hypot(sx - x, sz - z) < 26)) continue
+      if (near(x, z) || world.onWall(x, z, 20)) continue
+      const roll = rnd()
+      const v = roll < 0.012 ? church : roll < 0.022 ? towerHouse : Math.floor(rnd() * houses)
+      const s = v >= houses ? 1 : 0.82 + rnd() * 0.4
       tmp.position.set(x, world.heightAt(x, z) - 0.3, z)
-      tmp.rotation.set(0, -a + (rnd() < 0.5 ? 0 : Math.PI / 2), 0)
-      tmp.scale.set(s, 0.85 + rnd() * 0.5, s)
+      // Houses face the street (their long side along the ring); churches point east-ish.
+      tmp.rotation.set(0, -a + (v === church ? 0 : rnd() < 0.7 ? 0 : Math.PI / 2), 0)
+      tmp.scale.set(s, v >= houses ? 1 : 0.85 + rnd() * 0.45, s)
       tmp.updateMatrix()
-      const shade = 0.85 + rnd() * 0.2
-      lists[v].push({ m: tmp.matrix.clone(), c: new THREE.Color(shade, shade, shade) })
+      const shade = 0.82 + rnd() * 0.24
+      lists[v].push({ m: tmp.matrix.clone(), c: new THREE.Color(shade, shade * (0.97 + rnd() * 0.05), shade * (0.94 + rnd() * 0.06)) })
     }
   }
   variants.forEach((geo, i) => {

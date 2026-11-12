@@ -327,6 +327,30 @@ function draw(p: PortraitSpec): Px {
       rect(23, 6, 25, 12, shade(h, -0.15))
       break
     }
+    case 'hood': {
+      // A deep travelling hood: the face in shadow, the brim low over the eyes.
+      const h = p.hat ?? cloth
+      const hD = shade(h, -0.3)
+      const hL = shade(h, 0.14)
+      rect(8, 4, 23, 9, h)
+      rect(10, 2, 21, 3, h)
+      rect(7, 8, 9, 26, h)
+      rect(22, 8, 24, 26, hD)
+      rect(10, 3, 14, 4, hL)
+      rect(8, 6, 9, 14, hL)
+      // The brim's shadow falls across brow and eyes.
+      rect(10, 9, 21, 10, hD)
+      for (let x = 10; x <= 21; x++) {
+        const c = get(x, 11)
+        if (c) set(x, 11, shade(c, -0.35))
+      }
+      rect(10, 10, 10, 20, shade(skin, -0.45))
+      rect(21, 10, 21, 20, shade(skin, -0.5))
+      // The hood falls onto the shoulders.
+      rect(6, 24, 25, 27, h)
+      rect(6, 27, 25, 27, hD)
+      break
+    }
     case 'headband': {
       const h = p.hat ?? trim
       rect(10, 8, 21, 8, h)
