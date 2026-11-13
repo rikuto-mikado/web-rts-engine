@@ -21,7 +21,7 @@ interface Props {
   campaignName: string
 }
 
-const MODE_NAME = { campaign: 'Conquest', alliance: 'Alliance War', survival: 'Conquest', convoy: 'Convoy Raid', nightfall: 'The Long Night' }
+const MODE_NAME = { campaign: 'Conquest', alliance: 'Alliance War', survival: 'Conquest', convoy: 'Convoy Raid', nightfall: 'The Long Night', grand: 'War of the Three Crowns' }
 
 /** One information bar: realm status on the left, chronicle / manual / leave tucked at its end. */
 export function TopBar({ engine, onQuit, onToggleLog, onHelp, onMenu, overhead, onToggleView, night, onToggleNight, campaignName }: Props) {
@@ -42,13 +42,13 @@ export function TopBar({ engine, onQuit, onToggleLog, onHelp, onMenu, overhead, 
   // Bad weather shows itself; on a fair day, the season.
   const wxIcon = wx === 'rain' || wx === 'storm' || wx === 'snow' ? wx : SEASON_GLYPH[season]
   const wxTone = wx === 'clear' ? SEASON_TONE[season] : 'text-sky-200'
-  const wxTip = describeClimate(season, wx).join('\n')
+  const wxTip = [...describeClimate(season, wx), ...(s.frozen ? ['Deep Freeze: stretches of the rivers are frozen and can be crossed anywhere (slowly); no charges or squares on the ice.'] : [])].join('\n')
   const weatherChip = (
     <div className="flex items-center gap-1.5 text-[13px] text-ink-200" title={wxTip}>
       <Glyph name={wxIcon} size={18} className={wxTone} />
       <span className="leading-tight">
         <span className="block">{season}</span>
-        <span className="block text-[11px] text-ink-400">{WEATHER_LABEL[wx]}</span>
+        <span className={`block text-[11px] ${s.frozen ? 'text-sky-200' : 'text-ink-400'}`}>{s.frozen ? 'Rivers frozen' : WEATHER_LABEL[wx]}</span>
       </span>
     </div>
   )
@@ -107,16 +107,40 @@ export function TopBar({ engine, onQuit, onToggleLog, onHelp, onMenu, overhead, 
           <Res icon={<Swords size={15} className="text-ink-300" />} value={`${s.stats.battlesWon} / ${s.stats.battlesLost}`} sub="won / lost" />
         </div>
         <Divider />
-        <div className="hidden w-36 xl:block" title={`Your side ${fmt(A.power)} vs enemy ${fmt(B.power)}`}>
-          <div className="mb-1 flex justify-between text-[11px] tracking-wider text-ink-400 uppercase">
-            <span>Allies {A.castles}</span>
-            <span>Enemy {B.castles}</span>
+        {s.rules.mode === 'grand' ? (
+          // Three crowns: each realm's share of all the strength on the continent.
+          (() => {
+            const C = engine.teamPower('C')
+            const sum = Math.max(1, A.power + B.power + C.power)
+            const col = (id: string) => s.factions[id]?.color ?? '#888'
+            return (
+              <div className="hidden w-40 xl:block" title={`King ${fmt(A.power)} · Usurper ${fmt(B.power)} · Sun Emperor ${fmt(C.power)}`}>
+                <div className="mb-1 flex justify-between text-[11px] tracking-wider text-ink-400 uppercase">
+                  <span>Crowns</span>
+                  <span className="tabular-nums">
+                    {A.castles} · {B.castles} · {C.castles}
+                  </span>
+                </div>
+                <div className="flex h-1.5 overflow-hidden rounded-full">
+                  <div style={{ width: `${(A.power / sum) * 100}%`, background: RELATION_COLOR.self }} />
+                  <div style={{ width: `${(B.power / sum) * 100}%`, background: col('B0') }} />
+                  <div className="flex-1" style={{ background: col('C0') }} />
+                </div>
+              </div>
+            )
+          })()
+        ) : (
+          <div className="hidden w-36 xl:block" title={`Your side ${fmt(A.power)} vs enemy ${fmt(B.power)}`}>
+            <div className="mb-1 flex justify-between text-[11px] tracking-wider text-ink-400 uppercase">
+              <span>Allies {A.castles}</span>
+              <span>Enemy {B.castles}</span>
+            </div>
+            <div className="flex h-1.5 overflow-hidden rounded-full">
+              <div style={{ width: `${share * 100}%`, background: RELATION_COLOR.self }} />
+              <div className="flex-1" style={{ background: RELATION_COLOR.enemy }} />
+            </div>
           </div>
-          <div className="flex h-1.5 overflow-hidden rounded-full">
-            <div style={{ width: `${share * 100}%`, background: RELATION_COLOR.self }} />
-            <div className="flex-1" style={{ background: RELATION_COLOR.enemy }} />
-          </div>
-        </div>
+        )}
         {weatherChip}
         <div className={`flex items-center gap-1.5 text-[13px] ${clockText ? `font-display font-bold tabular-nums ${left! < 120 ? 'animate-pulse text-ember-300' : 'text-gold-200'}` : 'text-ink-200'}`}>
           <Hourglass size={14} className="text-ink-400" />

@@ -23,6 +23,7 @@ class UnitTypeSerializer(serializers.ModelSerializer):
             "pursuit",
             "counters",
             "color",
+            "recruitable",
         ]
 
 

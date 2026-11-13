@@ -92,22 +92,81 @@ export function makePaintTexture(size = 256): THREE.Texture {
 }
 
 /**
- * Shader chunk (inserted after <color_fragment>) that paints the ground: colour
- * blotches with a warm/cool drift, brush strokes, grain, and rock strata on
- * steep slopes. Works in world space, so it never stretches.
+ * Shader chunk (inserted after <color_fragment>) that paints the ground in world space, so it never
+ * stretches: colour blotches at three scales with a warm/cool drift and brush strokes; in meadows
+ * grass blades, tufts and a scatter of wildflowers; on the roads (from the ground map) packed earth,
+ * two worn wheel ruts, pebbles and ragged grassy verges; a wet dark line where the water meets the
+ * bank and pale sand above it; wind-carved snow; rock strata on steep ground.
  */
 export const PAINT_CHUNK = `
 {
   vec2 pp = vVisWorld.xz;
+  vec4 gm = texture2D(uGround, vVisUv);
+  float hW = gm.b * 20.0 - 10.0;
   float big = texture2D(uPaint, pp * 0.0019).r;
+  float mid = texture2D(uPaint, pp * 0.011 + vec2(0.21, 0.63)).r;
   float strokes = texture2D(uPaint, pp * 0.0095 + vec2(0.37, 0.11)).g;
   float grain = texture2D(uPaint, pp * 0.055).b;
-  float tone = (big - 0.5) * 0.3 + (strokes - 0.5) * 0.34 + (grain - 0.5) * 0.12;
+  float fine = texture2D(uPaint, pp * 0.21 + vec2(0.5)).b;
+  vec3 base = diffuseColor.rgb;
+  float lum = dot(base, vec3(0.299, 0.587, 0.114));
+  float sat = max(base.r, max(base.g, base.b)) - min(base.r, min(base.g, base.b));
+  float grass = smoothstep(-0.01, 0.05, base.g - max(base.r, base.b));
+  float snowy = smoothstep(0.7, 0.84, lum) * (1.0 - smoothstep(0.04, 0.12, sat));
+  float tone = (big - 0.5) * 0.3 + (mid - 0.5) * 0.16 + (strokes - 0.5) * 0.3 + (grain - 0.5) * 0.12;
   diffuseColor.rgb *= 1.0 + tone;
   diffuseColor.rgb += vec3(0.045, 0.025, -0.035) * (big - 0.5) * 1.6;
+  // Meadows: blades and tufts (dark roots, sunlit tips), now and then a fleck of wildflowers.
+  float blades = texture2D(uPaint, vec2(pp.x * 0.16 + pp.y * 0.04, pp.y * 0.07)).b;
+  diffuseColor.rgb *= 1.0 + grass * ((blades - 0.5) * 0.2 + (fine - 0.5) * 0.06);
+  diffuseColor.rgb += grass * vec3(0.05, 0.06, 0.0) * smoothstep(0.68, 0.85, blades);
+  float fl = smoothstep(0.88, 0.92, texture2D(uPaint, pp * 0.37 + vec2(0.13, 0.77)).b) * grass * smoothstep(0.5, 0.62, mid) * (1.0 - gm.r);
+  diffuseColor.rgb = mix(diffuseColor.rgb, mix(vec3(0.96, 0.86, 0.36), vec3(0.86, 0.58, 0.78), step(0.5, big)), fl * 0.75);
+  // Roads: packed earth with two worn ruts, pebbles, and verges where the grass creeps back.
+  float verge = smoothstep(0.2, 0.6, gm.r + (strokes - 0.5) * 0.5 + (fine - 0.5) * 0.35);
+  float road = verge * (1.0 - snowy * 0.5);
+  vec3 earth = base * vec3(1.0, 0.95, 0.88) * (0.95 + (grain - 0.5) * 0.3);
+  diffuseColor.rgb = mix(diffuseColor.rgb, earth, road * 0.8);
+  diffuseColor.rgb *= 1.0 - gm.g * 0.24 * road;
+  diffuseColor.rgb += vec3(0.03, 0.025, 0.015) * smoothstep(0.35, 0.0, gm.g) * road * (grain - 0.3);
+  float peb = smoothstep(0.8, 0.86, fine) * road;
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.62, 0.6, 0.56) * (0.8 + grain * 0.4), peb * 0.8);
+  // Banks: a wet dark line at the water's edge, pale dry sand above it.
+  float wet = (1.0 - smoothstep(0.0, 0.9, hW)) * step(-0.6, hW);
+  float shore = (1.0 - smoothstep(0.8, 3.4, hW + (strokes - 0.5) * 1.6)) * step(0.0, hW);
+  diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.08, 1.04, 0.94) + vec3(0.04, 0.035, 0.02), shore * (1.0 - road) * 0.6);
+  diffuseColor.rgb *= 1.0 - wet * 0.25;
+  // Snowfields: wind-carved drifts with cool hollows.
+  diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.94, 0.97, 1.04) * (0.94 + strokes * 0.12), snowy);
+  // Steep ground: rock strata.
   vec3 fn = normalize(cross(dFdx(vVisWorld), dFdy(vVisWorld)));
   float steep = 1.0 - abs(fn.y);
   float strata = texture2D(uPaint, vec2((vVisWorld.x + vVisWorld.z) * 0.0035, vVisWorld.y * 0.045)).g;
-  diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * (0.78 + strata * 0.38), smoothstep(0.3, 0.65, steep));
+  float ledges = smoothstep(0.55, 0.75, texture2D(uPaint, vec2((vVisWorld.x - vVisWorld.z) * 0.002, vVisWorld.y * 0.11)).g);
+  diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * (0.74 + strata * 0.4) * (1.0 - ledges * 0.18), smoothstep(0.3, 0.65, steep));
+}
+`
+
+/**
+ * Shader chunk (inserted after <normal_fragment_maps>) that shapes the light on the ground: smooth
+ * on gentle slopes, crisp facets on steep rock (the triangle's own face), and a fine micro-relief of
+ * clods, tufts and the ruts of the roads, fading out with distance so it never shimmers.
+ */
+export const RELIEF_CHUNK = `
+{
+  vec3 wN = normalize((vec4(normal, 0.0) * viewMatrix).xyz);
+  vec3 fN = normalize(cross(dFdx(vViewPosition), dFdy(vViewPosition)));
+  float steepN = 1.0 - clamp(wN.y, 0.0, 1.0);
+  normal = normalize(mix(normal, fN, smoothstep(0.28, 0.55, steepN)));
+  vec2 rp = vVisWorld.xz;
+  float hgt = texture2D(uPaint, rp * 0.03).b * 0.35 + texture2D(uPaint, rp * 0.017 + vec2(0.3)).g * 0.65 - texture2D(uGround, vVisUv).g * 0.7;
+  vec3 sx = dFdx(-vViewPosition);
+  vec3 sy = dFdy(-vViewPosition);
+  vec3 r1 = cross(sy, normal);
+  vec3 r2 = cross(normal, sx);
+  float det = dot(sx, r1);
+  float fade = 1.0 - smoothstep(250.0, 1100.0, length(vViewPosition));
+  vec3 grad = sign(det) * (dFdx(hgt) * r1 + dFdy(hgt) * r2);
+  normal = normalize(abs(det) * normal - grad * 0.9 * fade);
 }
 `

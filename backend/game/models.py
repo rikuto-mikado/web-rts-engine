@@ -49,6 +49,10 @@ class UnitType(models.Model):
         help_text='Damage multipliers vs other unit keys, e.g. {"knights": 2.0}',
     )
     color = models.CharField(max_length=9, default="#cccccc")
+    recruitable = models.BooleanField(
+        default=True,
+        help_text="False for a fixed band's own troops (Household Knights, Assassins, Outriders): never raised in castles",
+    )
     sort_order = models.PositiveSmallIntegerField(default=0)
 
     class Meta:
@@ -136,6 +140,7 @@ class Campaign(models.Model):
         SURVIVAL = "survival", "Survival"
         CONVOY = "convoy", "Convoy Raid"
         NIGHTFALL = "nightfall", "The Long Night"
+        GRAND = "grand", "War of the Three Crowns"
 
     name = models.CharField(max_length=120)
     mode = models.CharField(max_length=10, choices=Mode.choices, default=Mode.CAMPAIGN)

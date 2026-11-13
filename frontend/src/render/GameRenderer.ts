@@ -1,16 +1,17 @@
 import * as THREE from 'three'
-import { SPY, HOLDINGS, PLAYER, type GameEngine } from '../game/engine'
+import { SPY, HIDING_KEYS, HOLDINGS, PLAYER, type GameEngine } from '../game/engine'
 import { FORMATIONS } from '../game/formations'
 import { clamp } from '../game/noise'
 import { fmt, totalInt } from '../game/troops'
 import type { Army, Castle, GameEvent } from '../game/types'
-import { holdingRadius, villageRadius } from '../game/world'
+import { castleRadius, holdingRadius, villageRadius } from '../game/world'
 import { ArmyRenderer } from './armies'
 import { RTSCamera } from './camera'
 import { CastleView } from './castles'
 import { OutpostRenderer } from './outposts'
 import { ConvoyRenderer } from './convoys'
 import { buildRamparts } from './ramparts'
+import { buildIce } from './ice'
 import { buildRifts } from './rifts'
 import { buildCity, buildCityWalls } from './city'
 import { ObstacleRenderer } from './obstacles'
@@ -19,9 +20,12 @@ import { SiteRenderer } from './sites'
 import { shieldSvg } from './heraldry'
 import { glyphSvg } from './glyphs'
 import { ParticleSystem } from './particles'
-import { bridgeMesh, buildBridges, buildFeatures, buildFords, buildSkirt, buildStoneBridges, buildTerrain, buildTown, buildVegetation, buildWalls, buildWater, clearVegetation } from './terrain'
+import { buildWoods } from './woods'
+import type { FortStyle } from './fortress'
+import { bridgeMesh, buildBridges, buildFeatures, buildFords, buildSkirt, buildStoneBridges, buildTerrain, buildTown, buildVegetation, buildWalls, buildWater, clearVegetation, updateTreeShadows } from './terrain'
 import { visionUniforms } from './vision'
 import { makePaintTexture } from './paint'
+import { makeGroundMap } from './ground'
 import { Diorama } from './postfx'
 
 export type Selection = { kind: 'army'; id: string } | { kind: 'castle'; id: string } | { kind: 'outpost'; id: string } | { kind: 'convoy'; id: string } | { kind: 'site'; id: string } | null
@@ -56,6 +60,15 @@ export class GameRenderer {
   private armies: ArmyRenderer
   private outposts: OutpostRenderer
   private vegetation: THREE.Group
+  private woods: THREE.Group | null = null
+  /** Ground the royal cities' countryside took, and their chimneys. */
+  private cityCleared: { x: number; z: number; r: number }[] = []
+  private citySmoke: [number, number, number][] = []
+  private cityTrees: THREE.Object3D[] = []
+  private frustum = new THREE.Frustum()
+  private viewProj = new THREE.Matrix4()
+  private viewSphere = new THREE.Sphere()
+  private viewPoint = new THREE.Vector3()
   private clearedKey = ''
   private convoys: ConvoyRenderer
   private diorama: Diorama | null = null
@@ -92,6 +105,8 @@ export class GameRenderer {
   private resizeObs: ResizeObserver
 
   selection: Selection = null
+  /** Deep Freeze: the ice on the rivers (faded in while they are frozen). */
+  private ice: { mesh: THREE.Mesh; mat: THREE.MeshStandardMaterial } | null = null
   /** Fewer soldier figures on phones and tablets. */
   private densityScale = 1
   hover: PickTarget = null
@@ -114,6 +129,9 @@ export class GameRenderer {
     this.renderer.toneMappingExposure = 1.0
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     visionUniforms.uPaint.value ??= makePaintTexture()
+    // Roads, ruts and the water line, per pixel (for the painted ground and the water).
+    visionUniforms.uGround.value?.dispose()
+    visionUniforms.uGround.value = makeGroundMap(world, mobile ? 768 : 1024)
     host.appendChild(this.renderer.domElement)
     this.renderer.domElement.addEventListener('webglcontextlost', this.onContextLost)
     this.renderer.domElement.addEventListener('webglcontextrestored', this.onContextRestored)
@@ -162,10 +180,30 @@ export class GameRenderer {
     this.scene.add(buildFords(world))
     this.scene.add(buildStoneBridges(world))
     this.scene.add(buildFeatures(world))
+    this.woods = buildWoods(world)
+    this.scene.add(this.woods)
     // A royal city gets its monumental walls and streets; older circular towns keep the simple ones.
-    this.scene.add(world.def.town?.poly ? buildCityWalls(world) : buildWalls(world))
+    this.scene.add(world.towns.some((t) => t.poly) ? buildCityWalls(world) : buildWalls(world))
     this.scene.add(buildRamparts(world))
-    this.scene.add(world.def.town?.poly ? buildCity(world, mobile) : buildTown(world, mobile))
+    this.ice = buildIce(world)
+    if (this.ice) this.scene.add(this.ice.mesh)
+    if (world.towns.some((t) => t.poly)) {
+      // Each royal city in the style of the realm that holds it; its countryside keeps clear of the
+      // rifts of the Long Night.
+      const styles = world.towns.map((t) => {
+        const keep = engine.state.castles.find((c) => c.id === t.keep)
+        const team = keep ? engine.team(keep.faction) : 'A'
+        return (team === 'B' ? 'thorn' : team === 'C' ? 'sun' : team === 'A' ? 'crown' : 'free') as FortStyle
+      })
+      const rifts = (engine.state.rules.night?.rifts ?? []).map((r: { x: number; z: number }) => ({ x: r.x, z: r.z, r: 260 }))
+      const city = buildCity(world, mobile, styles, rifts)
+      city.traverse((o) => {
+        if (o.name === 'city-trees') this.cityTrees.push(o)
+      })
+      this.cityCleared = city.userData.cleared ?? []
+      this.citySmoke = city.userData.smoke ?? []
+      this.scene.add(city)
+    } else this.scene.add(buildTown(world, mobile))
     if (engine.state.rules.night) this.scene.add(buildRifts(world, engine.state.rules.night.rifts))
 
     for (const c of engine.state.castles) this.buildCastle(c)
@@ -221,9 +259,16 @@ export class GameRenderer {
       old.dispose()
     }
     const grand = this.engine.splendourOf(c)
-    const v = new CastleView(c, this.engine.world, this.engine.factionColor(c.faction), grand)
+    const v = new CastleView(c, this.engine.world, this.engine.factionColor(c.faction), grand, this.styleOf(c))
     this.castles.set(c.id, v)
     this.scene.add(v.group)
+  }
+
+  /** How a castle is built: in the way of the realm that holds it. */
+  private styleOf(c: Castle): FortStyle {
+    if (c.faction === 'neutral') return 'free'
+    const t = this.engine.team(c.faction)
+    return t === 'A' ? 'crown' : t === 'B' ? 'thorn' : t === 'C' ? 'sun' : 'free'
   }
 
   private resize() {
@@ -254,15 +299,20 @@ export class GameRenderer {
   /** Keep trees and rocks out of villages, holdings, mines, lumber camps and outposts (re-checked as outposts come and go). */
   private clearGrounds() {
     const s = this.engine.state
-    const key = s.outposts.map((o) => o.id).join(',') + '|' + s.castles.reduce((n, c) => n + (c.village ? c.tier : 0), 0)
+    const key = s.outposts.map((o) => o.id).join(',') + '|' + s.castles.reduce((n, c) => n + c.tier, 0)
     if (key === this.clearedKey) return
     this.clearedKey = key
     const circles: { x: number; z: number; r: number }[] = []
     for (const c of s.castles) if (c.village) circles.push({ x: c.x, z: c.z, r: villageRadius(c.tier) * 1.5 })
+    // A royal city's gate towns and farmland, and a castle's country (its suburbs, fields and
+    // orchards), are cleared land.
+    circles.push(...this.cityCleared)
+    for (const c of s.castles) if (!c.village && this.engine.world.walls.has(c.id)) circles.push({ x: c.x, z: c.z, r: castleRadius(c.tier) * 2.15 })
     for (const r of s.sites ?? []) circles.push({ x: r.x, z: r.z, r: r.kind === 'mine' ? 34 : 22 })
-    const OUTPOST_R: Record<string, number> = { castrum: 80, laager: 54, redoubt: 60, pavilion: 30, depot: 66 }
+    const OUTPOST_R: Record<string, number> = { castrum: 80, laager: 54, redoubt: 60, pavilion: 44, depot: 66 }
     for (const o of s.outposts) circles.push({ x: o.x, z: o.z, r: OUTPOST_R[o.kind] ?? 60 })
     clearVegetation(this.vegetation, circles)
+    if (this.woods) clearVegetation(this.woods, circles)
   }
 
   private rightInset = 0
@@ -323,7 +373,20 @@ export class GameRenderer {
   // -------------------------------------------------------------------------
 
   /** Intersect a screen point with the terrain (ray-marched height field). */
-  groundAt(clientX: number, clientY: number): { x: number; z: number } | null {
+  /**
+   * The point under the cursor on a level plane at height y. Dragging the map holds on to this
+   * rather than to the ground itself: over a ridge, the ground under the finger can leap from this
+   * slope to the land behind it, and the map would leap with it.
+   */
+  planeAt(clientX: number, clientY: number, y: number): { x: number; z: number } | null {
+    const rect = this.renderer.domElement.getBoundingClientRect()
+    const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1)
+    this.raycaster.setFromCamera(ndc, this.cam.camera)
+    const p = new THREE.Vector3()
+    if (!this.raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -y), p)) return null
+    return { x: p.x, z: p.z }
+  }
+  groundAt(clientX: number, clientY: number): { x: number; z: number; y: number } | null {
     const rect = this.renderer.domElement.getBoundingClientRect()
     const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1)
     this.raycaster.setFromCamera(ndc, this.cam.camera)
@@ -345,7 +408,7 @@ export class GameRenderer {
           if (my <= Math.max(0, world.heightAt(mx, mz))) hi = mid
           else lo = mid
         }
-        return { x: origin.x + direction.x * hi, z: origin.z + direction.z * hi }
+        return { x: origin.x + direction.x * hi, z: origin.z + direction.z * hi, y: origin.y + direction.y * hi }
       }
       prev = t
     }
@@ -423,6 +486,12 @@ export class GameRenderer {
   // -------------------------------------------------------------------------
 
   render(dt: number) {
+    if (this.ice) {
+      const want = this.engine.world.frozen ? 0.98 : 0
+      const m = this.ice.mat
+      m.opacity += (want - m.opacity) * (1 - Math.exp(-dt * 1.6))
+      this.ice.mesh.visible = m.opacity > 0.01
+    }
     if (this.disposed || this.contextLost) return
     this.time += dt
     visionUniforms.uTime.value = this.time
@@ -442,6 +511,10 @@ export class GameRenderer {
       sc.far = 3000
       sc.updateProjectionMatrix()
     }
+    // Trees cast shadows only where the shadow map reaches (and a little beyond, for long shadows).
+    updateTreeShadows(this.vegetation, target.x, target.y, ext * 1.25)
+    if (this.woods) updateTreeShadows(this.woods, target.x, target.y, ext * 1.25)
+    for (const t of this.cityTrees) updateTreeShadows(t, target.x, target.y, ext * 1.25)
     this.sun.target.position.set(target.x, 0, target.y)
     this.sun.position.set(target.x + SUN_DIR.x * 1200, SUN_DIR.y * 1200, target.y + SUN_DIR.z * 1200)
     const fog = this.scene.fog as THREE.Fog
@@ -455,14 +528,31 @@ export class GameRenderer {
       this.visionTex.needsUpdate = true
     }
 
+    // What the camera sees: castles off screen or far away skip their flags, sails and smoke.
+    const cam = this.cam.camera
+    cam.updateMatrixWorld()
+    this.viewProj.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse)
+    this.frustum.setFromProjectionMatrix(this.viewProj)
+    const farOff = Math.max(2600, this.cam.distance * 2.6)
     for (const c of engine.state.castles) {
       const v = this.castles.get(c.id)
       if (!v) continue
-      if (v.tier !== c.tier || engine.splendourOf(c) !== v.grand || v.ruined !== !!c.ruined || v.owned !== (c.faction !== 'neutral')) this.buildCastle(c)
+      // Rebuilt only when it really changes: its size, ruin, owner or style (not its splendour,
+      // which follows the garrison up and down).
+      if (v.tier !== c.tier || v.ruined !== !!c.ruined || v.owned !== (c.faction !== 'neutral') || v.style !== this.styleOf(c)) this.buildCastle(c)
       const view = this.castles.get(c.id)!
       if (!c.village || c.faction !== 'neutral') view.setColor(engine.factionColor(c.faction))
-      v.animate(this.time + v.radius)
-      this.castleEffects(c, v, dt)
+      this.viewSphere.center.set(c.x, view.height + 20, c.z)
+      this.viewSphere.radius = view.radius * 2.4 + 40
+      if (!this.frustum.intersectsSphere(this.viewSphere) || this.viewSphere.center.distanceTo(cam.position) > farOff || !engine.isExplored(c.x, c.z)) continue
+      view.animate(this.time + view.radius)
+      this.castleEffects(c, view, dt)
+    }
+    // Smoke from the chimneys and camp fires of the royal cities' countryside (where it can be seen).
+    if (this.citySmoke.length && Math.random() < dt * Math.min(8, this.citySmoke.length * 0.2)) {
+      const [x, y, z] = this.citySmoke[Math.floor(Math.random() * this.citySmoke.length)]
+      this.viewPoint.set(x, y, z)
+      if (this.engine.isExplored(x, z) && this.frustum.containsPoint(this.viewPoint) && this.viewPoint.distanceTo(cam.position) < farOff) this.dust.spawn({ x, y, z, vx: 1.5 + Math.random(), vy: 3 + Math.random() * 2, vz: 0.5, life: 5 + Math.random() * 2, size: 2.5, grow: 4, drag: 0.2, color: 0x8a8580, alpha: 0.28 })
     }
     this.armies.density = (this.cam.distance > 1500 ? 0.35 : this.cam.distance > 900 ? 0.6 : 1) * this.densityScale
     this.armies.eye.copy(this.cam.camera.position)
@@ -536,6 +626,11 @@ export class GameRenderer {
 
   private castleEffects(c: Castle, v: CastleView, dt: number) {
     if (!this.engine.isExplored(c.x, c.z)) return
+    // Smoke from the chimneys, forges and kilns of the town and its suburbs.
+    if (v.smoke.length && Math.random() < dt * Math.min(6, v.smoke.length * 0.25)) {
+      const [x, y, z] = v.smoke[Math.floor(Math.random() * v.smoke.length)]
+      this.dust.spawn({ x, y, z, vx: 1.5 + Math.random(), vy: 3 + Math.random() * 2, vz: 0.5, life: 5 + Math.random() * 2, size: 2.5, grow: 4, drag: 0.2, color: 0x8a8580, alpha: 0.28 })
+    }
     // Ruins smoulder a little; wall-less villages only smoke while fighting rages.
     if (c.ruined) {
       if (Math.random() > 0.6 * dt) return
@@ -723,6 +818,7 @@ export class GameRenderer {
 
     this.updateWorldMarkers()
     this.updateWatchRings(sel?.kind === 'army' ? this.engine.army(sel.id) : undefined)
+    this.updateGroupLines(sel?.kind === 'army' ? this.engine.army(sel.id) : undefined)
   }
 
   private routeCache = new Map<string, THREE.Color>()
@@ -745,6 +841,40 @@ export class GameRenderer {
     return c
   }
 
+  private groupLines: THREE.LineSegments | null = null
+  /** With one army of a battle group selected: faint lines from its lead to each of the escorts. */
+  private updateGroupLines(a: Army | undefined) {
+    const engine = this.engine
+    const lead = a ? (a.stance?.kind === 'escortArmy' ? engine.army(a.stance.targetId) : a) : undefined
+    const escorts = lead && lead.faction === PLAYER ? engine.escortsOf(lead) : []
+    if (!this.groupLines) {
+      const g = new THREE.BufferGeometry()
+      g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(8 * 2 * 3), 3))
+      this.groupLines = new THREE.LineSegments(g, new THREE.LineDashedMaterial({ color: 0x8fb4ff, dashSize: 10, gapSize: 7, transparent: true, opacity: 0.75, depthTest: false }))
+      this.groupLines.renderOrder = 6
+      this.groupLines.frustumCulled = false
+      this.scene.add(this.groupLines)
+    }
+    const line = this.groupLines
+    line.visible = !!lead && escorts.length > 0
+    if (!line.visible || !lead) return
+    const vl = this.armies.visuals.get(lead.id)
+    const lx = vl?.x ?? lead.x
+    const lz = vl?.z ?? lead.z
+    const arr = (line.geometry.attributes.position as THREE.BufferAttribute).array as Float32Array
+    let n = 0
+    for (const e of escorts.slice(0, 8)) {
+      const ve = this.armies.visuals.get(e.id)
+      const ex = ve?.x ?? e.x
+      const ez = ve?.z ?? e.z
+      arr.set([lx, this.engine.world.surfaceAt(lx, lz) + 6, lz, ex, this.engine.world.surfaceAt(ex, ez) + 6, ez], n * 6)
+      n++
+    }
+    line.geometry.setDrawRange(0, n * 2)
+    ;(line.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true
+    line.computeLineDistances()
+  }
+
   private watchPool: { ring: THREE.Mesh; disc: THREE.Mesh }[] = []
   /**
    * With one of our spymaster's bands selected: the enemy's watches on the ground. Inside the red
@@ -753,7 +883,10 @@ export class GameRenderer {
    */
   private updateWatchRings(a: Army | undefined) {
     const engine = this.engine
-    const zones: { x: number; z: number; r: number; rd: number }[] = []
+    const zones: { x: number; z: number; r: number; rd: number; ours?: boolean }[] = []
+    // (Our Wardens carry their own aura always, drawn with the armies.)
+    // A band on guard: the ring it watches round its post.
+    if (a && a.faction === PLAYER && a.stance?.kind === 'guard' && a.stance.x !== undefined) zones.push({ x: a.stance.x, z: a.stance.z!, r: a.stance.r ?? 400, rd: 0, ours: true })
     if (a && a.faction === PLAYER && engine.isSpyBand(a)) {
       for (const w of engine.spyWatches(PLAYER)) if (!w.secret) zones.push(w)
       for (const b of engine.state.armies)
@@ -784,10 +917,11 @@ export class GameRenderer {
       m.disc.scale.setScalar(r)
       const rm = m.ring.material as THREE.MeshBasicMaterial
       const dm = m.disc.material as THREE.MeshBasicMaterial
-      rm.color.setHex(outer ? 0xff9a4d : 0xff4433)
-      dm.color.setHex(outer ? 0xff9a4d : 0xff4433)
+      const hex = z.ours ? (outer ? 0xc8e88a : 0x8fd14f) : outer ? 0xff9a4d : 0xff4433
+      rm.color.setHex(hex)
+      dm.color.setHex(hex)
       rm.opacity = outer ? 0.45 : 0.75
-      dm.opacity = outer ? 0.05 : 0.1
+      dm.opacity = z.ours ? (outer ? 0.03 : 0.07) : outer ? 0.05 : 0.1
     })
   }
 
@@ -953,15 +1087,19 @@ export class GameRenderer {
         const morale = Math.round(a.morale)
         const sel = this.selection?.kind === 'army' && this.selection.id === a.id
         const hidden = engine.isHidden(a)
-        const key = `${a.name}|${n}|${morale}|${a.status}|${sel}|${a.formation}|${a.column}|${hidden}|${a.supplied}|${a.order.type}|${a.spottedBy ?? ''}|${!!a.pursuit}|${a.veil ?? ''}|${a.commanderKey === SPY.key}|${a.stance?.kind ?? ''}`
+        const key = `${a.name}|${n}|${morale}|${a.status}|${sel}|${a.formation}|${a.column}|${hidden}|${a.supplied}|${a.order.type}|${a.spottedBy ?? ''}|${!!a.pursuit}|${a.veil ?? ''}|${engine.isSpyBand(a)}|${a.stance?.kind ?? ''}|${a.faction === PLAYER ? engine.escortsOf(a).length : 0}`
         if (key !== l.key) {
           l.key = key
           l.el.dataset.rel = engine.relation(a.faction)
-          l.el.style.borderLeftColor = engine.factionColor(a.faction)
+          l.el.style.setProperty('--realm', engine.factionColor(a.faction))
           l.el.classList.toggle('selected', sel)
+          const rumour = a.faction !== PLAYER && engine.knowledge(a.id).kind === 'rumour'
+          const leader = rumour ? 'Leader unknown' : engine.armyLeader(a)
+          const form = a.faction === PLAYER ? (a.column && a.status === 'marching' ? 'Column' : FORMATIONS[a.formation].short) : ''
+          const group = a.faction === PLAYER ? engine.escortsOf(a).length : 0
+          const sub = [leader !== a.name ? leader : '', form, group ? `+${group} escort${group > 1 ? 's' : ''}` : ''].filter(Boolean).join(' · ')
           l.el.innerHTML = `
-            <div class="al-top"><span class="al-name">${escapeHtml(a.name)}</span><span class="al-n">${n}</span></div>
-            ${a.faction === PLAYER ? `<div class="al-form">${a.column && a.status === 'marching' ? 'Column' : FORMATIONS[a.formation].short}</div>` : ''}
+            <div class="al-head">${armyEmblem(engine, a, rumour)}<div class="al-titles"><span class="al-name">${escapeHtml(a.name)}</span>${sub ? `<span class="al-sub">${escapeHtml(sub)}</span>` : ''}</div><span class="al-n">${n}</span></div>
             <div class="al-morale"><i style="width:${morale}%"></i></div>
             ${statusBadge(a)}${a.faction === PLAYER && hidden && !a.veil ? `<div class="al-status stealth">${glyphSvg('tree', 11)} HIDDEN</div>` : ''}${a.faction === PLAYER && !a.supplied ? `<div class="al-status nosupply">${glyphSvg('warning', 11)} NO SUPPLY</div>` : ''}${a.order.type === 'scout' ? `<div class="al-status stealth">${glyphSvg('spyglass', 11)} SCOUTING${a.spottedBy ? ' · SPOTTED' : ''}</div>` : ''}${a.pursuit ? `<div class="al-status retreat">${glyphSvg('horse', 11)} PURSUIT</div>` : ''}${a.order.type === 'gather' ? `<div class="al-status stealth">${glyphSvg('pick', 11)} WORKING</div>` : ''}`
         }
@@ -1050,6 +1188,34 @@ export class GameRenderer {
 }
 
 /** Soldier count as the player knows it: exact, from a scouting report (≈), or a rumour (~…?). */
+/**
+ * The badge at the head of an army's label: the crowned head's royal shield, a named commander's
+ * shield in their banner colour, the spymaster's dagger or the wardens' eye, or for a captain's band
+ * the glyph of its main arm (horse, bow, siege, spear wall). A rumoured host shows crossed swords.
+ */
+function armyEmblem(engine: GameEngine, a: Army, rumour: boolean): string {
+  const charge = engine.team(a.faction) === engine.team(PLAYER) ? 'fleur' : 'thorn'
+  const realm = engine.factionColor(a.faction)
+  if (rumour) return `<span class="al-emblem">${glyphSvg('swords', 13)}</span>`
+  if (a.royal) return `<span class="al-emblem al-shield">${shieldSvg('royal', realm, 15, charge, 'al-svg')}</span>`
+  if (a.sappers) return `<span class="al-emblem al-spy">${glyphSvg('pick', 13)}</span>`
+  if (a.blades || engine.isSpyBand(a)) return `<span class="al-emblem al-spy">${glyphSvg('dagger', 13)}</span>`
+  if (a.wardens) return `<span class="al-emblem al-warden">${glyphSvg('eye', 13)}</span>`
+  const cmd = engine.commanderOf(a)
+  if (cmd) return `<span class="al-emblem al-shield">${shieldSvg('lord', cmd.banner_color, 15, charge, 'al-svg')}</span>`
+  // A captain's band: its main arm.
+  const cat = new Map<string, number>()
+  for (const k in a.troops) {
+    const u = engine.units.get(k)
+    if (u) cat.set(u.category, (cat.get(u.category) ?? 0) + (a.troops[k] ?? 0))
+  }
+  let best = 'infantry'
+  let bn = -1
+  for (const [c, v] of cat) if (v > bn) [best, bn] = [c, v]
+  const glyph = best === 'cavalry' ? 'horse' : best === 'ranged' ? 'bow' : best === 'siege' ? 'siege' : 'shield'
+  return `<span class="al-emblem">${glyphSvg(glyph, 13)}</span>`
+}
+
 function knownCount(engine: GameEngine, id: string): string {
   const k = engine.knowledge(id)
   if (k.kind === 'exact') return fmt(Math.floor(k.total))
@@ -1057,12 +1223,13 @@ function knownCount(engine: GameEngine, id: string): string {
   return `~${fmt(k.total)}?`
 }
 
-const STANCE_GLYPH = { escort: 'wagon', hunt: 'horse', picket: 'flag', ambush: 'tree', harass: 'swords', bridge: 'stakes' } as const
+const STANCE_GLYPH = { escort: 'wagon', hunt: 'horse', picket: 'flag', ambush: 'tree', harass: 'swords', bridge: 'stakes', strike: 'dagger', escortArmy: 'shield', follow: 'muster', guard: 'tower' } as const
+const STANCE_LABEL: Partial<Record<string, string>> = { escortArmy: 'ESCORT', follow: 'FOLLOW', guard: 'GUARD' }
 function statusBadge(a: Army): string {
   if (a.veil === 'concealed') return `<div class="al-status infil">${glyphSvg('eyeClosed', 12)} CONCEALED</div>`
   if (a.veil === 'disguised') return `<div class="al-status disguise">${glyphSvg('eyeHalf', 12)} DISGUISED</div>`
-  if (a.faction === PLAYER && a.commanderKey === SPY.key && !a.battleId) return `<div class="al-status seen">${glyphSvg('eye', 12)} SEEN</div>`
-  if (a.stance && a.faction === PLAYER && !a.battleId && a.status !== 'retreating') return `<div class="al-status stance">${glyphSvg(STANCE_GLYPH[a.stance.kind], 11)} ${a.stance.kind.toUpperCase()}</div>`
+  if (a.faction === PLAYER && !!a.commanderKey && HIDING_KEYS.includes(a.commanderKey) && !a.battleId) return `<div class="al-status seen">${glyphSvg('eye', 12)} SEEN</div>`
+  if (a.stance && a.faction === PLAYER && !a.battleId && a.status !== 'retreating') return `<div class="al-status stance">${glyphSvg(STANCE_GLYPH[a.stance.kind], 11)} ${STANCE_LABEL[a.stance.kind] ?? a.stance.kind.toUpperCase()}</div>`
   switch (a.status) {
     case 'battle':
       return `<div class="al-status battle">${glyphSvg('swords', 11)} BATTLE</div>`

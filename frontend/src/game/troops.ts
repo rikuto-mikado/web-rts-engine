@@ -24,6 +24,13 @@ export function addTroops(a: Troops, b: Troops): Troops {
   return out
 }
 
+/** a minus b, never below zero. */
+export function subTroops(a: Troops, b: Troops): Troops {
+  const out: Troops = { ...a }
+  for (const k in b) out[k] = Math.max(0, (out[k] ?? 0) - (b[k] ?? 0))
+  return out
+}
+
 export function scaleTroops(t: Troops, f: number): Troops {
   const out: Troops = {}
   for (const k in t) out[k] = t[k] * f

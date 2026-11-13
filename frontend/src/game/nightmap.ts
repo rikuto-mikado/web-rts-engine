@@ -1,8 +1,8 @@
 import { PLAYER } from './engine'
 import type { GeneratedMap } from './mapgen'
 import { mulberry32 } from './noise'
-import type { CastleDef, Difficulty, FactionDef, Scenario, ScenarioDefinition, Troops } from './types'
-import { ROYAL_SEAT_TIER, World, castleRadius } from './world'
+import type { CastleDef, CityWall, Difficulty, FactionDef, Scenario, ScenarioDefinition, TownDef, Troops } from './types'
+import { ROYAL_SEAT_TIER, World, castleRadius, wardReach } from './world'
 
 /**
  * The Long Night: the Sovereign's royal city. A citadel at the heart; an inner wall with three
@@ -47,75 +47,9 @@ function tryNight(seed: number, difficulty: Difficulty): GeneratedMap | null {
   const front = back + Math.PI
   const at = (r: number, a: number, ox = cx, oz = cz): [number, number] => [Math.round(ox + Math.cos(a) * r), Math.round(oz + Math.sin(a) * r)]
   const angDiff = (a: number, b: number) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)))
-
-  // The walls follow the lie of the land: pulled in where the ground climbs to the mountains at
-  // the back, bulging out over the lower ground in front, wandering in between.
-  const outline = (base: number, wob: number) => {
-    const p1 = R(0, 6.28)
-    const p2 = R(0, 6.28)
-    return (a: number) => base * (1 + wob * (0.55 * Math.sin(2 * a + p1) + 0.35 * Math.sin(3 * a + p2)) - 0.12 * Math.cos(a - back) * (wob / 0.18))
-  }
-  const rOuter = outline(NIGHT.outer, 0.18)
-  const rInner = outline(NIGHT.inner, 0.12)
-  const loop = (rf: (a: number) => number, n: number) => Array.from({ length: n }, (_, k) => at(rf((k / n) * Math.PI * 2), (k / n) * Math.PI * 2))
-  const outerPts = loop(rOuter, 44)
-  const innerPts = loop(rInner, 30)
-  const maxOuter = Math.max(...outerPts.map(([x, z]) => Math.hypot(x - cx, z - cz)))
-  const maxInner = Math.max(...innerPts.map(([x, z]) => Math.hypot(x - cx, z - cz)))
-  // Gates face the open land; the inner ones sit between the outer.
-  const outerGates = [0, 1, 2, 3, 4].map((k) => front - Math.PI * 0.45 + (k / 4) * Math.PI * 0.9 + R(-0.05, 0.05))
-  const innerGates = [0, 1, 2].map((k) => front - Math.PI * 0.3 + (k / 2) * Math.PI * 0.6)
-  // Gates sit on the wall's line (between two corners of the outline, on the chord).
-  const onLoop = (pts: [number, number][], a: number): [number, number] => {
-    const n = pts.length
-    const t = ((((a / (Math.PI * 2)) % 1) + 1) % 1) * n
-    const k = Math.floor(t) % n
-    const f = t - Math.floor(t)
-    const [x0, z0] = pts[k]
-    const [x1, z1] = pts[(k + 1) % n]
-    return [Math.round(x0 + (x1 - x0) * f), Math.round(z0 + (z1 - z0) * f)]
-  }
-  const castles: CastleDef[] = []
-  castles.push({ id: 'keep', name: `${city} Citadel`, subtitle: "The Sovereign's Citadel", faction: PLAYER, tier: ROYAL_SEAT_TIER, x: cx, z: cz, capital: true, garrison: g(700, 180, 380, 60) })
-  const COMPASS = (a: number) => {
-    const names = ['East', 'South-East', 'South', 'South-West', 'West', 'North-West', 'North', 'North-East']
-    return names[(Math.round((((a % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) / (Math.PI / 4)) % 8)]
-  }
-  const used = new Map<string, number>()
-  const outerGatePts = outerGates.map((a, k) => {
-    const [x, z] = onLoop(outerPts, a)
-    // (Two gates on the same side: the second is the Lesser.)
-    const base = COMPASS(a)
-    used.set(base, (used.get(base) ?? 0) + 1)
-    const nm = used.get(base)! > 1 ? `${base} Lesser` : base
-    castles.push({ id: `og${k}`, name: `${nm} Gate`, subtitle: 'Gatehouse of the Outer Wall', faction: PLAYER, tier: 2, x, z, gate: true, garrison: g(130, 0, 120, 0) })
-    return [x, z] as [number, number]
-  })
-  const innerGatePts = innerGates.map((a, k) => {
-    const [x, z] = onLoop(innerPts, a)
-    castles.push({ id: `ig${k}`, name: `${['Lion', 'Crown', 'Bell'][k]} Gate`, subtitle: 'Gatehouse of the Inner Wall', faction: PLAYER, tier: 2, x, z, gate: true, garrison: g(150, 0, 130, 0) })
-    return [x, z] as [number, number]
-  })
-  // Wards: strongholds of the city that pay their way and raise men while they hold.
-  const lower = [
-    { id: 'w-market', name: 'Market Ward', subtitle: 'Merchants and their gold' },
-    { id: 'w-smiths', name: "Smiths' Ward", subtitle: 'Forges and armouries' },
-    { id: 'w-granary', name: 'Granary Ward', subtitle: 'The city’s stores' },
-  ]
-  lower.forEach((w, k) => {
-    const a = (outerGates[k + 1] + outerGates[k + 2]) / 2 + R(-0.08, 0.08)
-    const [x, z] = at((rInner(a) + rOuter(a)) / 2 + R(-20, 20), a)
-    castles.push({ ...w, faction: PLAYER, tier: 2, x, z, district: true, garrison: g(120, 20, 70, 10) })
-  })
-  const upper = [
-    { id: 'w-cathedral', name: 'Cathedral Close', subtitle: 'The great cathedral' },
-    { id: 'w-barracks', name: 'Royal Barracks', subtitle: 'The Royal Guard’s halls' },
-  ]
-  upper.forEach((w, k) => {
-    const a = front + (k === 0 ? -1.15 : 1.15)
-    const [x, z] = at(rInner(a) * 0.64, a)
-    castles.push({ ...w, faction: PLAYER, tier: 2, x, z, district: true, garrison: g(140, 30, 90, 10) })
-  })
+  const lay = layRoyalCity({ rnd, cx, cz, back, faction: PLAYER, idPrefix: '', city, keepId: 'keep', keepSubtitle: "The Sovereign's Citadel", inner: NIGHT.inner, outer: NIGHT.outer, wallIndex: 0 })
+  const castles = lay.castles
+  const { rOuter, maxOuter } = lay
 
   // The river runs across the open land before the city, bridged twice and fordable once.
   const riverDist = maxOuter + 300
@@ -156,13 +90,6 @@ function tryNight(seed: number, difficulty: Difficulty): GeneratedMap | null {
     { id: PLAYER, name: `Kingdom of ${city}`, color: '#2f63c4', team: 'A' },
     { id: 'night', name: 'The Endless Night', color: '#5b3a8a', team: 'B', leader: true, undying: true },
   ]
-  const R0 = castleRadius(ROYAL_SEAT_TIER)
-  // Streets: from each outer gate in to the nearest inner gate, and from the inner gates to the Citadel.
-  const lanes: [number, number][][] = outerGatePts.map((p) => {
-    const ig = innerGatePts.reduce((b, q) => (Math.hypot(q[0] - p[0], q[1] - p[1]) < Math.hypot(b[0] - p[0], b[1] - p[1]) ? q : b), innerGatePts[0])
-    return [p, ig]
-  })
-  for (const q of innerGatePts) lanes.push([q, [cx, cz]])
   const definition: ScenarioDefinition = {
     start: { gold: 1100, enemy_gold: 0 },
     victory: { capture: '' },
@@ -174,11 +101,8 @@ function tryNight(seed: number, difficulty: Difficulty): GeneratedMap | null {
     mountains,
     lakes: [],
     forest_density: 0.4,
-    walls: [
-      { x: cx, z: cz, r: maxInner, gates: innerGates, height: 24, points: innerPts, gatePts: innerGatePts },
-      { x: cx, z: cz, r: maxOuter, gates: outerGates, height: 21, points: outerPts, gatePts: outerGatePts },
-    ],
-    town: { x: cx, z: cz, r: maxOuter + 10, inner: R0 * 1.12, streets: [], poly: outerPts, lanes },
+    walls: lay.walls,
+    town: lay.town,
     biome: 'kingsvale',
   }
   const scenario: Scenario = {
@@ -197,4 +121,169 @@ function tryNight(seed: number, difficulty: Difficulty): GeneratedMap | null {
     world,
     rules: { mode: 'nightfall', victoryCastles: [], defeatCastles: ['keep'], defeatOnEliminated: false, timeLimit: NIGHT.minutes[difficulty] * 60, timeoutWinner: 'A', size: 'medium', night: { rifts } },
   }
+}
+
+/**
+ * A royal city: the Citadel at its heart (tier 5), an inner wall with three gates round the royal
+ * quarter, a great outer wall with five gatehouses round the lower city, wards in both rings, and
+ * the streets between the gates. Its back (angle `back`) is to the mountains; the gates face the
+ * open land. Castle ids get `idPrefix` (the Long Night's city has none). Used by the Long Night
+ * and, three times over, by the War of the Three Crowns.
+ */
+export function layRoyalCity(o: {
+  rnd: () => number
+  cx: number
+  cz: number
+  back: number
+  faction: string
+  idPrefix: string
+  city: string
+  keepId: string
+  keepSubtitle: string
+  inner: number
+  outer: number
+  /** Index of its inner wall in the map's wall list (the outer follows). */
+  wallIndex: number
+  /** Garrisons scale (1: the Long Night's). */
+  garrison?: number
+}) {
+  const { rnd, cx, cz, back, faction, idPrefix: P, city } = o
+  const R = (a: number, b: number) => a + rnd() * (b - a)
+  const front = back + Math.PI
+  const k0 = o.garrison ?? 1
+  const gs = (inf = 0, cav = 0, arch = 0, eng = 0) => g(Math.round(inf * k0), Math.round(cav * k0), Math.round(arch * k0), Math.round(eng * k0))
+  const at = (r: number, a: number, ox = cx, oz = cz): [number, number] => [Math.round(ox + Math.cos(a) * r), Math.round(oz + Math.sin(a) * r)]
+
+  // The walls follow the lie of the land: pulled in where the ground climbs to the mountains at
+  // the back, bulging out over the lower ground in front, wandering in between.
+  const outline = (base: number, wob: number) => {
+    const p1 = R(0, 6.28)
+    const p2 = R(0, 6.28)
+    return (a: number) => base * (1 + wob * (0.55 * Math.sin(2 * a + p1) + 0.35 * Math.sin(3 * a + p2)) - 0.12 * Math.cos(a - back) * (wob / 0.18))
+  }
+  const rOuter = outline(o.outer, 0.18)
+  const rInner = outline(o.inner, 0.12)
+  const loop = (rf: (a: number) => number, n: number) => Array.from({ length: n }, (_, k) => at(rf((k / n) * Math.PI * 2), (k / n) * Math.PI * 2))
+  const outerPts = loop(rOuter, 44)
+  const innerPts = loop(rInner, 30)
+  const maxOuter = Math.max(...outerPts.map(([x, z]) => Math.hypot(x - cx, z - cz)))
+  const maxInner = Math.max(...innerPts.map(([x, z]) => Math.hypot(x - cx, z - cz)))
+  // Gates face the open land; the inner ones sit between the outer.
+  const outerGates = [0, 1, 2, 3, 4].map((k) => front - Math.PI * 0.45 + (k / 4) * Math.PI * 0.9 + R(-0.05, 0.05))
+  const innerGates = [0, 1, 2].map((k) => front - Math.PI * 0.3 + (k / 2) * Math.PI * 0.6)
+  // Gates sit on the wall's line (between two corners of the outline, on the chord).
+  const onLoop = (pts: [number, number][], a: number): [number, number] => {
+    const n = pts.length
+    const t = ((((a / (Math.PI * 2)) % 1) + 1) % 1) * n
+    const k = Math.floor(t) % n
+    const f = t - Math.floor(t)
+    const [x0, z0] = pts[k]
+    const [x1, z1] = pts[(k + 1) % n]
+    return [Math.round(x0 + (x1 - x0) * f), Math.round(z0 + (z1 - z0) * f)]
+  }
+  const castles: CastleDef[] = []
+  castles.push({ id: o.keepId, name: `${city} Citadel`, subtitle: o.keepSubtitle, faction, tier: ROYAL_SEAT_TIER, x: cx, z: cz, capital: true, garrison: gs(700, 180, 380, 60) })
+  const COMPASS = (a: number) => {
+    const names = ['East', 'South-East', 'South', 'South-West', 'West', 'North-West', 'North', 'North-East']
+    return names[(Math.round((((a % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) / (Math.PI / 4)) % 8)]
+  }
+  const used = new Map<string, number>()
+  const outerGatePts = outerGates.map((a, k) => {
+    const [x, z] = onLoop(outerPts, a)
+    // (Two gates on the same side: the second is the Lesser.)
+    const base = COMPASS(a)
+    used.set(base, (used.get(base) ?? 0) + 1)
+    const nm = used.get(base)! > 1 ? `${base} Lesser` : base
+    castles.push({ id: `${P}og${k}`, name: `${nm} Gate`, subtitle: 'Gatehouse of the Outer Wall', faction, tier: 2, x, z, gate: true, garrison: gs(130, 0, 120, 0) })
+    return [x, z] as [number, number]
+  })
+  const innerGatePts = innerGates.map((a, k) => {
+    const [x, z] = onLoop(innerPts, a)
+    castles.push({ id: `${P}ig${k}`, name: `${['Lion', 'Crown', 'Bell'][k]} Gate`, subtitle: 'Gatehouse of the Inner Wall', faction, tier: 2, x, z, gate: true, garrison: gs(150, 0, 130, 0) })
+    return [x, z] as [number, number]
+  })
+  const R0 = castleRadius(ROYAL_SEAT_TIER)
+  // Streets: from each outer gate in to the nearest inner gate, and from the inner gates to the Citadel.
+  const lanes: [number, number][][] = outerGatePts.map((p) => {
+    const ig = innerGatePts.reduce((b, q) => (Math.hypot(q[0] - p[0], q[1] - p[1]) < Math.hypot(b[0] - p[0], b[1] - p[1]) ? q : b), innerGatePts[0])
+    return [p, ig]
+  })
+  for (const q of innerGatePts) lanes.push([q, [cx, cz]])
+
+  // Wards: strongholds of the city that pay their way and raise men while they hold. Each keeps
+  // its whole ground (landmark, plaza, ring of houses: wardReach) clear of the walls, the gates,
+  // the streets, the Citadel's mount with its ring road and ramps, and the other wards.
+  const segDist = (x: number, z: number, [ax, az]: [number, number], [bx, bz]: [number, number]) => {
+    const ex = bx - ax
+    const ez = bz - az
+    const t = Math.max(0, Math.min(1, ((x - ax) * ex + (z - az) * ez) / (ex * ex + ez * ez || 1)))
+    return Math.hypot(x - ax - ex * t, z - az - ez * t)
+  }
+  /** The nearest a wall outline comes (radius) over the arc a ward of reach r spans at distance d. */
+  const span = (rf: (a: number) => number, a: number, d: number, r: number, f: (u: number, v: number) => number) => {
+    const da = Math.asin(Math.min(1, r / Math.max(d, r)))
+    let v = rf(a)
+    for (let j = -4; j <= 4; j++) v = f(v, rf(a + (j / 4) * da))
+    return v
+  }
+  const placed: { x: number; z: number; r: number }[] = []
+  const clearOf = (x: number, z: number, r: number) => {
+    if (Math.hypot(x - cx, z - cz) < R0 * 1.36 + r) return false
+    for (let q = 0; q < 4; q++) {
+      const ux = Math.cos((q * Math.PI) / 2)
+      const uz = Math.sin((q * Math.PI) / 2)
+      if (segDist(x, z, [cx + ux * R0, cz + uz * R0], [cx + ux * R0 * 1.62, cz + uz * R0 * 1.62]) < r + 26) return false
+    }
+    if (lanes.some(([p, q]) => segDist(x, z, p, q) < r + 14)) return false
+    if ([...innerGatePts, ...outerGatePts].some(([gx, gz]) => Math.hypot(gx - x, gz - z) < r + 74)) return false
+    return placed.every((p) => Math.hypot(p.x - x, p.z - z) > p.r + r + 16)
+  }
+  /** Search outwards from the wanted bearing for a clear spot, at the middle of the band the ward fits in. */
+  const site = (want: number, r: number, band: (a: number) => [number, number]): [number, number] => {
+    for (let j = 0; j <= 80; j++) {
+      const a = want + (j % 2 ? 1 : -1) * Math.ceil(j / 2) * 0.04
+      const [lo, hi] = band(a)
+      if (lo > hi) continue
+      for (let pass = 0; pass < 3; pass++) {
+        const d = pass === 0 ? (lo + hi) / 2 : pass === 1 ? lo + (hi - lo) * 0.25 : lo + (hi - lo) * 0.75
+        const [x, z] = at(d, a)
+        if (clearOf(x, z, r)) return [x, z]
+      }
+    }
+    throw new Error(`No room for a ward in ${city}`)
+  }
+  const lower = [
+    { id: 'w-market', name: 'Market Ward', subtitle: 'Merchants and their gold' },
+    { id: 'w-smiths', name: "Smiths' Ward", subtitle: 'Forges and armouries' },
+    { id: 'w-granary', name: 'Granary Ward', subtitle: 'The city’s stores' },
+  ]
+  lower.forEach((w, k) => {
+    const a = (outerGates[k + 1] + outerGates[k + 2]) / 2 + R(-0.08, 0.08)
+    const r = wardReach(w.id)
+    const [x, z] = site(a, r, (b) => {
+      const lo = span(rInner, b, rInner(b), r, Math.max) + r + 34
+      return [lo, span(rOuter, b, rOuter(b), r, Math.min) - r - 34]
+    })
+    placed.push({ x, z, r })
+    castles.push({ ...w, id: `${P}${w.id}`, faction, tier: 2, x, z, district: true, garrison: gs(120, 20, 70, 10) })
+  })
+  const upper = [
+    { id: 'w-cathedral', name: 'Cathedral Close', subtitle: 'The great cathedral' },
+    { id: 'w-barracks', name: 'Royal Barracks', subtitle: 'The Royal Guard’s halls' },
+  ]
+  upper.forEach((w, k) => {
+    // (Between the Citadel's mount and the inner wall, off to the side of the gate streets.)
+    const a = front + (k === 0 ? -1.5 : 1.5)
+    const r = wardReach(w.id)
+    const [x, z] = site(a, r, (b) => [R0 * 1.36 + r, span(rInner, b, rInner(b), r, Math.min) - r - 34])
+    placed.push({ x, z, r })
+    castles.push({ ...w, id: `${P}${w.id}`, faction, tier: 2, x, z, district: true, garrison: gs(140, 30, 90, 10) })
+  })
+
+  const walls: CityWall[] = [
+    { x: cx, z: cz, r: maxInner, gates: innerGates, height: 24, points: innerPts, gatePts: innerGatePts, outer: false },
+    { x: cx, z: cz, r: maxOuter, gates: outerGates, height: 21, points: outerPts, gatePts: outerGatePts, outer: true },
+  ]
+  const town: TownDef = { x: cx, z: cz, r: maxOuter + 10, inner: R0 * 1.12, streets: [], poly: outerPts, lanes, walls: [o.wallIndex, o.wallIndex + 1], keep: o.keepId }
+  return { castles, walls, town, rOuter, rInner, maxOuter, maxInner, outerGatePts, innerGatePts, front }
 }

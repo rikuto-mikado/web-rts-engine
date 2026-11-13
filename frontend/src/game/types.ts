@@ -5,10 +5,12 @@
 export type UnitCategory = 'infantry' | 'ranged' | 'cavalry' | 'siege'
 /** Faction id. 'player' is always the human; 'neutral' are passive free towns. */
 export type Faction = string
-/** Alliance id: 'A' is the player's side, 'B' the enemy side, 'N' neutral. */
-export type Team = 'A' | 'B' | 'N'
+/** Alliance id: 'A' is the player's side, 'B' the enemy side, 'C' a third realm (War of the Three Crowns), 'N' neutral. */
+export type Team = 'A' | 'B' | 'C' | 'N'
+/** The warring sides (not the neutral free towns). */
+export type WarTeam = 'A' | 'B' | 'C'
 export type Difficulty = 'easy' | 'normal' | 'hard' | 'brutal'
-export type GameMode = 'campaign' | 'alliance' | 'survival' | 'convoy' | 'nightfall'
+export type GameMode = 'campaign' | 'alliance' | 'survival' | 'convoy' | 'nightfall' | 'grand'
 export type FormationKey = 'line' | 'wedge' | 'square' | 'loose'
 export type MapSize = 'small' | 'medium' | 'large'
 
@@ -31,6 +33,8 @@ export interface UnitType {
   pursuit: number
   counters: Record<string, number>
   color: string
+  /** False for a fixed band's own troops (Household Knights, Assassins, Outriders): never raised in castles. */
+  recruitable?: boolean
 }
 
 export interface PortraitSpec {
@@ -39,8 +43,8 @@ export interface PortraitSpec {
   hair_style?: 'short' | 'cropped' | 'long' | 'bald' | 'shaved' | 'braid' | 'topknot' | 'wild' | 'tied'
   beard?: 'none' | 'full' | 'short' | 'forked' | 'goatee' | 'mustache' | 'stubble'
   beard_color?: string
-  /** No helms: a crown or circlet, a cloth hat or headband at most. */
-  headgear?: 'none' | 'crown' | 'circlet' | 'chaperon' | 'headband' | 'hood'
+  /** Commanders wear no helms: a crown or circlet, a cloth hat or headband at most ('helm' is for captains). */
+  headgear?: 'none' | 'crown' | 'circlet' | 'chaperon' | 'headband' | 'hood' | 'helm'
   hat?: string
   clothing?: 'gambeson' | 'tabard' | 'fur' | 'cloak' | 'robe' | 'jerkin'
   cloth?: string
@@ -121,7 +125,7 @@ export interface ScenarioDefinition {
   factions?: FactionDef[]
   castles: CastleDef[]
   rivers: { width: number; points: [number, number][] }[]
-  /** Terrain features scattered over the map: standing stones, terraces, windfall, crags. */
+  /** Terrain features scattered over the map: standing stones, windfall, crags, the great woods. */
   features?: TerrainFeature[]
   /** River crossings: permanent bridges, or shallow fords where `ford` is set. */
   bridges: { x: number; z: number; ford?: boolean }[]
@@ -131,7 +135,9 @@ export interface ScenarioDefinition {
   /** Siege mode: concentric curtain walls; impassable except through their gates. */
   walls?: CityWall[]
   /** Siege mode: a walled town with houses and streets around the citadel. */
-  town?: { x: number; z: number; r: number; inner: number; streets: number[]; poly?: [number, number][]; lanes?: [number, number][][] }
+  town?: TownDef
+  /** Several walled royal cities on one map (War of the Three Crowns). Use World.towns to read either. */
+  towns?: TownDef[]
   /** Map type / biome key (see biomes.ts); defaults to green vales. */
   biome?: string
   /** Roads: cleared of trees, drawn as packed earth, quicker to march along. */
@@ -157,6 +163,23 @@ export interface CityWall {
   height: number
   points?: [number, number][]
   gatePts?: [number, number][]
+  /** The outer ring of a royal city (taller towers, banners); otherwise the last wall in the list is. */
+  outer?: boolean
+}
+
+/** A walled royal city: its centre, extent, the inner (royal quarter) radius, streets and wall outline. */
+export interface TownDef {
+  x: number
+  z: number
+  r: number
+  inner: number
+  streets: number[]
+  poly?: [number, number][]
+  lanes?: [number, number][][]
+  /** Its two walls in ScenarioDefinition.walls (inner, outer), when there are several cities. */
+  walls?: [number, number]
+  /** The Citadel at its heart (castle id). */
+  keep?: string
 }
 
 export interface Rampart {
@@ -245,6 +268,8 @@ export interface Castle {
   lastCapturedAt: number
   /** Player-only: recruitment template applied automatically while gold allows. */
   autoRecruit: string | null
+  /** Auto-recruit: gold set aside for this castle's next purchase. */
+  autoBank?: number
   /** Siege mode: a town district held as a strongpoint. */
   district: boolean
   /** A village (tier 1 = palisade, 2 = stone wall once it is ours). */
@@ -366,6 +391,10 @@ export interface Army {
   horde?: 'thralls' | 'wraiths' | 'bones' | 'demons' | 'giant'
   /** Convoy Raid: a standing order the army carries out by itself (cleared by any order given by hand). */
   stance?: Stance
+  /** A battle group's lead: how its escorts stand about it (box by default; they encircle a castle it assaults). */
+  groupForm?: 'box' | 'line' | 'wedge'
+  /** Escorted: kept to the pace of its slowest escort (worked out each second by the field orders). */
+  paceCap?: number
   /** Scouts: what they have seen so far, delivered when they get home. */
   scoutReport?: Record<string, Intel>
   /** Scouts who glimpsed the enemy's crowned head: where and when. */
@@ -378,6 +407,12 @@ export interface Army {
   royal?: boolean
   /** The Whisper Blades: Corvin Ashe's own knife-men. Never reinforced (bar an abbey's sanctuary); they strike at commanders, not walls. */
   blades?: boolean
+  /** The Wardens of the March (or the enemy's Thorn Hunt): mounted bowmen who see far and find hidden bands. Fixed like the Blades. */
+  wardens?: boolean
+  /** The Night Sappers (or the enemy's Rootcutters): a fixed band of hidden saboteurs. */
+  sappers?: boolean
+  /** Sighted by a side's Wardens: that side keeps it on the map until this time (by team). */
+  marked?: Record<string, number>
   /** Royal Guard / Whisper Blades: their full number (what an abbey's sanctuary fills them back up to). */
   fullStrength?: number
   /** Whisper Blades: ready to strike again at this time. */
@@ -434,6 +469,8 @@ export interface CommanderState {
   xp: number
   armyId: string | null
   woundedUntil: number
+  /** Why they are out of action until then: carried from the field wounded, or regrouping after a rout. */
+  downReason?: 'wounded' | 'regroup'
   traits: string[]
   /** Pending choice of traits after a rank-up (player commanders only). */
   traitChoices: string[] | null
@@ -546,7 +583,7 @@ export interface Convoy {
 /** Small holdings between the castles: all are won by envoys (or plundered) and run themselves as vassals. */
 export type HoldingKind = 'village' | 'caravanserai' | 'abbey' | 'keep' | 'guildhall'
 
-export type FeatureKind = 'stones' | 'terraces' | 'thicket' | 'crag'
+export type FeatureKind = 'stones' | 'thicket' | 'crag' | 'oldwood' | 'deepwood'
 /** A terrain feature: a round patch of ground with its own rules. */
 export interface TerrainFeature {
   kind: FeatureKind
@@ -642,12 +679,18 @@ export interface ConvoyRules {
  * wagon), harass (pin a wagon's guards in a fight so others can take it), bridge (engineers pull the
  * bridge down as the wagons near it, then wait at the ford).
  */
-export type StanceKind = 'escort' | 'hunt' | 'picket' | 'ambush' | 'harass' | 'bridge'
+export type ConvoyStanceKind = 'escort' | 'hunt' | 'picket' | 'ambush' | 'harass' | 'bridge' | 'strike'
+/** Convoy Raid's standing orders, and the field's (escort or follow another army, guard a post: see fieldorders.ts). */
+export type StanceKind = ConvoyStanceKind | 'escortArmy' | 'follow' | 'guard'
 export interface Stance {
   kind: StanceKind
-  /** Where to wait (picket, ambush, harass). */
+  /** Where to wait (picket, ambush, harass, guard). */
   x?: number
   z?: number
+  /** Escort / follow: the army of ours to go with. */
+  targetId?: string
+  /** Guard: how far from the post to fall on enemies. */
+  r?: number
 }
 
 /** The Long Night: how the night goes. */
@@ -702,8 +745,26 @@ export interface GameState {
   royalId?: string | null
   /** Corvin Ashe's Whisper Blades (null: none in this war, or they are gone). */
   bladesId?: string | null
+  /** Mother Sereth's Grey Sisters (null: none in this war, or they are gone). */
+  sistersId?: string | null
+  /** Rowan Fenwick's Wardens of the March (null: none in this war, or they are gone). */
+  wardensId?: string | null
+  /** Corrick Vane's Thorn Hunt (null: none in this war, or they are gone). */
+  huntId?: string | null
+  /** The Night Sappers, and the enemy's Rootcutters (null once gone, or in modes without them). */
+  sappersId?: string | null
+  cuttersId?: string | null
+  /** Attempts the enemy's knives have made on the King. */
+  kingAttempts?: number
+  /** Auto-recruit spending: 'low' | 'normal' | 'high' share of net income. */
+  recruitBudget?: string
+  /** A spymaster whose band was wiped out raises a new one at this time (by commander key). */
+  spyReturnAt?: Record<string, number>
   /** Attempts made on the Usurper Queen's life: each one makes her guard warier. */
   foeAttempts?: number
+  /** Deep Freeze: the rivers are frozen over; and the warnings already given this winter. */
+  frozen?: boolean
+  freezeWarned?: number
   /** Convoy Raid: the gold train. */
   train?: TrainState
   /** The Long Night: the waves of the dead. */
@@ -714,6 +775,10 @@ export interface GameState {
   foeRoyalId?: string | null
   /** The Usurper has fallen: the war is won. */
   foeFallen?: boolean
+  /** War of the Three Crowns: the third crowned head (the Sun Emperor) and his Solar Guard (army id). */
+  sunRoyalId?: string | null
+  /** War of the Three Crowns: the rival crowns shattered (their monarch slain or their Citadel taken). */
+  crownsFallen?: Partial<Record<WarTeam, boolean>>
   /** Where the player's side last knew the Usurper to be. */
   foeSighting?: { x: number; z: number; t: number; castleId: string | null; how: 'seen' | 'scouts' | 'court' } | null
   armyCounter: number
@@ -725,7 +790,7 @@ export interface GameState {
   /** Calls for aid: allied lords may send troops to stand with a threatened castle. */
   aidCalls?: AidCall[]
   /** Offensive target chosen by each alliance's leader; allied lords converge on it. */
-  teamFocus: { A: { castleId: string; until: number } | null; B: { castleId: string; until: number } | null }
+  teamFocus: { A: { castleId: string; until: number } | null; B: { castleId: string; until: number } | null; C?: { castleId: string; until: number } | null }
   weather: { kind: 'clear' | 'rain' | 'storm' | 'snow'; until: number }
   /** War honours: what each lord has contributed (kills, castles captured). */
   contrib: Record<Faction, { kills: number; captures: number }>

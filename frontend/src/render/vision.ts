@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { PAINT_CHUNK } from './paint'
+import { PAINT_CHUNK, RELIEF_CHUNK } from './paint'
 
 /**
  * Shared uniforms for the fog-of-war overlay. Any material passed to
@@ -13,6 +13,8 @@ export const visionUniforms = {
   uSnow: { value: 0 },
   /** Tileable paint texture for the hand-painted ground (see paint.ts). */
   uPaint: { value: null as THREE.Texture | null },
+  /** Roads, ruts and the height about the water, over the whole map (see ground.ts). */
+  uGround: { value: null as THREE.Texture | null },
 }
 
 /**
@@ -60,6 +62,7 @@ export function applyVision<T extends THREE.Material>(mat: T, extraFragment = ''
     shader.uniforms.uTime = visionUniforms.uTime
     shader.uniforms.uSnow = visionUniforms.uSnow
     shader.uniforms.uPaint = visionUniforms.uPaint
+    shader.uniforms.uGround = visionUniforms.uGround
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec2 vVisUv;\nvarying vec3 vVisWorld;\nuniform float uMapHalf;')
       .replace(
@@ -76,9 +79,10 @@ export function applyVision<T extends THREE.Material>(mat: T, extraFragment = ''
     shader.fragmentShader = shader.fragmentShader
       .replace(
         '#include <common>',
-        '#include <common>\nvarying vec2 vVisUv;\nvarying vec3 vVisWorld;\nuniform sampler2D uVision;\nuniform float uTime;\nuniform float uSnow;\nuniform sampler2D uPaint;' + (grain ? NOISE_FN : ''),
+        '#include <common>\nvarying vec2 vVisUv;\nvarying vec3 vVisWorld;\nuniform sampler2D uVision;\nuniform float uTime;\nuniform float uSnow;\nuniform sampler2D uPaint;\nuniform sampler2D uGround;' + (grain ? NOISE_FN : ''),
       )
       .replace('#include <color_fragment>', `#include <color_fragment>\n${painted ? PAINT_CHUNK : ''}\n${grain ? GRAIN_CHUNK : ''}`)
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>\n${painted ? RELIEF_CHUNK : ''}`)
       .replace(
         '#include <dithering_fragment>',
         `#include <dithering_fragment>

@@ -1,7 +1,7 @@
 import { Castle as CastleIcon, Package, ChevronLeft, ChevronRight, Footprints, Hammer, Swords, X } from 'lucide-react'
 import { Glyph } from './Glyph'
-import { useMemo, useRef, useState, type ReactNode } from 'react'
-import { ROYAL, PLAYER, WALL_K, type GameEngine } from '../game/engine'
+import { useRef, useState, type ReactNode } from 'react'
+import { ROYAL, PLAYER, SPY, SAPPERS, WARDENS, WALL_K, type GameEngine } from '../game/engine'
 import { COLUMN, FORMATIONS, FORMATION_ORDER } from '../game/formations'
 import {
   armySpeed,
@@ -11,28 +11,13 @@ import {
   power,
   siegePower,
   total,
-  troopsFromRatios,
 } from '../game/troops'
 import type { FormationKey, Troops } from '../game/types'
 import { FormationIcon, SectionTitle, Slider, UnitGlyph, useEngine } from './common'
 import { MixBar } from './art'
+import { MIN_ENGINEER_PARTY, doctrineMix, doctrineOf, doctrineWants } from '../game/doctrines'
 import { TRAIT_MAP } from '../game/traits'
 import { PixelPortrait } from './PixelPortrait'
-
-const PRESETS: { name: string; hint: string; ratios: Record<string, number>; formation: FormationKey }[] = [
-  { name: 'Balanced', hint: 'Combined arms for any fight', ratios: { infantry: 50, cavalry: 20, archers: 25, engineers: 5 }, formation: 'line' },
-  { name: 'Shield Wall', hint: 'Stops cavalry cold', ratios: { infantry: 65, archers: 35 }, formation: 'square' },
-  { name: 'Siege Train', hint: 'Breaks walls, builds outposts', ratios: { infantry: 50, archers: 20, engineers: 20, cavalry: 10 }, formation: 'line' },
-  { name: 'Vanguard', hint: 'Fast raiders and hunters', ratios: { cavalry: 85, archers: 15 }, formation: 'wedge' },
-  { name: 'Archer Host', hint: 'Bleeds infantry from afar', ratios: { archers: 55, infantry: 45 }, formation: 'loose' },
-  { name: 'Pioneers', hint: 'Fortify the frontier', ratios: { infantry: 50, engineers: 30, archers: 20 }, formation: 'line' },
-]
-
-function samePreset(a: Record<string, number>, b: Record<string, number>) {
-  const keys = new Set([...Object.keys(a), ...Object.keys(b)])
-  for (const k of keys) if ((a[k] ?? 0) !== (b[k] ?? 0)) return false
-  return true
-}
 
 function shortName(name: string) {
   return name.includes(' the ') ? name.split(' ')[0] : name.split(' ').slice(-1)[0]
@@ -64,7 +49,7 @@ export function FormArmyModal({ engine, initialCastleId, initialTargetId, onClos
   const pickSource = (id: string) => {
     setCastleId(id)
     const f = freeFor(id)
-    if (!f.some((c) => c.key === commanderKey)) setCommanderKey(f[0]?.key ?? null)
+    if (!f.some((c) => c.key === commanderKey)) chooseCommander(f[0]?.key ?? null)
   }
   const cmd = commanderKey ? (engine.commanders.get(commanderKey) ?? null) : null
   const cmdLevel = commanderKey ? (s.commanders[commanderKey]?.level ?? 1) : 1
@@ -72,14 +57,67 @@ export function FormArmyModal({ engine, initialCastleId, initialTargetId, onClos
   const garrison = castle?.garrison ?? emptyTroops(engine.unitList)
   const garrisonN = Math.floor(total(garrison))
   const [size, setSize] = useState(() => Math.min(600, Math.floor(garrisonN * 0.6)))
-  const [ratios, setRatios] = useState<Record<string, number>>(PRESETS[0].ratios)
+  // The commander decides the kind of host; engineers are the one choice left (on or off).
+  const doctrine = doctrineOf(commanderKey)
+  const [engOverride, setEngOverride] = useState<boolean | null>(null)
+  const withEngineers = engOverride ?? doctrine.engineers
   const [retreatAt, setRetreatAt] = useState(0.5)
-  const [formation, setFormation] = useState<FormationKey>('line')
+  const [formation, setFormation] = useState<FormationKey>(doctrineOf(free[0]?.key ?? null).formation)
+  const chooseCommander = (key: string | null) => {
+    setCommanderKey(key)
+    setEngOverride(null)
+    setFormation(doctrineOf(key).formation)
+  }
   const [column, setColumn] = useState(false)
   const [targetId, setTargetId] = useState<string>(initialTargetId ?? '')
   const [error, setError] = useState<string | null>(null)
 
-  const troops: Troops = useMemo(() => troopsFromRatios(size, ratios, garrison), [size, ratios, garrison])
+  // An army holds at most its cap (a commander's 1500, a captain's 800); larger forces march as a battle group.
+  const cap = engine.armyCap(commanderKey)
+  const maxSize = Math.min(garrisonN, cap)
+  const wants: Troops = doctrineWants(doctrine, withEngineers, Math.min(size, maxSize))
+  // What the garrison can give of it; whatever it lacks is filled from what it has (or hired, below).
+  const troops: Troops = (() => {
+    const out: Troops = {}
+    let short = 0
+    for (const u of engine.recruitUnits) {
+      const got = Math.min(Math.floor(garrison[u.key] ?? 0), wants[u.key] ?? 0)
+      out[u.key] = got
+      short += (wants[u.key] ?? 0) - got
+    }
+    // Fill the gaps with fighting troops the garrison has to spare (never with engineers nobody asked for).
+    for (const u of engine.recruitUnits) {
+      if (short <= 0) break
+      if (u.key === 'engineers' || (wants[u.key] ?? 0) === 0) continue
+      const spare = Math.floor(garrison[u.key] ?? 0) - (out[u.key] ?? 0)
+      const add = Math.max(0, Math.min(spare, short))
+      out[u.key] = (out[u.key] ?? 0) + add
+      short -= add
+    }
+    for (const u of engine.recruitUnits) {
+      if (short <= 0) break
+      if (u.key === 'engineers' || (wants[u.key] ?? 0) > 0) continue
+      const spare = Math.floor(garrison[u.key] ?? 0) - (out[u.key] ?? 0)
+      const add = Math.max(0, Math.min(spare, short))
+      out[u.key] = (out[u.key] ?? 0) + add
+      short -= add
+    }
+    return out
+  })()
+  // Hiring what the garrison lacks (only at a castle, not a depot).
+  const missing = engine.recruitUnits.map((u) => ({ u, n: Math.max(0, (wants[u.key] ?? 0) - Math.floor(garrison[u.key] ?? 0)) })).filter((m) => m.n > 0)
+  const hireCost = missing.reduce((a, m) => a + m.n * engine.unitCost(PLAYER, m.u.key), 0)
+  const hireMissing = () => {
+    if (!castleOnly) return
+    for (const m of missing) {
+      const err = engine.recruit(castleOnly.id, m.u.key, m.n)
+      if (err) {
+        setError(err)
+        return
+      }
+    }
+    setError(null)
+  }
 
   const n = total(troops)
   const units = engine.units
@@ -87,27 +125,26 @@ export function FormArmyModal({ engine, initialCastleId, initialTargetId, onClos
   const speed = armySpeed(troops, units, cmd) * (column ? COLUMN.speed : FORMATIONS[formation].speed)
   const sp = siegePower(troops, units, cmd)
   const synergy = combinedArmsBonus(troops, units, cmd)
-  const slowest = engine.unitList.filter((u) => (troops[u.key] ?? 0) >= 1).sort((a, b) => a.speed - b.speed)[0]
+  const slowest = engine.recruitUnits.filter((u) => (troops[u.key] ?? 0) >= 1).sort((a, b) => a.speed - b.speed)[0]
   const target = engine.castle(targetId)
   const breachSecs = target && sp > 0 ? target.walls / (sp * WALL_K) : null
-  const ratioSum = Object.values(ratios).reduce((a, b) => a + b, 0) || 1
 
   // Tactical read-out: what this composition counters and what counters it.
-  const matchup = useMemo(() => {
+  const matchup = (() => {
     if (n < 1) return { strong: [] as string[], weak: [] as string[] }
     const strong: string[] = []
     const weak: string[] = []
-    for (const foe of engine.unitList) {
+    for (const foe of engine.recruitUnits) {
       if (foe.category === 'siege') continue
       let ours = 0
-      for (const u of engine.unitList) ours += ((troops[u.key] ?? 0) / n) * (u.counters[foe.key] ?? 1)
+      for (const u of engine.recruitUnits) ours += ((troops[u.key] ?? 0) / n) * (u.counters[foe.key] ?? 1)
       let theirs = 0
-      for (const u of engine.unitList) theirs += ((troops[u.key] ?? 0) / n) * (foe.counters[u.key] ?? 1)
+      for (const u of engine.recruitUnits) theirs += ((troops[u.key] ?? 0) / n) * (foe.counters[u.key] ?? 1)
       if (ours >= 1.25) strong.push(foe.name)
       if (theirs >= 1.3) weak.push(foe.name)
     }
     return { strong, weak }
-  }, [troops, n, engine.unitList])
+  })()
 
   const targets = s.castles
     .filter((c) => engine.isHostile(c.faction, PLAYER) && !c.ruined && !(c.village && c.faction === 'neutral'))
@@ -219,19 +256,20 @@ export function FormArmyModal({ engine, initialCastleId, initialTargetId, onClos
                     <button
                       key={c.key}
                       disabled={!available}
-                      onClick={() => setCommanderKey(c.key)}
+                      onClick={() => chooseCommander(c.key)}
                       title={c.name}
-                      className={`well relative flex w-[84px] shrink-0 snap-start flex-col items-center gap-1 rounded-sm px-1 pt-1.5 pb-1 transition ${sel ? 'outline outline-2 outline-gold-400 brightness-125' : 'hover:brightness-125'} ${available ? '' : 'opacity-40 grayscale'}`}
+                      className={`well relative flex w-[84px] shrink-0 snap-start flex-col items-center gap-1 rounded-sm px-1 pt-1.5 pb-1 transition ${sel ? 'outline outline-2 outline-gold-400 brightness-125' : 'hover:brightness-125'}`}
                     >
-                      <PixelPortrait spec={c.portrait} size={54} />
-                      <span className="w-full truncate text-center text-[12px] font-bold">{shortName(c.name)}</span>
-                      {st.level > 1 && <span className="absolute top-1 right-1 text-[10px] text-gold-300">{'★'.repeat(st.level - 1)}</span>}
-                      {!available && <span className="absolute inset-x-0 top-6 text-center text-[10px] font-bold text-ember-300">{st.woundedUntil > s.time ? 'WOUNDED' : 'IN FIELD'}</span>}
+                      {/* Only the portrait and name grey out: a commander's rank stars stay bright while wounded or away. */}
+                      <PixelPortrait spec={c.portrait} size={54} className={available ? '' : 'opacity-40 grayscale'} />
+                      <span className={`w-full truncate text-center text-[12px] font-bold ${available ? '' : 'opacity-50'}`}>{shortName(c.name)}</span>
+                      {st.level > 1 && <span className="absolute top-1 right-1 text-[10px] text-gold-300 drop-shadow">{'★'.repeat(st.level - 1)}</span>}
+                      {!available && <span className="absolute inset-x-0 top-6 text-center text-[10px] font-bold text-ember-300">{st.woundedUntil > s.time ? (st.downReason === 'regroup' ? 'REGROUPING' : 'WOUNDED') : SPY.keys.includes(c.key) ? 'SPYMASTER' : SAPPERS.keys.includes(c.key) ? 'SAPMASTER' : WARDENS.keys.includes(c.key) ? 'WARDEN' : 'IN FIELD'}</span>}
                     </button>
                   )
                 })}
                 <button
-                  onClick={() => setCommanderKey(null)}
+                  onClick={() => chooseCommander(null)}
                   className={`well flex w-[84px] shrink-0 snap-start flex-col items-center justify-center gap-1 rounded-sm p-1.5 text-center text-[12px] transition ${commanderKey === null ? 'outline outline-2 outline-gold-400 brightness-125' : 'hover:brightness-125'}`}
                 >
                   <Swords size={26} className="text-ink-300" />
@@ -269,85 +307,77 @@ export function FormArmyModal({ engine, initialCastleId, initialTargetId, onClos
 
             <section>
               <SectionTitle>Composition</SectionTitle>
-              <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
-                {PRESETS.map((p) => {
-                  const active = samePreset(ratios, p.ratios)
-                  const sum = Object.values(p.ratios).reduce((x, y) => x + y, 0)
-                  return (
-                    <button
-                      key={p.name}
-                      onClick={() => (setRatios(p.ratios), setFormation(p.formation))}
-                      className={`well flex flex-col rounded-sm p-2 text-left transition ${active ? 'outline outline-1 outline-gold-400 brightness-125' : 'hover:brightness-125'}`}
-                    >
-                      <div className="flex items-center justify-between gap-1">
-                        <span className="text-[13px] font-bold text-gold-100">{p.name}</span>
-                        <span className="text-ink-400" title={FORMATIONS[p.formation].name}>
-                          <FormationIcon formation={p.formation} size={16} />
-                        </span>
-                      </div>
-                      <div className="mb-1.5 text-[11.5px] leading-tight text-ink-400">{p.hint}</div>
-                      <div className="mt-auto">
-                        <MixBar mix={p.ratios} units={engine.unitList} height={7} />
-                        <div className="mt-1 flex flex-wrap gap-x-2 text-[11px] text-ink-300">
-                          {engine.unitList
-                            .filter((u) => (p.ratios[u.key] ?? 0) > 0)
-                            .map((u) => (
-                              <span key={u.key} className="flex items-center gap-0.5">
-                                <UnitGlyph unit={u.key} size={11} color={u.color} />
-                                {Math.round(((p.ratios[u.key] ?? 0) / sum) * 100)}%
-                              </span>
-                            ))}
-                        </div>
-                      </div>
-                    </button>
-                  )
-                })}
+              {/* The commander's kind of host: fixed; engineers on or off. */}
+              <div className="well rounded-sm p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[14px] font-bold text-gold-100">{doctrine.name}</span>
+                  <span className="flex items-center gap-1 text-[12px] text-ink-400" title={FORMATIONS[doctrine.formation].name}>
+                    <FormationIcon formation={doctrine.formation} size={15} />
+                    {FORMATIONS[doctrine.formation].name}
+                  </span>
+                </div>
+                <p className="mt-0.5 text-[12px] leading-snug text-ink-400">{doctrine.blurb}</p>
+                <div className="mt-2">
+                  <MixBar mix={doctrineMix(doctrine, withEngineers)} units={engine.recruitUnits} height={8} />
+                </div>
+                <label className="mt-2.5 flex cursor-pointer items-center gap-2 text-[13px]">
+                  <input type="checkbox" checked={withEngineers} onChange={(e) => setEngOverride(e.target.checked)} className="accent-amber-400" />
+                  <span className="flex-1">
+                    Bring engineers
+                    <span className="block text-[11.5px] leading-snug text-ink-400">
+                      At least {MIN_ENGINEER_PARTY} ({Math.round(doctrine.engineerShare * 100)}% of the army): outposts and siege engines need 15, mines 10, field works 10 to 20.
+                    </span>
+                  </span>
+                </label>
               </div>
 
               <div className="well mt-2 rounded-sm p-3">
                 <div className="mb-1.5 flex justify-between text-[13px]">
                   <span className="text-ink-300">Army size</span>
                   <span className="font-bold text-gold-300 tabular-nums">
-                    {fmt(size)} <span className="font-normal text-ink-400">/ {fmt(garrisonN)}</span>
+                    {fmt(n)} <span className="font-normal text-ink-400">/ {fmt(maxSize)}</span>
                   </span>
                 </div>
-                <Slider value={Math.min(size, garrisonN)} max={garrisonN} step={10} onChange={setSize} />
+                <Slider value={Math.min(size, maxSize)} max={maxSize} step={10} onChange={setSize} />
+                {Number.isFinite(cap) && (
+                  <p className="mt-1 text-[11.5px] leading-snug text-ink-500">
+                    An army holds at most {fmt(cap)} ({commanderKey ? 'a commander' : 'a captain'}; {commanderKey ? 'a captain 800' : 'a commander 1500'}). For more, muster several and set them to escort one another: a battle group of up to five.
+                  </p>
+                )}
               </div>
 
-              <div className="mt-2 grid grid-cols-1 gap-1.5 sm:grid-cols-2">
-                {engine.unitList.map((u) => {
-                  const avail = Math.floor(garrison[u.key] ?? 0)
+              <div className="mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                {engine.recruitUnits.map((u) => {
+                  const want = wants[u.key] ?? 0
                   const got = troops[u.key] ?? 0
-                  const pct = Math.round(((ratios[u.key] ?? 0) / ratioSum) * 100)
-                  const want = Math.round((size * (ratios[u.key] ?? 0)) / ratioSum)
-                  const short = want > avail
-                  const beats = Object.entries(u.counters)
-                    .filter(([, m]) => m > 1)
-                    .map(([k]) => engine.units.get(k)?.name)
-                    .filter(Boolean)
+                  const short = want > got
                   return (
-                    <div key={u.key} className="well rounded-sm px-3 py-2">
-                      <div className="mb-1 flex items-center gap-2.5">
-                        <span className="grid size-8 shrink-0 place-items-center rounded-full" style={{ background: `${u.color}22`, boxShadow: `inset 0 0 0 1px ${u.color}66` }}>
-                          <UnitGlyph unit={u.key} size={17} color={u.color} />
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <div className="text-[14px] font-bold">{u.name}</div>
-                          <div className="truncate text-[12px] text-ink-400">{beats.length ? `Beats ${beats.join(' & ')}` : 'Builds outposts, breaks walls'}</div>
-                        </div>
-                        <div className="text-right tabular-nums">
-                          <div className={`text-[16px] leading-none font-bold ${short ? 'text-ember-300' : 'text-gold-200'}`}>{fmt(got)}</div>
-                          <div className="text-[11px] text-ink-400">of {fmt(avail)}</div>
-                        </div>
+                    <div key={u.key} className={`well rounded-sm px-2.5 py-2 ${want === 0 && got === 0 ? 'opacity-45' : ''}`}>
+                      <div className="flex items-center gap-1.5">
+                        <UnitGlyph unit={u.key} size={14} color={u.color} />
+                        <span className="text-[12.5px] font-bold">{u.name}</span>
                       </div>
-                      <div className="flex items-center gap-3">
-                        <Slider value={ratios[u.key] ?? 0} max={100} onChange={(v) => setRatios({ ...ratios, [u.key]: v })} color={u.color} />
-                        <span className="w-9 text-right text-[12px] text-ink-300 tabular-nums">{pct}%</span>
+                      <div className={`mt-0.5 text-[16px] leading-none font-bold tabular-nums ${short ? 'text-ember-300' : 'text-gold-200'}`}>{fmt(got)}</div>
+                      <div className="text-[11px] text-ink-400 tabular-nums">
+                        wants {fmt(want)} · has {fmt(Math.floor(garrison[u.key] ?? 0))}
                       </div>
                     </div>
                   )
                 })}
               </div>
+              {missing.length > 0 && (
+                <div className="mt-2 rounded-sm border border-ember-400/30 bg-ember-700/15 px-3 py-2 text-[12.5px]">
+                  <span className="text-ember-300">
+                    The garrison is short of {missing.map((m) => `${fmt(m.n)} ${m.u.name.toLowerCase()}`).join(', ')}
+                  </span>
+                  <span className="text-ink-400">{castleOnly ? '; the gaps are filled with other troops it has, or hire them now.' : '; the gaps are filled with other troops quartered here.'}</span>
+                  {castleOnly && (
+                    <button className="btn mt-1.5 w-full text-[13px]" disabled={(s.factions[PLAYER]?.gold ?? 0) < hireCost} onClick={hireMissing}>
+                      Hire the missing troops ({fmt(hireCost)} gold)
+                    </button>
+                  )}
+                </div>
+              )}
             </section>
           </div>
 

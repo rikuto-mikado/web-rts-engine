@@ -1,12 +1,33 @@
 import { CLIMATES, biomeOf, mapOf, zoneWeights, type Biome, type Climate, type ClimateRules, type MapDef } from './biomes'
-import { Simplex, clamp, lerp, smoothstep } from './noise'
-import type { CityWall, Escarpment, FeatureKind, Scenario, ScenarioDefinition, TerrainFeature } from './types'
+import { Simplex, clamp, lerp, mulberry32, smoothstep } from './noise'
+import type { CityWall, Escarpment, FeatureKind, Scenario, ScenarioDefinition, TerrainFeature, TownDef } from './types'
 
 export const NAV_CELL = 20
 /** A great wall's gates and breaches are this wide (radius). */
 export const RAMPART_GATE = 75
 export const WATER_LEVEL = 0
 export const BRIDGE_DECK = 7
+/**
+ * Deep Freeze: in the depth of winter stretches of the rivers, and some lakes, ice over and can be
+ * walked across anywhere. Each river is cut into lengths; which of them (and which lakes) freeze is
+ * fixed per map (colder ground freezes more often, warm volcanic ground never, the sea never). The
+ * ice is slow and treacherous underfoot.
+ */
+export const ICE = {
+  /** Length of river that freezes (or not) as one. */
+  stretch: 420,
+  /** Chance a stretch freezes, by the winter where it lies. */
+  chance: { normal: 0.55, harsh: 0.8, immune: 0 } as Record<string, number>,
+  /** How far out from the river's middle the ice reaches, beyond half its width (covers the banks). */
+  margin: 14,
+  /** Lakes freeze whole (the shore too); bigger waters than this (the sea) never do. */
+  lakeMax: 700,
+  lakeShore: 70,
+  /** Movement on the ice. */
+  speed: 0.6,
+  /** Path cost of an ice cell (dearer than open ground: armies cross it when it saves them a march). */
+  cost: 1.8,
+}
 /** Wading a ford: slow, and no charging or squares in the water. */
 export const FORD_SPEED = 0.6
 
@@ -20,6 +41,19 @@ export const GATE_HALF = 18
  * in this far-off land. Far from their home citadels, but grander than any lord's castle.
  */
 export const ROYAL_SEAT_TIER = 5
+
+/** A royal city's ward by its id: the kind of landmark and life round it. */
+export type WardKind = 'close' | 'garrison' | 'market' | 'smiths' | 'granary'
+export function wardKind(id: string): WardKind {
+  return id.includes('cathedral') ? 'close' : id.includes('barracks') ? 'garrison' : id.includes('market') ? 'market' : id.includes('smiths') ? 'smiths' : 'granary'
+}
+/** Radius of the ring of town houses round a ward's plaza (0: the cathedral's close has its own canons' houses). */
+export const WARD_RING: Record<WardKind, number> = { close: 0, garrison: 56, market: 60, smiths: 50, granary: 50 }
+/** How far a ward's ground reaches from its centre (landmark, plaza, houses): nothing else may come nearer. */
+export function wardReach(id: string): number {
+  const ring = WARD_RING[wardKind(id)]
+  return ring ? ring + 7 : 62
+}
 
 export function castleRadius(tier: number): number {
   // A royal seat covers about 1.75x the ground of a lord's greatest castle.
@@ -37,6 +71,67 @@ export function villageRadius(tier: number): number {
 /** Footprint of any holding. */
 export function holdingRadius(c: { tier: number; village?: boolean }): number {
   return c.village ? villageRadius(c.tier) : castleRadius(c.tier)
+}
+
+/**
+ * A castle's curtain wall as it stands on the ground: not a circle but an outline that follows the
+ * site (the brow of a hill, the bank of a river or lake, an uneven plain), given as the wall's
+ * distance from the castle's heart at PROF_N evenly spaced bearings, as multiples of the nominal
+ * wall radius `r`. Four gates, a quarter turn apart, the first facing `rot`.
+ */
+export type CastleSite = 'plain' | 'hill' | 'river' | 'lake'
+export interface CastleShape {
+  x: number
+  z: number
+  /** Nominal wall radius (wallRadius(tier)); grows with the castle. */
+  r: number
+  /** Bearing of the main gate (the others a quarter turn apart). */
+  rot: number
+  gates: number[]
+  prof: Float32Array
+  site: CastleSite
+  /** Height of the castle's plateau. */
+  level: number
+  /** Bearings of the outline's corners (towers stand there). */
+  corners: number[]
+  /** A castle on the water: the bearing of the bank wall. */
+  water?: number
+  /** A hill castle: the bearing of the ridge it is drawn out along. */
+  axis?: number
+}
+export const PROF_N = 64
+/** Distance from the origin to a polygon's edge along a bearing. */
+function rayPoly(v: [number, number][], ang: number): number {
+  const dx = Math.cos(ang)
+  const dz = Math.sin(ang)
+  let best = Infinity
+  for (let k = 0; k < v.length; k++) {
+    const [ax, az] = v[k]
+    const [bx, bz] = v[(k + 1) % v.length]
+    const ex = bx - ax
+    const ez = bz - az
+    const den = dx * ez - dz * ex
+    if (Math.abs(den) < 1e-9) continue
+    const t = (ax * ez - az * ex) / den
+    const u = (ax * dz - az * dx) / den
+    if (t > 0 && u >= -1e-6 && u <= 1 + 1e-6) best = Math.min(best, t)
+  }
+  return best === Infinity ? 1 : best
+}
+function profOf(prof: Float32Array, ang: number): number {
+  let t = ((ang % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)
+  t = (t / (Math.PI * 2)) * PROF_N
+  const i = Math.floor(t) % PROF_N
+  const f = t - Math.floor(t)
+  return prof[i] * (1 - f) + prof[(i + 1) % PROF_N] * f
+}
+/** The wall's distance from the heart at this bearing, as a multiple of the nominal radius. */
+export function profAt(s: CastleShape, ang: number): number {
+  return profOf(s.prof, ang)
+}
+/** Where the curtain wall stands at this bearing (world distance from the castle's heart). */
+export function wallRAt(s: CastleShape, ang: number): number {
+  return s.r * profAt(s, ang)
 }
 
 export interface BridgeInfo {
@@ -83,6 +178,23 @@ export class World {
   readonly navRes: number
   readonly navCost: Float32Array // 0 = blocked
 
+  /** The map's walled towns: the Long Night's royal city, the three of the Three Crowns, or none. */
+  get towns(): TownDef[] {
+    // (Read for every height sample, so worked out once.)
+    return (this.townList ??= this.def.towns ?? (this.def.town ? [this.def.town] : []))
+  }
+  private townList?: TownDef[]
+  /** The walled royal city this point lies in (within its outer wall), if any. */
+  townAt(x: number, z: number): TownDef | undefined {
+    return this.towns.find((t) => Math.hypot(t.x - x, t.z - z) < t.r)
+  }
+  /** A royal city's two walls (inner, outer). */
+  townWalls(t: TownDef): [CityWall | undefined, CityWall | undefined] {
+    const w = this.def.walls ?? []
+    if (t.walls) return [w[t.walls[0]], w[t.walls[1]]]
+    return [w[0], w[1]]
+  }
+
   constructor(scenario: Scenario) {
     this.size = scenario.map_size
     this.half = this.size / 2
@@ -96,6 +208,9 @@ export class World {
     this.forestNoise = new Simplex(scenario.seed + 101)
     this.fords = this.def.bridges.filter((b) => b.ford).map((b) => this.spanAt(b.x, b.z))
     this.stoneBridges = this.def.bridges.filter((b) => !b.ford).map((b) => this.spanAt(b.x, b.z))
+
+    // Each castle's walls follow its site: read from the land before the castles are levelled into it.
+    for (const c of this.def.castles) if (!c.village && !c.gate && !c.district) this.walls.set(c.id, this.planCastle(c))
 
     // Keep the terrain mesh under ~600 x 600 vertices on the biggest maps.
     this.cell = this.size <= 2600 ? 10 : Math.max(14, Math.ceil(this.size / 600))
@@ -128,15 +243,99 @@ export class World {
       for (let i = 0; i < this.hRes; i++) {
         const x = -this.half + i * this.cell
         const z = -this.half + j * this.cell
-        this.forest[j * this.hRes + i] = this.computeForest(x, z, this.heights[j * this.hRes + i])
+        const h = this.heights[j * this.hRes + i]
+        this.forest[j * this.hRes + i] = this.woodsAt(x, z, h, this.computeForest(x, z, h))
       }
     }
 
-    // (A city's gatehouses and wards stand in the city's own walls: no curtain of their own.)
-    for (const c of this.def.castles) if (!c.village && !c.gate && !c.district) this.walls.set(c.id, { x: c.x, z: c.z, r: wallRadius(c.tier) })
     this.navRes = Math.round(this.size / NAV_CELL)
     this.navCost = new Float32Array(this.navRes * this.navRes)
+    this.buildIce(scenario.seed)
     this.buildNav()
+  }
+
+  // -------------------------------------------------------------------------
+  // Deep Freeze
+  // -------------------------------------------------------------------------
+
+  /** The river stretches that ice over in deep winter (fixed per map). */
+  readonly iceSegs: { ax: number; az: number; bx: number; bz: number; width: number }[] = []
+  /** The lakes that ice over in deep winter. */
+  readonly iceLakes: { x: number; z: number; r: number }[] = []
+  /** Anything on this map freezes. */
+  get canFreeze(): boolean {
+    return this.iceSegs.length > 0 || this.iceLakes.length > 0
+  }
+  /** The rivers are frozen now. */
+  frozen = false
+  /** Navigation cells the ice covers (their cost changes when it freezes or thaws). */
+  private iceCells: number[] = []
+  private buildIce(seed: number) {
+    const rnd = mulberry32((seed ?? 1) * 7 + 9001)
+    this.def.rivers.forEach((river) => {
+      const pts = river.points
+      const segs: { ax: number; az: number; bx: number; bz: number; width: number; chunk: number }[] = []
+      let run = 0
+      for (let k = 0; k < pts.length - 1; k++) {
+        const [ax, az] = pts[k]
+        const [bx, bz] = pts[k + 1]
+        segs.push({ ax, az, bx, bz, width: river.width, chunk: Math.floor(run / ICE.stretch) })
+        run += Math.hypot(bx - ax, bz - az)
+      }
+      const chunks = new Map<number, boolean>()
+      for (const sg of segs) {
+        if (chunks.has(sg.chunk)) continue
+        const winter = this.rulesAt((sg.ax + sg.bx) / 2, (sg.az + sg.bz) / 2).winter
+        chunks.set(sg.chunk, rnd() < (ICE.chance[winter] ?? 0.5))
+      }
+      // Every river that can freeze at all freezes somewhere: the middle stretch, if nothing else.
+      if (![...chunks.values()].some(Boolean) && segs.length) {
+        const mid = segs[Math.floor(segs.length / 2)]
+        if (this.rulesAt(mid.ax, mid.az).winter !== 'immune') chunks.set(mid.chunk, true)
+      }
+      for (const sg of segs) if (chunks.get(sg.chunk)) this.iceSegs.push({ ax: sg.ax, az: sg.az, bx: sg.bx, bz: sg.bz, width: sg.width })
+    })
+    // Lakes (not the sea): each freezes whole, or not at all.
+    const lakes = this.def.lakes.filter((l) => l.r <= ICE.lakeMax && this.rulesAt(l.x, l.z).winter !== 'immune')
+    // (At most half of them: a ring or chain of lakes the map is built round keeps its shape.)
+    const most = Math.max(1, Math.floor(lakes.length / 2))
+    for (const l of lakes) if (this.iceLakes.length < most && rnd() < (ICE.chance[this.rulesAt(l.x, l.z).winter] ?? 0.5)) this.iceLakes.push({ x: l.x, z: l.z, r: l.r })
+    // Something freezes on every map that has cold water at all.
+    if (!this.iceSegs.length && !this.iceLakes.length && lakes.length) this.iceLakes.push({ ...lakes[Math.floor(rnd() * lakes.length)] })
+    if (!this.canFreeze) return
+    const R = this.navRes
+    for (let j = 0; j < R; j++) {
+      for (let i = 0; i < R; i++) {
+        if (this.iceZone(-this.half + (i + 0.5) * NAV_CELL, -this.half + (j + 0.5) * NAV_CELL)) this.iceCells.push(j * R + i)
+      }
+    }
+  }
+  /** On a stretch of river that freezes (frozen or not). */
+  iceZone(x: number, z: number): boolean {
+    for (const l of this.iceLakes) if (Math.abs(x - l.x) < l.r + ICE.lakeShore && Math.abs(z - l.z) < l.r + ICE.lakeShore && Math.hypot(x - l.x, z - l.z) < l.r + ICE.lakeShore) return true
+    for (const s of this.iceSegs) {
+      const r = s.width / 2 + ICE.margin
+      if (x < Math.min(s.ax, s.bx) - r || x > Math.max(s.ax, s.bx) + r || z < Math.min(s.az, s.bz) - r || z > Math.max(s.az, s.bz) + r) continue
+      if (distToSegment(x, z, s.ax, s.az, s.bx, s.bz) < r) return true
+    }
+    return false
+  }
+  /** Standing on the ice now (only while the rivers are frozen; not on a bridge). */
+  iceAt(x: number, z: number): boolean {
+    return this.frozen && this.heightAt(x, z) < 2.5 && this.iceZone(x, z) && !this.bridgeAt(x, z, 4)
+  }
+  /** Freeze or thaw the rivers: the ice cells open to marching, or close again. */
+  setFrozen(on: boolean) {
+    if (this.frozen === on) return
+    this.frozen = on
+    const R = this.navRes
+    for (const k of this.iceCells) {
+      const i = k % R
+      const j = Math.floor(k / R)
+      this.navCost[k] = this.cellCost(-this.half + (i + 0.5) * NAV_CELL, -this.half + (j + 0.5) * NAV_CELL)
+    }
+    this.components = null
+    this.bridgeVersion++
   }
 
   // -------------------------------------------------------------------------
@@ -161,6 +360,10 @@ export class World {
   }
 
   private computeHeight(x: number, z: number): number {
+    return this.terrainHeight(x, z, false)
+  }
+  /** The lie of the land; `natural` leaves out the castles' plateaus (to read the site they stand on). */
+  private terrainHeight(x: number, z: number, natural: boolean): number {
     const n = this.noise
     let h = 16 + n.fbm(x * 0.0014, z * 0.0014, 4) * 22 + this.detail.noise(x * 0.012, z * 0.012) * 2.2
     h = Math.max(h, 5)
@@ -177,38 +380,52 @@ export class World {
     }
 
     // A walled town sits on a level plain.
-    const town = this.def.town
-    if (town) {
+    for (const town of this.towns) {
       const d = Math.hypot(x - town.x, z - town.z)
+      if (d > town.r + 270) continue
       const level = 14
       h = lerp(level + this.detail.noise(x * 0.01, z * 0.01) * 1.2, h, smoothstep(town.r + 40, town.r + 260, d))
     }
 
-    // Castles sit on flattened plateaus.
-    for (const c of this.def.castles) {
+    // Castles sit on flattened plateaus, shaped like their walls (a hill castle on its hilltop).
+    for (const c of natural ? [] : this.def.castles) {
       const r = castleRadius(Math.max(c.tier, Math.min(4, c.tier + 1)))
       const d = Math.hypot(x - c.x, z - c.z)
-      if (d < r * 1.7) {
-        const plateau = Math.max(10, 16 + n.fbm(c.x * 0.0014, c.z * 0.0014, 4) * 22) + 2
-        h = lerp(plateau, h, smoothstep(r * 1.05, r * 1.7, d))
+      if (d < r * 2.4) {
+        const shape = this.walls.get(c.id)
+        const k = shape ? 0.3 + 0.7 * profAt(shape, Math.atan2(z - c.z, x - c.x)) : 1
+        const plateau = shape ? shape.level : Math.max(10, 16 + n.fbm(c.x * 0.0014, c.z * 0.0014, 4) * 22) + 2
+        if (!shape) h = lerp(plateau, h, smoothstep(r * 1.05, r * 1.7, d))
+        else if (shape.site === 'hill') h = lerp(plateau, h, Math.pow(smoothstep(r * 1.02 * k, r * 2.1, d), 1.25))
+        // A broad, gentle apron round the walls where the castle's suburbs and fields lie.
+        else h = lerp(plateau, h, Math.pow(smoothstep(r * 1.02 * k, r * 2.35, d), 2))
       }
     }
 
     // A royal city rises in tiers: the lower city on a terrace under its outer wall, the royal quarter
     // higher behind the inner wall (which holds the ground up like a dam), the Citadel on its own
     // rocky mount at the heart.
-    if (town?.poly && this.def.walls?.length === 2 && Math.hypot(x - town.x, z - town.z) < town.r + 80) {
-      const [innerW, outerW] = this.def.walls
+    const town = this.towns.find((t) => t.poly && Math.hypot(x - t.x, z - t.z) < t.r + 80)
+    const [innerW, outerW] = town ? this.townWalls(town) : [undefined, undefined]
+    if (town && innerW?.points && outerW?.points) {
       const signed = (w: CityWall) => (this.insideWall(w, x, z) ? 1 : -1) * this.polyDist(this.wallLoop(w), x, z)
       const sO = signed(outerW)
       if (sO > -70) {
         const sI = signed(innerW)
-        let t = 14 + this.detail.noise(x * 0.008, z * 0.008) * 0.9
-        t += 7 * smoothstep(-34, 12, sO)
-        t += 22 * smoothstep(-14, 30, sI)
         const dk = Math.hypot(x - town.x, z - town.z)
         const mount = castleRadius(ROYAL_SEAT_TIER)
-        t += 30 * (1 - smoothstep(mount * 0.98, mount * 1.22, dk)) + 4 * (1 - smoothstep(mount * 1.22, mount * 1.6, dk))
+        // (The Citadel's summit is dead level: no ripple at all under its paving.)
+        let t = 14 + this.detail.noise(x * 0.008, z * 0.008) * 0.9 * smoothstep(mount * 1.05, mount * 1.35, dk)
+        t += 7 * smoothstep(-34, 12, sO)
+        t += 22 * smoothstep(-14, 30, sI)
+        // The mount: a level summit, a short steep face all round (the Citadel's stone revetment
+        // covers it), and along the four roads to its gates (on the map's axes) a long even ramp.
+        const ang = Math.atan2(z - town.z, x - town.x)
+        const ramp = 1 - smoothstep(14, 18, Math.min(dk * Math.abs(Math.sin(ang)), dk * Math.abs(Math.cos(ang))))
+        // (A straight face 20m wide: the revetment lies along it.)
+        const face = 1 - clamp((dk - mount * 0.995) / 20, 0, 1)
+        const slope = 1 - smoothstep(mount * 0.995, mount * 1.5, dk)
+        t += 30 * (face * (1 - ramp) + slope * ramp) + 4 * (1 - smoothstep(mount * 1.12, mount * 1.6, dk)) * (1 - ramp * 0.6 * smoothstep(mount * 0.995, mount * 1.1, dk))
         h = lerp(h, t, smoothstep(-66, -22, sO))
       }
     }
@@ -356,6 +573,21 @@ export class World {
     return r.d < r.width / 2 + margin
   }
 
+  /**
+   * The great woods (old-growth forest, the Deepwood) fill their ground with trees whatever the
+   * forest noise says, thinning out over a short fringe at the edge.
+   */
+  private woodsAt(x: number, z: number, h: number, f: number): number {
+    if (h < 4 || h > 115) return f
+    for (const w of this.def.features ?? []) {
+      if (w.kind !== 'oldwood' && w.kind !== 'deepwood') continue
+      const d = Math.hypot(x - w.x, z - w.z)
+      if (d > w.r * 1.15) continue
+      const full = w.kind === 'deepwood' ? 0.97 : 0.8
+      f = Math.max(f, full * (1 - smoothstep(w.r * 0.8, w.r * 1.15, d)))
+    }
+    return f
+  }
   private computeForest(x: number, z: number, h: number): number {
     if (h < 4 || h > 115) return 0
     // No woods inside a fortress.
@@ -375,7 +607,8 @@ export class World {
     for (const c of this.def.castles) {
       const d = Math.hypot(x - c.x, z - c.z)
       const R = castleRadius(Math.max(c.tier, Math.min(4, c.tier + 1)))
-      f *= smoothstep(R * 1.4, R * 2.3, d)
+      // (A castle's country, its suburbs and fields, is cleared land.)
+      f *= c.village ? smoothstep(R * 1.4, R * 2.3, d) : smoothstep(R * 1.65, R * 2.45, d)
     }
     for (const b of [...this.fords, ...this.stoneBridges]) {
       f *= smoothstep(60, 140, Math.hypot(x - b.x, z - b.z))
@@ -542,6 +775,7 @@ export class World {
     if (this.forestAt(x, z) > 0.3) return 'woods'
     const f = this.featureKindAt(x, z)
     if (f === 'thicket') return 'thicket'
+    if (f === 'oldwood' || f === 'deepwood') return 'woods'
     if (f === 'crag') return 'mountain'
     for (const m of this.def.mountains) if (Math.hypot(x - m.x, z - m.z) < m.r * 1.3) return 'mountain'
     const { d, width } = this.distToRiver(x, z)
@@ -595,13 +829,14 @@ export class World {
   speedAt(x: number, z: number): number {
     if (this.bridgeAt(x, z)) return 1
     if (this.fordAt(x, z)) return FORD_SPEED
+    if (this.frozen && this.heightAt(x, z) < 2.5 && this.iceZone(x, z)) return ICE.speed
     const f = this.forestAt(x, z)
     const s = this.slopeAt(x, z)
     const base = clamp(1 - f * 0.35 - s * 0.6, 0.45, 1.1) * this.rulesAt(x, z).speed
-    // Terrain features: stones and terraces slow the step.
+    // Terrain features: stones and the old woods slow the step.
     const k = this.def.features?.length ? this.featureKindAt(x, z) : null
     if (k === 'stones') return base * 0.85
-    if (k === 'terraces') return base * 0.8
+    if (k === 'oldwood') return base * 0.9
     return base
   }
 
@@ -678,6 +913,22 @@ export class World {
     r = lerp(r, B.forestFloor[0], f * 0.75)
     g = lerp(g, B.forestFloor[1], f * 0.75)
     b = lerp(b, B.forestFloor[2], f * 0.75)
+    // The great woods: a deep, mossy floor under the old giants; dark loam and needles in the Deepwood.
+    for (const w of this.def.features ?? []) {
+      if (w.kind !== 'oldwood' && w.kind !== 'deepwood') continue
+      const d = Math.hypot(x - w.x, z - w.z)
+      if (d > w.r * 1.1) continue
+      const t = 1 - smoothstep(w.r * 0.75, w.r * 1.1, d)
+      if (w.kind === 'oldwood') {
+        r = lerp(r, 0.26 + n2 * 0.03, t * 0.45)
+        g = lerp(g, 0.34 + n2 * 0.04, t * 0.45)
+        b = lerp(b, 0.15, t * 0.45)
+      } else {
+        r = lerp(r, r * 0.62, t)
+        g = lerp(g, g * 0.66, t)
+        b = lerp(b, b * 0.7, t)
+      }
+    }
     // Banks.
     const sand = 1 - smoothstep(2, 7, h)
     r = lerp(r, B.sand[0], sand)
@@ -695,12 +946,18 @@ export class World {
     g = lerp(g, B.rock[1] + n2 * 0.04, rock)
     b = lerp(b, B.rock[2] + n2 * 0.04, rock)
     const snow = Math.max(smoothstep(B.snowLine, B.snowLine + 35, h + n * 18), B.snowCover * smoothstep(0.1, 0.5, n * 0.5 + 0.5 + n2 * 0.3) * (1 - sand)) * (1 - smoothstep(1.2, 2, slope))
-    r = lerp(r, 0.93, snow)
-    g = lerp(g, 0.94, snow)
-    b = lerp(b, 0.97, snow)
+    // (A royal city stands raised on its terraces, but the snowline does not reach inside its walls.)
+    let walled = 0
+    for (const t of this.towns) walled = Math.max(walled, 1 - smoothstep(t.r - 20, t.r + 60, Math.hypot(x - t.x, z - t.z)))
+    // (Little snow lies under the canopy of the great woods.)
+    let woods = 0
+    for (const w of this.def.features ?? []) if (w.kind === 'oldwood' || w.kind === 'deepwood') woods = Math.max(woods, 1 - smoothstep(w.r * 0.7, w.r * 1.05, Math.hypot(x - w.x, z - w.z)))
+    const snowK = snow * (1 - walled) * (1 - woods * 0.75)
+    r = lerp(r, 0.93, snowK)
+    g = lerp(g, 0.94, snowK)
+    b = lerp(b, 0.97, snowK)
     // Town ground: packed earth and cobbled streets.
-    const town = this.def.town
-    if (town) {
+    for (const town of this.towns) {
       const d = Math.hypot(x - town.x, z - town.z)
       if (d < town.r + 30) {
         const ang = Math.atan2(z - town.z, x - town.x)
@@ -769,18 +1026,182 @@ export class World {
     }
   }
 
-  /** Castle curtain walls (by castle id): impassable except at the four gates (N, E, S, W). */
-  readonly walls = new Map<string, { x: number; z: number; r: number }>()
+  /**
+   * Castle curtain walls (by castle id), (a city's gatehouses and wards stand in the city's own
+   * walls: no curtain of their own). Impassable except at the four gates.
+   */
+  readonly walls = new Map<string, CastleShape>()
+
+  /**
+   * Read a castle's site and lay out its walls so the site shows in them:
+   *   river / lake: a straight curtain along the bank on the water side (with a water gate), the
+   *                 landward side bulging out;
+   *   hill:         drawn out along the ridge and hugging the brow of the hill;
+   *   plain:        an irregular polygon, its corners at the towers.
+   * The main gate faces the heart of the map (on the water, the landward side).
+   */
+  private planCastle(c: { id: string; x: number; z: number; tier: number; capital?: boolean }): CastleShape {
+    const R0 = wallRadius(c.tier)
+    // A royal city's Citadel is built to its own round design, its gates to the four quarters.
+    if (c.capital && c.tier >= ROYAL_SEAT_TIER && this.towns.some((t) => t.poly && Math.hypot(t.x - c.x, t.z - c.z) < t.r)) {
+      const level = Math.max(10, 16 + this.noise.fbm(c.x * 0.0014, c.z * 0.0014, 4) * 22) + 2
+      return { x: c.x, z: c.z, r: R0, rot: 0, gates: [0, Math.PI / 2, Math.PI, -Math.PI / 2], prof: new Float32Array(PROF_N).fill(1), site: 'plain', level, corners: [] }
+    }
+    let seed = 7
+    for (const ch of c.id) seed = (seed * 31 + ch.charCodeAt(0)) >>> 0
+    const rnd = mulberry32(seed ^ Math.round(c.x * 13 + c.z * 7))
+    const R = R0
+    const cr = castleRadius(c.tier)
+    const nat = (x: number, z: number) => this.terrainHeight(x, z, true)
+    const h0 = nat(c.x, c.z)
+    const ringH: number[] = []
+    let wetX = 0
+    let wetZ = 0
+    let wet = 0
+    for (let k = 0; k < 24; k++) {
+      const a = (k / 24) * Math.PI * 2
+      ringH.push(nat(c.x + Math.cos(a) * cr * 1.35, c.z + Math.sin(a) * cr * 1.35))
+      for (const rr of [0.95, 1.2, 1.45, 1.7, 1.95])
+        if (nat(c.x + Math.cos(a) * cr * rr, c.z + Math.sin(a) * cr * rr) < 3) {
+          wet++
+          wetX += Math.cos(a)
+          wetZ += Math.sin(a)
+        }
+    }
+    const ring = ringH.reduce((a, b) => a + b, 0) / ringH.length
+    const site: CastleSite = wet > 0 ? (this.distToRiver(c.x, c.z).d < cr * 2.2 ? 'river' : 'lake') : h0 - ring > 4 ? 'hill' : 'plain'
+    const prof = new Float32Array(PROF_N)
+    const angOf = (i: number) => (i / PROF_N) * Math.PI * 2
+    let corners: number[] = []
+    let water: number | undefined
+    let axis: number | undefined
+    let rot = Math.atan2(-c.z, -c.x) + (rnd() - 0.5) * 0.5
+    const swell = (a: number, amp: number, ph: number[]) => 1 + amp * Math.sin(2 * a + ph[0]) + amp * 0.6 * Math.sin(3 * a + ph[1])
+    const ph = [rnd() * 6.28, rnd() * 6.28]
+    if (site === 'plain') {
+      // An irregular polygon: five to seven corners, each pushed in or out, one or two salients.
+      const n = 5 + Math.floor(rnd() * 3)
+      const base = rnd() * Math.PI * 2
+      const verts: [number, number][] = []
+      for (let k = 0; k < n; k++) {
+        const a = base + ((k + (rnd() - 0.5) * 0.5) / n) * Math.PI * 2
+        const r = (k % 3 === 0 ? 1.08 : 0.9) + rnd() * 0.16
+        verts.push([Math.cos(a) * r, Math.sin(a) * r])
+        corners.push(a)
+      }
+      for (let i = 0; i < PROF_N; i++) prof[i] = rayPoly(verts, angOf(i))
+    } else if (site === 'hill') {
+      // Along the ridge: the bearing where the ground stays highest on both sides.
+      let best = 0
+      let bv = -Infinity
+      for (let k = 0; k < 12; k++) {
+        const v = ringH[k] + ringH[k + 12]
+        if (v > bv) {
+          bv = v
+          best = (k / 24) * Math.PI * 2
+        }
+      }
+      axis = best
+      const A = 1.2
+      const B = 0.82
+      for (let i = 0; i < PROF_N; i++) {
+        const a = angOf(i)
+        const da = a - axis
+        let k = 1 / Math.sqrt((Math.cos(da) / A) ** 2 + (Math.sin(da) / B) ** 2)
+        // And hug the brow: where the ground starts to fall away most steeply.
+        let brow = k
+        let drop = -Infinity
+        for (let q = k - 0.14; q <= k + 0.1; q += 0.02) {
+          const d = R * q
+          const dd = nat(c.x + Math.cos(a) * d, c.z + Math.sin(a) * d) - nat(c.x + Math.cos(a) * (d + 24), c.z + Math.sin(a) * (d + 24))
+          if (dd > drop) {
+            drop = dd
+            brow = q
+          }
+        }
+        k = k * 0.5 + brow * 0.5
+        prof[i] = k * (1 + 0.04 * Math.sin(3 * a + ph[0]))
+      }
+      // The ends of the ridge get the gates' main road; the main gate down the gentler end.
+      rot = ringH[Math.round((axis / (Math.PI * 2)) * 24) % 24] < ringH[(Math.round((axis / (Math.PI * 2)) * 24) + 12) % 24] ? axis : axis + Math.PI
+    } else {
+      // On the water: a straight curtain along the bank, the landward side bulging out.
+      water = Math.atan2(wetZ, wetX)
+      // Where the water begins on that side: the wall runs out to stand on the bank itself (a quay
+      // below it) when the water is near enough, else it squares off facing it.
+      let edge = Infinity
+      for (let q = 0.6; q <= 1.6; q += 0.02) {
+        if (nat(c.x + Math.cos(water) * R * q, c.z + Math.sin(water) * R * q) < 3.2) {
+          edge = q
+          break
+        }
+      }
+      const bank = edge < 1.42 ? clamp(edge - 16 / R, 0.72, 1.2) : 1
+      for (let i = 0; i < PROF_N; i++) {
+        const a = angOf(i)
+        const da = Math.atan2(Math.sin(a - water), Math.cos(a - water))
+        const land = swell(a, 0.05, ph) * (1.04 + 0.1 * (1 - Math.cos(da)) * 0.5)
+        const line = Math.cos(da) > 0.05 ? bank / Math.cos(da) : Infinity
+        prof[i] = Math.min(land, line)
+      }
+      // Where the bank wall meets the landward ring: corner towers.
+      for (let i = 0; i < PROF_N; i++) {
+        const a = angOf(i)
+        const da = Math.atan2(Math.sin(a - water), Math.cos(a - water))
+        const land = swell(a, 0.05, ph) * (1.04 + 0.1 * (1 - Math.cos(da)) * 0.5)
+        const prev = angOf((i + PROF_N - 1) % PROF_N)
+        const dp = Math.atan2(Math.sin(prev - water), Math.cos(prev - water))
+        const landP = swell(prev, 0.05, ph) * (1.04 + 0.1 * (1 - Math.cos(dp)) * 0.5)
+        const onLine = (x: number, l: number) => x < l - 0.005
+        if (onLine(prof[i], land) !== onLine(prof[(i + PROF_N - 1) % PROF_N], landP)) corners.push(a)
+      }
+      rot = water + Math.PI + (rnd() - 0.5) * 0.4
+      // Anywhere else the water comes close, keep the wall back from it (on the bank: just clear of it).
+      for (let i = 0; i < PROF_N; i++) {
+        const a = angOf(i)
+        for (let q = prof[i]; q >= 0.72; q -= 0.02) {
+          if (nat(c.x + Math.cos(a) * (R * q + 10), c.z + Math.sin(a) * (R * q + 10)) >= 3.5) {
+            prof[i] = Math.min(prof[i], q)
+            break
+          }
+          if (q <= 0.73) prof[i] = 0.72
+        }
+      }
+    }
+    if (site !== 'plain') {
+      const o = Float32Array.from(prof)
+      for (let i = 0; i < PROF_N; i++) prof[i] = (o[(i + PROF_N - 1) % PROF_N] + 2 * o[i] + o[(i + 1) % PROF_N]) / 4
+    }
+    const gates = [0, 1, 2, 3].map((g) => rot + (g * Math.PI) / 2)
+    // A gateway passes straight through: the wall runs evenly just across it.
+    for (const g of gates) {
+      const at = profOf(prof, g)
+      for (let i = 0; i < PROF_N; i++) {
+        const off = Math.abs(Math.atan2(Math.sin(angOf(i) - g), Math.cos(angOf(i) - g)))
+        const w = 1 - smoothstep(0.05, 0.16, off)
+        prof[i] = prof[i] * (1 - w) + at * w
+      }
+    }
+    for (let i = 0; i < PROF_N; i++) prof[i] = clamp(prof[i], 0.72, 1.22)
+    // (No corner tower in a gateway.)
+    corners = corners.filter((a) => gates.every((g) => Math.abs(Math.atan2(Math.sin(a - g), Math.cos(a - g))) > 0.3))
+    const plain = Math.max(10, 16 + this.noise.fbm(c.x * 0.0014, c.z * 0.0014, 4) * 22) + 2
+    // A hill castle crowns its hill; anywhere else the plateau is levelled at the land's own height.
+    const level = site === 'hill' ? Math.max(plain, h0 + 2) : plain
+    return { x: c.x, z: c.z, r: R, rot, gates, prof, site, level, corners, water, axis }
+  }
 
   /** On a castle's wall band, outside the gate passages? */
   onCastleWall(x: number, z: number): boolean {
     for (const w of this.walls.values()) {
       const dx = x - w.x
       const dz = z - w.z
-      if (Math.abs(dx) > w.r + 14 || Math.abs(dz) > w.r + 14) continue
+      const reach = w.r * 1.25 + 14
+      if (Math.abs(dx) > reach || Math.abs(dz) > reach) continue
       const d = Math.hypot(dx, dz)
-      if (Math.abs(d - w.r) > 13) continue
-      if (Math.abs(dx) < GATE_HALF || Math.abs(dz) < GATE_HALF) continue // a gate passage
+      if (Math.abs(d - wallRAt(w, Math.atan2(dz, dx))) > 13) continue
+      // A gate passage: within GATE_HALF of the line out through a gate.
+      if (w.gates.some((g) => dx * Math.cos(g) + dz * Math.sin(g) > 0 && Math.abs(-dx * Math.sin(g) + dz * Math.cos(g)) < GATE_HALF)) continue
       return true
     }
     return false
@@ -790,10 +1211,18 @@ export class World {
   gateOf(castleId: string, towardX: number, towardZ: number): [number, number] | null {
     const w = this.walls.get(castleId)
     if (!w) return null
-    const dx = towardX - w.x
-    const dz = towardZ - w.z
-    const r = w.r + 26
-    return Math.abs(dx) > Math.abs(dz) ? [w.x + Math.sign(dx || 1) * r, w.z] : [w.x, w.z + Math.sign(dz || 1) * r]
+    const toward = Math.atan2(towardZ - w.z, towardX - w.x)
+    let g = w.gates[0]
+    let best = Infinity
+    for (const a of w.gates) {
+      const off = Math.abs(Math.atan2(Math.sin(toward - a), Math.cos(toward - a)))
+      if (off < best) {
+        best = off
+        g = a
+      }
+    }
+    const r = wallRAt(w, g) + 26
+    return [w.x + Math.cos(g) * r, w.z + Math.sin(g) * r]
   }
 
   /** A castle grew (or a save restored its tier): move its walls and replan the cells around. */
@@ -861,6 +1290,8 @@ export class World {
     if (this.def.escarpments?.length && this.onCliff(x, z)) return 0
     if (this.bridgeAt(x, z, 6)) return 1
     if (this.fordAt(x, z, 4)) return 2.2
+    // Deep Freeze: the river (and its steep banks) can be crossed anywhere on the ice.
+    if (this.frozen && this.iceZone(x, z) && this.heightAt(x, z) <= 125) return ICE.cost
     const h = this.heightAt(x, z)
     if (h < 2.5) return 0
     if (h > 125) return 0
@@ -868,7 +1299,9 @@ export class World {
     if (slope > 1.25) return 0
     // Roads are the quick way through.
     if (this.def.roads?.length && this.onRoad(x, z, 6)) return 0.7 + slope
-    return 1 + this.forestAt(x, z) * 0.6 + slope * 1.5
+    // The Deepwood is slow going: a host goes round unless the way through is much shorter.
+    const k = this.def.features?.length ? this.featureKindAt(x, z) : null
+    return 1 + this.forestAt(x, z) * 0.6 + slope * 1.5 + (k === 'deepwood' ? 1.4 : k === 'oldwood' ? 0.3 : 0)
   }
 
   private navIndex(x: number, z: number): [number, number] {

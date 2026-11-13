@@ -1,10 +1,10 @@
-import { ROYAL, SPY, NEUTRAL, type GameEngine } from './engine'
+import { ROYAL, SAPPERS, SPY, NEUTRAL, WARDENS, type GameEngine } from './engine'
 import { PLAYER, foeDifficulty } from './engine'
 import { OUTPOST_KINDS, type OutpostKind } from './outposts'
 import { mulberry32 } from './noise'
 import { floorTroops, power, scaleTroops, total, totalInt } from './troops'
-import type { Army, Castle, Faction, FactionState, Troops } from './types'
-import { holdingRadius } from './world'
+import type { Army, Castle, Faction, FactionState, SabotageKind, Troops } from './types'
+import { holdingRadius, wallRadius } from './world'
 
 const MIXES: Record<string, Record<string, number>> = {
   aggressive: { infantry: 0.42, cavalry: 0.28, archers: 0.22, engineers: 0.08 },
@@ -69,7 +69,8 @@ export class FactionAI {
 
   private myArmies(): Army[] {
     // (On autopilot the player's Royal Guard stays where the player left it.)
-    return this.s.armies.filter((a) => a.faction === this.id && !a.vassalOf && !a.aidFor && !a.royal && !this.engine.isSpyBand(a))
+    // (Escorts in a battle group follow their lead by themselves: see fieldorders.ts.)
+    return this.s.armies.filter((a) => a.faction === this.id && !a.vassalOf && !a.aidFor && !a.royal && !this.engine.isSpyBand(a) && !a.wardens && !a.stance)
   }
   private personality() {
     return this.f.personality ?? 'balanced'
@@ -110,6 +111,8 @@ export class FactionAI {
     this.greatHost()
     this.queenRides()
     this.spyRaids()
+    this.cutterRaids()
+    this.huntPatrol()
     this.raid()
     this.retake()
   }
@@ -150,7 +153,18 @@ export class FactionAI {
       order,
       name,
     })
-    return typeof res === 'string' ? null : res
+    if (typeof res === 'string') return null
+    // More than one army may hold: the rest march out as escorts in its battle group (up to four).
+    let left = total(troops) - total(res.troops)
+    for (let k = 0; k < 4 && left >= 60; k++) {
+      const share = floorTroops(scaleTroops(troops, Math.min(1, left / Math.max(1, total(troops)))))
+      const cap = this.captain()
+      const esc = this.engine.formArmy(from.id, this.id, share, { captainName: cap.captainName, retreatAt: 0.55, name: `${name} ${['II', 'III', 'IV', 'V'][k]}` })
+      if (typeof esc === 'string') break
+      esc.stance = { kind: 'escortArmy', targetId: res.id }
+      left -= total(esc.troops)
+    }
+    return res
   }
 
   private nearestOwn(x: number, z: number, filter: (c: Castle) => boolean = () => true): Castle | undefined {
@@ -242,7 +256,7 @@ export class FactionAI {
     // Where is the war for us? The alliance focus, else the nearest hostile castle.
     const castles = this.myCastles().filter((c) => !c.battleId)
     if (castles.length === 0) return
-    const focusId = this.s.teamFocus[this.team as 'A' | 'B']?.castleId
+    const focusId = this.s.teamFocus[this.team as 'A' | 'B' | 'C']?.castleId
     let target = focusId ? this.engine.castle(focusId) : undefined
     if (!target || !this.engine.isHostile(target.faction, this.id)) {
       let bd = 2600
@@ -354,7 +368,7 @@ export class FactionAI {
 
   /**
    * Hold good ground: an idle army near our lands, with enemies about, takes
-   * up a ring of standing stones, terraced slopes or windfall nearby.
+   * up a ring of standing stones, windfall or old-growth forest nearby.
    */
   private holdGround() {
     const feats = this.engine.world.def.features ?? []
@@ -368,9 +382,9 @@ export class FactionAI {
       const horse = (a.troops.cavalry ?? 0) / Math.max(1, total(a.troops))
       let best: { x: number; z: number; d: number } | null = null
       for (const f of feats) {
-        // Horse keeps out of windfall; everyone likes stones and terraces.
-        if (f.kind === 'thicket' && horse > 0.1) continue
-        if (f.kind !== 'stones' && f.kind !== 'terraces' && f.kind !== 'thicket') continue
+        // Horse keeps out of windfall and the old woods; everyone likes standing stones.
+        if ((f.kind === 'thicket' || f.kind === 'oldwood') && horse > 0.1) continue
+        if (f.kind !== 'stones' && f.kind !== 'thicket' && f.kind !== 'oldwood') continue
         const d = Math.hypot(f.x - a.x, f.z - a.z)
         if (d < 520 && (!best || d < best.d)) best = { x: f.x, z: f.z, d }
       }
@@ -739,7 +753,7 @@ export class FactionAI {
    * castle, but only when the alliance around it can clearly take it.
    */
   private organizeMuster() {
-    if (this.s.rules.mode !== 'alliance' || this.team === 'N' || this.id === PLAYER) return
+    if ((this.s.rules.mode !== 'alliance' && this.s.rules.mode !== 'grand') || this.team === 'N' || this.id === PLAYER) return
     const ai = this.f.ai
     if ((ai.nextMusterAt ?? 0) > this.s.time) return
     ai.nextMusterAt = this.s.time + 90 + this.rnd() * 90
@@ -754,6 +768,7 @@ export class FactionAI {
       if (c.ruined || c.faction === 'neutral') continue
       let d = Infinity
       for (const o of mine) d = Math.min(d, Math.hypot(o.x - c.x, o.z - c.z))
+      d *= this.engine.targetBias(this.id, c.faction)
       if (d < this.d(1300) && (!best || d < best.d)) best = { c, d }
     }
     if (!best) return
@@ -782,7 +797,7 @@ export class FactionAI {
   /** Alliance leaders pick a front-line castle for the whole alliance to converge on. */
   private chooseFocus() {
     if (!this.f.leader || this.team === 'N') return
-    const team = this.team as 'A' | 'B'
+    const team = this.team as 'A' | 'B' | 'C'
     const cur = this.s.teamFocus[team]
     const curCastle = this.engine.castle(cur?.castleId)
     if (cur && cur.until > this.s.time && curCastle && this.engine.isHostile(curCastle.faction, this.id)) return
@@ -793,7 +808,7 @@ export class FactionAI {
       if (!this.engine.isHostile(c.faction, this.id) || c.ruined || (c.village && c.faction === 'neutral')) continue
       let near = Infinity
       for (const o of ours) near = Math.min(near, Math.hypot(o.x - c.x, o.z - c.z))
-      const score = near + this.foeCastle(c) * 0.35 + (c.faction === 'neutral' ? -100 : 0)
+      const score = near * this.engine.targetBias(this.id, c.faction) + this.foeCastle(c) * 0.35 + (c.faction === 'neutral' ? -100 : 0)
       if (!best || score < best.score) best = { c, score }
     }
     if (!best) return
@@ -825,7 +840,7 @@ export class FactionAI {
       if (army && camp.faction === PLAYER) this.engine.log('warning', `Raiders march on ${camp.name}`, `${army.name} of ${this.f.name} means to burn it. Keep it garrisoned!`, camp.x, camp.z)
       return
     }
-    const team = this.team as 'A' | 'B'
+    const team = this.team as 'A' | 'B' | 'C'
     const playerCall = team === 'A' && this.s.callToArms && this.s.callToArms.until > this.s.time ? this.s.callToArms : null
     const focus = playerCall ?? (this.s.teamFocus[team] && this.s.teamFocus[team]!.until > this.s.time ? this.s.teamFocus[team] : null)
     let call = this.engine.castle(focus?.castleId)
@@ -835,11 +850,11 @@ export class FactionAI {
       .filter((c) => !c.ruined && !(c.village && c.faction === 'neutral') && this.engine.isHostile(c.faction, this.id) && !this.engine.atPeace(this.id, c.faction) && !(c.battleId && this.engine.battle(c.battleId)?.sideA.team !== this.team))
       .map((c) => {
         const d = Math.hypot(c.x - src.x, c.z - src.z)
-        let score = d * 0.9 + this.foeCastle(c) * 0.8 + (c.faction === 'neutral' ? 150 : 0)
+        let score = d * 0.9 * this.engine.targetBias(this.id, c.faction) + this.foeCastle(c) * 0.8 + (c.faction === 'neutral' ? 150 : 0)
         if (call && c.id === call.id) score -= 900
         // Scouted (or betrayed by captured scouts): we know what we face there.
         if (c.id === this.f.ai.knownTarget) score -= 500
-        if (c.faction === PLAYER) score -= 120 // keep pressure on the human
+        if (c.faction === PLAYER && this.s.rules.mode !== 'grand') score -= 120 // keep pressure on the human
         return { c, d, score }
       })
       .filter((t) => t.d < (call && t.c.id === call.id ? 2400 : reach))
@@ -892,8 +907,8 @@ export class FactionAI {
     return this.s.castles
       .filter((c) => this.engine.isHostile(c.faction, this.id) && c.faction !== 'neutral' && !c.ruined)
       .map((c) => {
-        let score = Math.hypot(c.x - fromX, c.z - fromZ) + this.foeCastle(c) * 0.3
-        if (c.faction === PLAYER) score -= 400
+        let score = Math.hypot(c.x - fromX, c.z - fromZ) * this.engine.targetBias(this.id, c.faction) + this.foeCastle(c) * 0.3
+        if (c.faction === PLAYER && this.s.rules.mode !== 'grand') score -= 400
         if (c.capital) score -= 150
         return { c, score }
       })
@@ -963,14 +978,21 @@ export class FactionAI {
           h.hostId = a.id
           a.name = 'The Great Host'
         } else if (host.id !== a.id && !host.battleId) {
-          e.mergeArmies(host, a)
+          // The host marches as a battle group: up to four detachments ride as its escorts (in a box
+          // round it, fanning out round the castle it assaults); any more fold into it.
+          if (e.capsArmies && e.escortsOf(host).length < 4) a.stance = { kind: 'escortArmy', targetId: host.id }
+          else e.mergeArmies(host, a)
         }
         h.detachmentIds = h.detachmentIds.filter((x) => x !== a.id)
       }
       if (host && (h.detachmentIds.length === 0 || t - h.startedAt > 150) && h.phase === 'mustering') {
         h.phase = 'gathered'
         h.startedAt = t
-        for (const id of h.detachmentIds) e.orderArmy(id, { type: 'join', armyId: host.id })
+        for (const id of h.detachmentIds) {
+          const d = e.army(id)
+          if (d && e.capsArmies && e.escortsOf(host).length < 4) d.stance = { kind: 'escortArmy', targetId: host.id }
+          else e.orderArmy(id, { type: 'join', armyId: host.id })
+        }
       }
       if (!host && h.detachmentIds.length === 0) {
         h.phase = 'idle'
@@ -1011,7 +1033,8 @@ export class FactionAI {
    */
   private queenRides() {
     const e = this.engine
-    const q = e.foeRoyal()
+    // (The Usurper Queen's Thorn Guard, or in the Three Crowns the Sun Emperor's Solar Guard.)
+    const q = this.s.armies.find((a) => a.royal && a.faction === this.id)
     if (!q || q.faction !== this.id || q.battleId || q.status === 'retreating') return
     const seat = e.castle(this.f.capitalId) ?? this.myCastles().find((c) => !c.village)
     const inField = !e.inKeep(q)
@@ -1042,67 +1065,223 @@ export class FactionAI {
   }
 
   /**
-   * The Grey Abbess: a band of light troops in pilgrims' grey slips behind the enemy's lines
-   * by the woods and valleys, to fall on their wagon trains or seize an empty outpost, then
-   * goes home. (Her band hides by the same rules as ours; see GameEngine.updateVeils.)
+   * The Grey Abbess and her Grey Sisters (a fixed band, like our Whisper Blades; it hides by the same
+   * rules, see GameEngine.updateVeils). In order: home to mend when badly hurt; a knife for the best
+   * leader in reach (our King too, if the chance is there at all); cover the Rootcutters at their
+   * work; a wagon train to rob; otherwise wait at home.
    */
   private spyNextAt = 0
   private spyRaids() {
     const e = this.engine
-    const st = this.s.commanders[SPY.foeKey]
-    if (!st || st.owner !== this.id) return
-    const band = this.s.armies.find((a) => a.faction === this.id && a.commanderKey === SPY.foeKey)
-    if (band) {
-      if (band.battleId || band.status === 'retreating') return
-      // Done, or the prey is gone: home, and back into the garrison.
-      const o = band.order
-      const preyGone =
-        (o.type === 'raidConvoy' && !e.convoy(o.convoyId)) ||
-        (o.type === 'move' && (band.status === 'idle' || !band.path.length) && Math.hypot(band.x - o.x, band.z - o.z) < 60) ||
-        o.type === 'hold'
-      // Found out, she presses on unless a stronger force is closing on her.
-      let danger = 0
-      if (!band.veil)
-        for (const a of this.s.armies) if (e.isHostile(a.faction, this.id) && this.sees(a) && Math.hypot(a.x - band.x, a.z - band.z) < this.d(500)) danger += this.foeArmy(a)
-      if (preyGone || danger > e.armyPower(band) * 0.8) {
-        const home = this.nearestOwn(band.x, band.z, (c) => !c.village && !c.battleId)
-        if (home && !(o.type === 'reinforce' && o.castleId === home.id)) e.orderArmy(band.id, { type: 'reinforce', castleId: home.id })
+    const s = this.s
+    const band = s.armies.find((a) => a.faction === this.id && a.blades && a.commanderKey === SPY.foeKey)
+    if (!band || band.battleId || band.status === 'retreating' || band.sabotage) return
+    if (s.time < this.spyNextAt) return
+    this.spyNextAt = s.time + 3
+    const foe = (f: Faction) => e.isHostile(f, this.id) && !e.atPeace(this.id, f) && f !== NEUTRAL
+    const dist = (a: { x: number; z: number }) => Math.hypot(a.x - band.x, a.z - band.z)
+    const home = this.nearestOwn(band.x, band.z, (c) => !c.village && !c.battleId)
+    const goHome = () => {
+      if (home && !(band.order.type === 'station' && band.order.castleId === home.id)) e.orderArmy(band.id, { type: 'station', castleId: home.id })
+    }
+    // Badly hurt: home, where the convent fills the ranks again.
+    if (total(band.troops) < e.fullStrength(band) * 0.45) return goHome()
+    // Still on a hunt: keep at it while the prey is in sight.
+    const o = band.order
+    if (o.type === 'intercept') {
+      const prey = e.army(o.armyId)
+      if (prey && this.sees(prey) && prey.status !== 'retreating' && e.bladesReady(band)) return
+    }
+    if (o.type === 'raidConvoy' && e.convoy(o.convoyId)) return
+    // 1. A knife for a leader: worth most a named commander at the head of a large host, or the King himself.
+    if (e.bladesReady(band) && s.time > 240) {
+      let best: Army | null = null
+      let bv = 0
+      for (const a of s.armies) {
+        if (!foe(a.faction) || a.vassalOf || a.status === 'retreating' || !this.sees(a)) continue
+        const d = dist(a)
+        if (d > this.d(2600)) continue
+        const king = !!a.royal
+        const p = e.strikeChance(band, a)
+        if (king ? p < 0.08 : p < 0.35) continue
+        if (!king && !a.commanderKey && total(a.troops) < 400) continue
+        const v = (king ? 5 : a.commanderKey ? 1.6 : 1) * p * Math.sqrt(e.armyPower(a)) / (1 + d / this.d(1200))
+        if (v > bv) {
+          bv = v
+          best = a
+        }
       }
+      if (best) {
+        e.orderArmy(band.id, { type: 'intercept', armyId: best.id })
+        return
+      }
+    }
+    // 2. Cover the Rootcutters: keep close while they are out at their work (it goes faster and quieter).
+    const cutters = s.armies.find((a) => a.faction === this.id && a.sappers)
+    if (cutters && !cutters.battleId && cutters.status !== 'retreating' && !(cutters.order.type === 'station' && e.insideWalls(cutters))) {
+      const d = dist(cutters)
+      if (d > SAPPERS.cover * 0.5) {
+        const k = (d - SAPPERS.cover * 0.35) / (d || 1)
+        const [x, z] = e.world.nearestPassable(band.x + (cutters.x - band.x) * k, band.z + (cutters.z - band.z) * k)
+        if (!(o.type === 'move' && Math.hypot(o.x - x, o.z - z) < 40)) e.orderArmy(band.id, { type: 'move', x, z })
+      } else if (o.type === 'station') e.orderArmy(band.id, { type: 'hold' })
       return
     }
-    if (this.s.time < this.spyNextAt || st.armyId || st.woundedUntil > this.s.time) return
-    const diff = this.s.difficulty
-    this.spyNextAt = this.s.time + (diff === 'easy' ? 600 : diff === 'normal' ? 360 : diff === 'hard' ? 260 : 200) * (0.8 + this.rnd() * 0.4)
-    if (this.s.time < 240) return
-    // Prey: an enemy wagon train, or an outpost left empty, well away from their walls.
+    // 3. A wagon train to rob.
+    for (const w of s.convoys ?? []) {
+      if (!foe(w.faction) || dist(w) > this.d(2600)) continue
+      e.orderArmy(band.id, { type: 'raidConvoy', convoyId: w.id })
+      return
+    }
+    // 4. Nothing to do: home.
+    if (o.type !== 'move' || band.status === 'idle') goHome()
+  }
+
+  /**
+   * Brother Gall's Rootcutters (a fixed band of hidden saboteurs, the mirror of our Night Sappers).
+   * In order: home to mend when badly hurt; away from our Wardens once found out; at work on a castle
+   * of ours in reach; otherwise on the way to lie up outside the walls of one, the castle a host of
+   * theirs is marching on first (so the walls are weakest when it arrives), else the nearest.
+   */
+  private cutterNextAt = 0
+  private cutterRaids() {
+    const e = this.engine
+    const s = this.s
+    const band = s.armies.find((a) => a.faction === this.id && a.sappers)
+    if (!band || band.battleId || band.status === 'retreating' || band.sabotage) return
+    if (s.time < this.cutterNextAt) return
+    this.cutterNextAt = s.time + 3
     const foe = (f: Faction) => e.isHostile(f, this.id) && !e.atPeace(this.id, f) && f !== NEUTRAL
-    let target: { x: number; z: number; order: Army['order'] } | null = null
-    for (const w of this.s.convoys ?? []) {
-      if (!foe(w.faction)) continue
-      target = { x: w.x, z: w.z, order: { type: 'raidConvoy', convoyId: w.id } }
-      if ((w.gold ?? 0) > 0) break
+    const dist = (a: { x: number; z: number }) => Math.hypot(a.x - band.x, a.z - band.z)
+    const home = this.nearestOwn(band.x, band.z, (c) => !c.village && !c.battleId)
+    const goHome = () => {
+      if (home && !(band.order.type === 'station' && band.order.castleId === home.id)) e.orderArmy(band.id, { type: 'station', castleId: home.id })
     }
-    if (!target) {
-      const empty = this.s.outposts.filter((p) => foe(p.faction) && p.progress >= 1 && !this.s.armies.some((a) => a.faction === p.faction && Math.hypot(a.x - p.x, a.z - p.z) < 120))
-      const p = empty[Math.floor(this.rnd() * empty.length)]
-      if (p) target = { x: p.x, z: p.z, order: { type: 'move', x: p.x, z: p.z } }
-    }
-    if (!target) return
-    const from = this.nearestOwn(target.x, target.z, (c) => !c.village && !c.battleId && total(c.garrison) > 400)
-    if (!from || Math.hypot(from.x - target.x, from.z - target.z) > this.d(3200)) return
-    const cap = SPY.cap[Math.max(0, Math.min(SPY.cap.length - 1, st.level - 1))]
-    const light: Troops = {}
-    let n = 0
-    for (const k of SPY.units) {
-      if (k === 'engineers') continue
-      const have = Math.floor((from.garrison[k] ?? 0) * 0.35)
-      const take = Math.min(have, Math.max(0, cap * 0.8 - n))
-      if (take >= 1) {
-        light[k] = take
-        n += take
+    if (total(band.troops) < e.fullStrength(band) * 0.45) return goHome()
+    // Found out with enemy riders or a host close by: back home before they are ridden down.
+    if (!band.veil) {
+      for (const a of s.armies) {
+        if (!foe(a.faction) || a.veil || !this.sees(a) || dist(a) > 520) continue
+        if (a.wardens || e.armyPower(a) > e.armyPower(band) * 1.5) return goHome()
       }
     }
-    if (n < 120) return
-    e.formArmy(from.id, this.id, light, { commanderKey: SPY.foeKey, name: 'Grey Pilgrims', retreatAt: 0.5, order: target.order })
+    if (s.time < 240 || (band.sabotageReadyAt ?? 0) > s.time) {
+      if (band.order.type !== 'move' || band.status === 'idle') goHome()
+      return
+    }
+    if (!e.sabotageProblem(band)) {
+      const tg = e.sabotageTargets(band)[0]
+      // The Grey Sisters on their way to cover the work: wait for them (they are a few seconds off).
+      const sisters = s.armies.find((a) => a.faction === this.id && a.blades && !a.battleId && a.status !== 'retreating')
+      if (tg && sisters && !e.sapperCover(band) && dist(sisters) < 900 && !(sisters.order.type === 'intercept')) return
+      if (tg) {
+        // A host of theirs on the way: open the walls; else whatever hurts most at random.
+        const assault = s.armies.some((a) => a.faction === this.id && a.order.type === 'attack' && a.order.castleId === tg.id)
+        const pick: SabotageKind = assault && tg.kinds.includes('postern') ? 'postern' : tg.kinds[Math.floor(this.rnd() * tg.kinds.length)]
+        e.startSabotage(band.id, tg.id, pick)
+        return
+      }
+    }
+    let mark: Castle | null = null
+    for (const a of s.armies) {
+      if (a.faction !== this.id || a.order.type !== 'attack') continue
+      const c = e.castle(a.order.castleId)
+      if (c && !c.village && !c.ruined && foe(c.faction) && (!mark || dist(c) < dist(mark))) mark = c
+    }
+    if (!mark)
+      for (const c of s.castles) {
+        if (c.village || c.ruined || !foe(c.faction)) continue
+        if (!mark || dist(c) < dist(mark)) mark = c
+      }
+    if (!mark) return goHome()
+    // Lie up just outside the watch on the walls, on the near side.
+    const d = dist(mark) || 1
+    const r = wallRadius(mark.tier) + 290
+    const [x, z] = e.world.nearestPassable(mark.x + ((band.x - mark.x) / d) * r, mark.z + ((band.z - mark.z) / d) * r)
+    const o = band.order
+    if (!(o.type === 'move' && Math.hypot(o.x - x, o.z - z) < 40) && Math.hypot(band.x - x, band.z - z) > 30) e.orderArmy(band.id, { type: 'move', x, z })
+  }
+
+  /**
+   * The Thorn Hunt (or, on autopilot, our own Wardens): mounted bowmen who find hidden bands. In
+   * order: home to mend when badly hurt; away from a host that would ride them down; on the heels of
+   * a spy band of ours they have found (so it cannot slip away again); riding with the largest host
+   * of ours in the field; otherwise a slow round of the castle nearest the enemy.
+   */
+  private huntNextAt = 0
+  private huntAngle = 0
+  private huntPatrol() {
+    const e = this.engine
+    const s = this.s
+    const band = s.armies.find((a) => a.faction === this.id && a.wardens)
+    if (!band || band.battleId || band.status === 'retreating') return
+    if (s.time < this.huntNextAt) return
+    this.huntNextAt = s.time + 4
+    const foe = (f: Faction) => e.isHostile(f, this.id) && !e.atPeace(this.id, f) && f !== NEUTRAL
+    const dist = (a: { x: number; z: number }) => Math.hypot(a.x - band.x, a.z - band.z)
+    const go = (x: number, z: number) => {
+      const [px, pz] = e.world.nearestPassable(x, z)
+      const o = band.order
+      if (o.type === 'move' && Math.hypot(o.x - px, o.z - pz) < 90) return
+      if (Math.hypot(band.x - px, band.z - pz) < 40) return
+      e.orderArmy(band.id, { type: 'move', x: px, z: pz })
+    }
+    const home = this.nearestOwn(band.x, band.z, (c) => !c.village && !c.battleId)
+    const goHome = () => {
+      if (home && !(band.order.type === 'station' && band.order.castleId === home.id)) e.orderArmy(band.id, { type: 'station', castleId: home.id })
+    }
+    // Badly hurt: home, where the ranks are filled again.
+    if (total(band.troops) < e.fullStrength(band) * 0.5) return goHome()
+    // A host that could ride them down is close: fall back the way they came.
+    const mine = e.armyPower(band)
+    for (const a of s.armies) {
+      if (!foe(a.faction) || a.veil || !this.sees(a) || a.status === 'retreating') continue
+      const d = dist(a)
+      if (d < 420 && e.armyPower(a) > mine * 1.4) {
+        const k = 600 / (d || 1)
+        return go(band.x + (band.x - a.x) * k, band.z + (band.z - a.z) * k)
+      }
+    }
+    // A spy band of theirs found out nearby: keep within reach so it cannot hide again.
+    for (const a of s.armies) {
+      if (!foe(a.faction) || !e.isSpyBand(a) || a.veil || !this.sees(a) || dist(a) > this.d(2400)) continue
+      const d = dist(a) || 1
+      const keep = WARDENS.reveal * 0.6
+      return go(a.x + ((band.x - a.x) / d) * keep, a.z + ((band.z - a.z) / d) * keep)
+    }
+    // Ride with the largest host in the field, a little behind it.
+    let host: Army | null = null
+    for (const a of s.armies) {
+      if (a.faction !== this.id || a.id === band.id || a.wardens || e.isSpyBand(a) || a.vassalOf) continue
+      if (a.order.type === 'station' && e.insideWalls(a)) continue
+      if (total(a.troops) < 700) continue
+      if (!host || total(a.troops) > total(host.troops)) host = a
+    }
+    if (host) {
+      const back = home ? Math.hypot(home.x - host.x, home.z - host.z) || 1 : 1
+      const bx = home ? host.x + ((home.x - host.x) / back) * 220 : host.x
+      const bz = home ? host.z + ((home.z - host.z) / back) * 220 : host.z
+      return go(bx, bz)
+    }
+    // A round of the castle nearest the enemy: where their hidden bands would come.
+    let front: Castle | null = null
+    let fd = Infinity
+    for (const c of this.myCastles()) {
+      if (c.village || c.ruined) continue
+      for (const o of s.castles) {
+        if (o.village || !foe(o.faction)) continue
+        const d = Math.hypot(o.x - c.x, o.z - c.z)
+        if (d < fd) {
+          fd = d
+          front = c
+        }
+      }
+    }
+    if (!front) return goHome()
+    if (band.status === 'idle' || band.order.type === 'station') {
+      this.huntAngle += 1.1 + this.rnd() * 0.8
+      const r = wallRadius(front.tier) + 420
+      go(front.x + Math.cos(this.huntAngle) * r, front.z + Math.sin(this.huntAngle) * r)
+    }
   }
 }

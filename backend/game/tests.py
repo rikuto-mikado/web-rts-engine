@@ -5,7 +5,9 @@ class ApiTests(APITestCase):
     def test_content_is_seeded(self):
         res = self.client.get("/api/content/")
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(len(res.data["unit_types"]), 4)
+        self.assertEqual(len(res.data["unit_types"]), 8)
+        # Four raised in castles; four only in the fixed bands (Household Knights, Assassins, Outriders, Saboteurs).
+        self.assertEqual(sum(1 for u in res.data["unit_types"] if u["recruitable"]), 4)
         self.assertTrue(any(c["faction"] == "enemy" for c in res.data["commanders"]))
         self.assertEqual(res.data["scenarios"][0]["key"], "ashen-marches")
 

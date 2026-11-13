@@ -1,6 +1,6 @@
 import { MAPS, type MapType } from './biomes'
 import { PLAYER } from './engine'
-import { mulberry32 } from './noise'
+import { clamp, mulberry32 } from './noise'
 import type { CastleDef, Difficulty, Escarpment, FactionDef, GameMode, GameRules, MapSize, Rampart, Scenario, ScenarioDefinition, Team, Troops, FeatureKind, TerrainFeature } from './types'
 import { ROYAL_SEAT_TIER, World, distToSegment, holdingRadius } from './world'
 
@@ -9,14 +9,14 @@ import { ROYAL_SEAT_TIER, World, distToSegment, holdingRadius } from './world'
  * seed, so the same seed always produces the same world.
  */
 
-const REALMS = [
+export const REALMS = [
   'Valoria', 'Thornmere', 'Brightwater', 'Ostmark', 'Kaldheim', 'Ravensholt', 'Duskvale', 'Highmoor', 'Ironwold', 'Greywatch',
   'Ambergate', 'Stormhold', 'Westmarch', 'Eldermoor', 'Sablecrest', 'Wyrmfell', 'Goldhaven', 'Marrowind', 'Coldspire', 'Redfen',
   'Larkspur', 'Northwind', 'Hollowmere', 'Silverholm', 'Blackfen', 'Ashford', 'Kingsreach', 'Mistvale', 'Oakheart', 'Frostgard',
   'Emberfall', 'Wolfsbane', 'Seahaven', 'Dunmere', 'Caer Lys', 'Varnhall', 'Morwen', 'Tirath', 'Galdor', 'Brennoch',
   'Brackenford', 'Dunmarrow', 'Heronsgate', 'Vellmoor', 'Crowmere', 'Elmstead', 'Galewick', 'Saltmarsh', 'Thistledown', 'Wolfhollow',
   'Brindlecombe', 'Morrowgate', 'Pinecrest', 'Rookhaven', 'Starfall', 'Underhill', 'Whitlow']
-const TITLES = ['Kingdom of', 'Duchy of', 'County of', 'March of', 'Principality of', 'Barony of', 'Earldom of']
+export const TITLES = ['Kingdom of', 'Duchy of', 'County of', 'March of', 'Principality of', 'Barony of', 'Earldom of']
 export const PREFIX = [
   'Ash', 'Black', 'Bright', 'Cold', 'Dun', 'Elder', 'Fair', 'Frost', 'Gold', 'Grey', 'High', 'Iron', 'Kings', 'Long', 'Mist', 'North',
   'Oak', 'Raven', 'Red', 'Rose', 'Silver', 'Stone', 'Storm', 'Thorn', 'West', 'Wolf', 'Wyrm', 'Amber', 'Dragon', 'Hawk', 'Lion',
@@ -224,7 +224,7 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
     }
     case 'coast': {
       // The Red Escarpment: the mesa country (north) ends in a sheer wall of cliffs across the land,
-      // passable only up three narrow canyons. Below it, the open coast with its fast shore road.
+      // passable only up three narrow canyons. Below it, the open coast.
       axis = [0, -1]
       for (let u = -1.4; u <= 1.4; u += 0.35) lake(u + R(-0.08, 0.08), R(1.42, 1.55), half * R(0.66, 0.74))
       const ev = R(-0.24, -0.14)
@@ -236,15 +236,9 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
       escarpments.push({ points: edge, height: 115, cliff: 74, ramp: alliance ? 600 : 520, passes })
       // Tall mesas in the hinterland behind it.
       scatter(count(8), (_u, v) => v < ev - 0.3, [110, 200], [90, 140])
-      // Two rivers falling from the cliffs to the sea, and the shore road over them.
+      // Two rivers falling from the cliffs to the sea.
       river(R(-0.82, -0.32), ev + 0.16, R(-0.75, -0.3), 0.96, R(38, 46))
       river(R(0.28, 0.8), ev + 0.16, R(0.25, 0.75), 0.96, R(38, 46))
-      const sv = R(0.5, 0.56)
-      roads.push({ width: 26, points: wavyLine(-1.08, sv, 1.08, sv, 0.06, 0.025) })
-      for (const p of passes) {
-        const pu = p.x / half
-        roads.push({ width: 22, points: [at(pu, ev - 0.2), [p.x, p.z], at(pu + R(-0.04, 0.04), sv)] })
-      }
       break
     }
     case 'basin': {
@@ -585,18 +579,87 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
 /** Where each terrain feature likes to be found, by climate. */
 const FEATURE_CLIMATES: Record<FeatureKind, string[]> = {
   stones: ['highland', 'taiga', 'temperate', 'grain', 'wasteland', 'alpine', 'lakeland', 'icefield', 'volcanic', 'desert', 'coast'],
-  terraces: ['grain', 'coast', 'autumn', 'temperate', 'mesa', 'oasis', 'volcanic'],
   thicket: ['taiga', 'autumn', 'steam', 'wasteland', 'temperate', 'icefield', 'oasis'],
   crag: ['highland', 'desert', 'mesa', 'temperate', 'grain', 'volcanic', 'icefield', 'wasteland', 'coast', 'alpine'],
+  // The great woods grow wherever the climate is well wooded (see placeWoods).
+  oldwood: [],
+  deepwood: [],
 }
 
-/** Scatter standing stones, terraces, windfall and crags over the land. */
-function placeFeatures(world: World, castles: CastleDef[], rnd: () => number): TerrainFeature[] {
+/**
+ * Is the ground for a feature of radius r at (x, z) fit for it? Clear of the mountains (and their
+ * foothills), and on low, gentle, dry ground throughout: no feature sits on a mountainside, a cliff,
+ * a river or a lake shore. `wetOk` is the share of the samples that may be water or impassable.
+ */
+function groundFits(world: World, x: number, z: number, r: number, wetOk = 0): boolean {
+  for (const m of world.def.mountains) if (Math.hypot(m.x - x, m.z - z) < m.r * 1.25 + r) return false
+  let wet = 0
+  let n = 0
+  for (let ring = 0; ring <= 1.0001; ring += 0.2) {
+    for (let k = 0; k < 16; k++) {
+      const px = x + Math.cos((k / 16) * Math.PI * 2 + ring) * r * ring
+      const pz = z + Math.sin((k / 16) * Math.PI * 2 + ring) * r * ring
+      n++
+      const h = world.heightAt(px, pz)
+      if (h > 70 || world.slopeAt(px, pz) > 0.75) return false
+      if (h < 4 || !world.isPassable(px, pz)) wet++
+      if (ring === 0) break
+    }
+  }
+  return wet <= n * wetOk
+}
+
+/**
+ * The great woods: stands of old-growth forest (giant trees, open floor) and the Deepwood (a sea of
+ * trees where a host is lost from sight). They grow out of the existing woods where they can, on
+ * dry ground in a well-wooded climate, clear of castles, crossings, roads and walls.
+ */
+function placeWoods(world: World, castles: CastleDef[], rnd: () => number, out: TerrainFeature[]) {
+  const half = world.half
+  const area = (world.size * world.size) / (5540 * 5540)
+  const scale = clamp(Math.sqrt(area), 0.85, 1.35)
+  const plan: [FeatureKind, number][] = [
+    ['deepwood', Math.max(1, Math.round(1.2 * Math.sqrt(area)))],
+    ['oldwood', Math.max(2, Math.round(2.2 * Math.sqrt(area)))],
+  ]
+  for (const [kind, want] of plan) {
+    for (let placed = 0, tries = 0; placed < want && tries < 900; tries++) {
+      const r = Math.round(kind === 'deepwood' ? (250 + rnd() * 70) * scale : 140 + rnd() * 50)
+      const x = (rnd() * 2 - 1) * (half - r - 220)
+      const z = (rnd() * 2 - 1) * (half - r - 220)
+      const clim = world.climateAt(x, z)
+      if (clim.forest < 0.5 || clim.rules.mired) continue
+      // Grow out of the woods already there for the first tries; anywhere wooded enough after.
+      if (tries < 450 && world.forestAt(x, z) < 0.2) continue
+      if (castles.some((c) => Math.hypot(c.x - x, c.z - z) < holdingRadius(c) + r + 220)) continue
+      if (world.crossings().some((c) => Math.hypot(c.x - x, c.z - z) < r + 140)) continue
+      if (out.some((f) => Math.hypot(f.x - x, f.z - z) < f.r + r + 220)) continue
+      // Low, gentle, dry ground clear of the mountains; no road or wall running through it.
+      if (!groundFits(world, x, z, r, 0.04)) continue
+      let crossed = false
+      for (let ring = 0.25; ring <= 1.0001 && !crossed; ring += 0.25) {
+        for (let k = 0; k < 12; k++) {
+          const px = x + Math.cos((k / 12) * Math.PI * 2 + ring) * r * ring
+          const pz = z + Math.sin((k / 12) * Math.PI * 2 + ring) * r * ring
+          if (world.onRoad(px, pz, 10) || world.onWall(px, pz, 20) || world.onRampart(px, pz, 30)) crossed = true
+        }
+      }
+      if (crossed) continue
+      out.push({ kind, x: Math.round(x), z: Math.round(z), r })
+      placed++
+    }
+  }
+}
+
+/** Scatter the great woods, standing stones, windfall and crags over the land. */
+export function placeFeatures(world: World, castles: CastleDef[], rnd: () => number): TerrainFeature[] {
   const out: TerrainFeature[] = []
   const half = world.half
   const area = (world.size * world.size) / (5540 * 5540)
   const each = Math.max(2, Math.round(3 * Math.sqrt(area)))
-  const kinds: FeatureKind[] = ['stones', 'terraces', 'thicket', 'crag']
+  // The great woods first: they need the most room.
+  placeWoods(world, castles, rnd, out)
+  const kinds: FeatureKind[] = ['stones', 'thicket', 'crag']
   const clear = (x: number, z: number, r: number) =>
     Math.abs(x) < half - 260 &&
     Math.abs(z) < half - 260 &&
@@ -612,8 +675,7 @@ function placeFeatures(world: World, castles: CastleDef[], rnd: () => number): T
       if (!FEATURE_CLIMATES[kind].includes(world.climateAt(x, z).key)) continue
       const slope = world.slopeAt(x, z)
       const forest = world.forestAt(x, z)
-      const r = kind === 'crag' ? 34 : kind === 'stones' ? 70 : kind === 'terraces' ? 110 : 100
-      if (kind === 'terraces' && (slope < 0.12 || slope > 0.6)) continue
+      const r = kind === 'crag' ? 34 : kind === 'stones' ? 70 : 100
       // Features sit wholly on dry land.
       let dry = true
       for (let k = 0; k < 8; k++) {
@@ -624,7 +686,7 @@ function placeFeatures(world: World, castles: CastleDef[], rnd: () => number): T
       if (!dry) continue
       if (kind === 'thicket' && forest < 0.25) continue
       if ((kind === 'stones' || kind === 'crag') && (forest > 0.35 || slope > 0.4)) continue
-      if (!clear(x, z, r)) continue
+      if (!clear(x, z, r) || !groundFits(world, x, z, r)) continue
       out.push({ kind, x: Math.round(x), z: Math.round(z), r })
       placed++
     }
@@ -632,7 +694,7 @@ function placeFeatures(world: World, castles: CastleDef[], rnd: () => number): T
   return out
 }
 
-function garrisonFor(tier: number, capital: boolean, personality: string, neutral: boolean, rnd: () => number, survivalEnemy: boolean): Troops {
+export function garrisonFor(tier: number, capital: boolean, personality: string, neutral: boolean, rnd: () => number, survivalEnemy: boolean): Troops {
   let n = tier * (120 + rnd() * 70) * (capital ? 1.35 : 1) * (survivalEnemy ? 1.15 : 1)
   if (neutral) n = tier * (100 + rnd() * 60)
   const mix =
@@ -648,7 +710,7 @@ function garrisonFor(tier: number, capital: boolean, personality: string, neutra
   return out
 }
 
-function hslHex(h: number, s: number, l: number): string {
+export function hslHex(h: number, s: number, l: number): string {
   h = ((h % 360) + 360) % 360
   const c = (1 - Math.abs(2 * l - 1)) * s
   const x = c * (1 - Math.abs(((h / 60) % 2) - 1))

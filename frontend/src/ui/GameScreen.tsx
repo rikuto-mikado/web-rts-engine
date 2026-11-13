@@ -7,6 +7,7 @@ import { ConvoyHUD } from './ConvoyHUD'
 import { NightHUD } from './NightHUD'
 import { GameRenderer, type Selection } from '../render/GameRenderer'
 import { ChronicleLog, Toasts } from './Chronicle'
+import { CrownsHUD } from './CrownsHUD'
 import { FormArmyModal } from './FormArmyModal'
 import { HelpOverlay } from './HelpOverlay'
 import { HoldingsBar } from './HoldingsBar'
@@ -117,6 +118,8 @@ export function GameScreen({ match, onExit }: Props) {
 
   const select = useCallback(
     (s: Selection, focus = false) => {
+      // Selecting something else ends the picking of an army to escort.
+      if (engine.picking && (s?.kind !== 'army' || s.id !== engine.picking.armyId)) engine.setPicking(null)
       setSelection(s)
       if (!renderer) return
       renderer.selection = s
@@ -221,10 +224,11 @@ export function GameScreen({ match, onExit }: Props) {
   useEffect(() => {
     const host = hostRef.current
     if (!host || !renderer) return
-    type Down = { x: number; y: number; button: number; grab: { x: number; z: number } | null; dragging: boolean; touch: boolean; consumed: boolean }
+    type Down = { x: number; y: number; button: number; grab: { x: number; z: number; y: number } | null; dragging: boolean; touch: boolean; consumed: boolean }
     let down: Down | null = null
     const pointers = new Map<number, { x: number; y: number }>()
     let pinch: { dist: number; angle: number; mx: number; my: number } | null = null
+    let pinchY = 0
     let longPress = 0
     // Touch: with one of your armies selected, a tap waits a moment in case a second tap follows (a double tap marches the army there).
     let pendingTap: { t: number; x: number; y: number; timer: number } | null = null
@@ -349,6 +353,8 @@ export function GameScreen({ match, onExit }: Props) {
         cancelLongPress()
         down = null
         pinch = pinchState()
+        // Two fingers move the map on a level plane at the height of the ground between them.
+        pinchY = renderer.groundAt(pinch.mx, pinch.my)?.y ?? 0
         return
       }
       if (pointers.size > 2) return
@@ -387,8 +393,8 @@ export function GameScreen({ match, onExit }: Props) {
         if (da > Math.PI) da -= Math.PI * 2
         if (da < -Math.PI) da += Math.PI * 2
         renderer.cam.rotateBy(-da)
-        const g0 = renderer.groundAt(pinch.mx, pinch.my)
-        const g1 = renderer.groundAt(now.mx, now.my)
+        const g0 = renderer.planeAt(pinch.mx, pinch.my, pinchY)
+        const g1 = renderer.planeAt(now.mx, now.my, pinchY)
         if (g0 && g1) renderer.cam.panBy(g0.x - g1.x, g0.z - g1.z)
         pinch = now
         return
@@ -402,7 +408,8 @@ export function GameScreen({ match, onExit }: Props) {
         if (down.dragging && down.button === 0 && down.grab) {
           // Looking around by hand lets go of the army the camera was following.
           followRef.current = null
-          const g = renderer.groundAt(e.clientX, e.clientY)
+          // Held on a level plane at the height grabbed: the map follows the finger evenly, even over ridges.
+          const g = renderer.planeAt(e.clientX, e.clientY, down.grab.y)
           if (g) renderer.cam.panBy(down.grab.x - g.x, down.grab.z - g.z)
           host.style.cursor = 'grabbing'
         } else if (down.dragging && down.button === 1) {
@@ -429,6 +436,23 @@ export function GameScreen({ match, onExit }: Props) {
       down = null
       host.style.cursor = 'default'
       if (d.consumed || d.dragging || d.button !== 0 || e.type === 'pointercancel') return
+      // Picking the army to escort or follow: a tap on one of ours sets the order (taps elsewhere are ignored).
+      const pk = engine.picking
+      if (pk) {
+        const p = renderer.pick(e.clientX, e.clientY)
+        const t = p?.kind === 'army' ? engine.army(p.id) : undefined
+        const me = engine.army(pk.armyId)
+        if (t && me && t.faction === PLAYER && t.id !== me.id) {
+          const err = engine.setStance(me.id, { kind: pk.kind, targetId: t.id })
+          if (err) toast(err)
+          else {
+            engine.setPicking(null)
+            toast(`${me.name} will ${pk.kind === 'follow' ? 'follow' : 'escort'} ${t.name}.`)
+            navigator.vibrate?.(15)
+          }
+        } else if (t) toast('Choose another army of ours.')
+        return
+      }
       if (d.touch && armySelected()) {
         const now = performance.now()
         if (pendingTap && now - pendingTap.t < 360 && Math.hypot(e.clientX - pendingTap.x, e.clientY - pendingTap.y) < 40) {
@@ -503,7 +527,8 @@ export function GameScreen({ match, onExit }: Props) {
     const onDown = (e: KeyboardEvent) => {
       if (typing(e)) return
       if (e.code === 'Escape') {
-        if (confirmLeave) setConfirmLeave(false)
+        if (engine.picking) engine.setPicking(null)
+        else if (confirmLeave) setConfirmLeave(false)
         else if (showHelp) setShowHelp(false)
         else if (formArmy) setFormArmy(null)
         else if (showLog) setShowLog(false)
@@ -618,6 +643,7 @@ export function GameScreen({ match, onExit }: Props) {
       <SelectionPanel engine={engine} selection={selection} onSelect={select} onFormArmy={(castleId, targetId) => setFormArmy({ castleId, targetId })} toast={toast} />
       {!selection && !showLog && <HoldingsBar engine={engine} selection={selection} onSelect={select} mapShown={mapShown} />}
       <Minimap engine={engine} renderer={renderer} shown={mapShown} setShown={setMapShown} />
+      {engine.state.rules.mode === 'grand' && <CrownsHUD engine={engine} onFocus={(x, z) => renderer?.cam.focus(x, z)} onSelect={(s) => select(s, false)} />}
       {engine.state.night && <NightHUD engine={engine} onFocus={(x, z) => renderer?.cam.focus(x, z)} onSelect={(s) => select(s, false)} />}
       {engine.state.train && <ConvoyHUD engine={engine} onFocus={(x, z) => renderer?.cam.focus(x, z)} onSelect={(s) => select(s, false)} />}
       {vp.touch && renderer && selection?.kind === 'army' && engine.army(selection.id)?.faction === PLAYER && !engine.army(selection.id)?.vassalOf && (

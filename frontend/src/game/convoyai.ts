@@ -1,5 +1,5 @@
 import type { GameEngine } from './engine'
-import type { Army, ArmyOrder, Castle, Convoy, Faction, Stance, StanceKind, Team } from './types'
+import type { Army, ArmyOrder, Castle, Convoy, ConvoyStanceKind, Faction, Stance, Team } from './types'
 
 /**
  * Convoy Raid: standing orders, and the computer opponent that hands them out.
@@ -10,17 +10,18 @@ import type { Army, ArmyOrder, Castle, Convoy, Faction, Stance, StanceKind, Team
  */
 
 /** What each standing order is called and does (for the panel and the map labels). */
-export const STANCES: Record<StanceKind, { name: string; side: 'escort' | 'raid'; text: string; here?: boolean; engineers?: boolean }> = {
+export const STANCES: Record<ConvoyStanceKind, { name: string; side: 'escort' | 'raid'; text: string; here?: boolean; engineers?: boolean; blades?: boolean }> = {
   escort: { name: 'Escort', side: 'escort', text: 'Walk beside the next wagon nobody guards, a little ahead of it.' },
   hunt: { name: 'Hunt', side: 'escort', text: 'Ride down raiders seen near the wagons, then ride ahead of the leading wagon.' },
   picket: { name: 'Picket', side: 'escort', here: true, text: 'Hold this stretch of road and drive off raiders who come near. Engineers posted by the river rebuild the bridge if it comes down.' },
   ambush: { name: 'Ambush', side: 'raid', here: true, text: 'Lie in the trees here and fall on the first wagon that comes by with its guards elsewhere (or too weak to stop you).' },
   harass: { name: 'Harass', side: 'raid', here: true, text: 'Strike the guards of a wagon passing near here and keep them busy: a guard locked in a fight cannot protect its wagon, so another band can take it.' },
   bridge: { name: 'Bridge', side: 'raid', engineers: true, text: 'Wait by the bridge, pull it down as the first wagon nears it, then lie in wait where the ford road meets the road again.' },
+  strike: { name: 'Strike', side: 'raid', here: true, blades: true, text: 'The Whisper Blades: lie hidden here, and when ready, go for the leader of the guards walking with a wagon nearby. Struck down, the guards break; a wagon left without guards they take themselves.' },
 }
 
 /** How far a standing order lets the army look for trouble. */
-const REACH = { hunt: 520, picket: 380, ambush: 480, harass: 650 }
+const REACH = { hunt: 520, picket: 380, ambush: 480, harass: 650, strike: 700 }
 
 const wagonsOf = (e: GameEngine): Convoy[] => (e.state.convoys ?? []).filter((w) => w.race).sort((a, b) => a.path.length - b.path.length)
 const dist = (a: { x: number; z: number }, b: { x: number; z: number }) => Math.hypot(a.x - b.x, a.z - b.z)
@@ -161,6 +162,37 @@ function runStance(e: GameEngine, a: Army, st: Stance) {
       goTo(e, a, post.x, post.z, 30)
       return
     }
+    case 'strike': {
+      // The Whisper Blades: when ready, the leader of the strongest guard near a wagon in reach.
+      if (e.bladesReady(a)) {
+        let prey: Army | undefined
+        let best = 0
+        for (const f of foes) {
+          if (f.battleId && !f.commanderKey) continue
+          const w = wagons.find((x) => e.isHostile(x.faction, a.faction) && dist(x, f) < 260 && dist(x, post) < REACH.strike)
+          if (!w) continue
+          // Worth most: a named commander, a strong guard, a good chance.
+          const v = e.armyPower(f) * (f.commanderKey ? 1.5 : 1) * e.strikeChance(a, f)
+          if (v > best) {
+            best = v
+            prey = f
+          }
+        }
+        if (prey) {
+          if (!(a.order.type === 'intercept' && a.order.armyId === prey.id)) act(e, a, { type: 'intercept', armyId: prey.id })
+          return
+        }
+      }
+      // A wagon in reach left without a guard on its feet (its guards struck down and fled): take it.
+      const bare = wagons.find((w) => e.isHostile(w.faction, a.faction) && dist(w, post) < REACH.strike && !e.state.armies.some((b) => e.team(b.faction) === e.team(w.faction) && free(b) && dist(b, w) < 220))
+      if (bare) {
+        if (!(a.order.type === 'raidConvoy' && a.order.convoyId === bare.id)) act(e, a, { type: 'raidConvoy', convoyId: bare.id })
+        return
+      }
+      // Regrouping, or nothing in reach: back into the trees at the post.
+      goTo(e, a, post.x, post.z, 30)
+      return
+    }
     case 'bridge': {
       if ((a.troops.engineers ?? 0) < 10) {
         a.stance = { kind: 'ambush', x: a.x, z: a.z }
@@ -247,6 +279,11 @@ export class ConvoyAI {
     for (const a of armies) {
       if (!a.stance) {
         if ((a.troops.engineers ?? 0) >= 10) a.stance = { kind: 'bridge' }
+        else if (a.blades) {
+          // The Blades wait where the guards will be busiest: a little before the harrying horse.
+          const [x, z] = besideRoad(e, Math.floor(road.length * 0.5), -120)
+          a.stance = { kind: 'strike', x, z }
+        }
         else {
           const spy = e.isSpyBand(a)
           // Working together: the horse strike the guards a little before the spot where the band waits.
@@ -256,7 +293,7 @@ export class ConvoyAI {
         }
       }
       const st = a.stance
-      if ((st.kind !== 'ambush' && st.kind !== 'harass') || st.x === undefined || st.z === undefined || !free(a) || a.order.type === 'raidConvoy') continue
+      if ((st.kind !== 'ambush' && st.kind !== 'harass' && st.kind !== 'strike') || st.x === undefined || st.z === undefined || !free(a) || a.order.type === 'raidConvoy') continue
       const at = roadIndexNear(e, st.x, st.z)
       const ahead = wagons.some((w) => road.length - w.path.length < at)
       const due = !!s.train && s.train.sent < cv.wagons

@@ -2,8 +2,9 @@ import * as THREE from 'three'
 import type { GameEngine } from '../game/engine'
 import type { Outpost } from '../game/types'
 import { Frame, PAL, barrel, brazier, cart, crate, gable, haystack, horse, house, newKit, tent, wheel, woodpile, type Kit } from './buildings'
-import { bmerge, box, cone, cyl, groundShade, merge, part } from './geo'
+import { bmerge, box, cone, cyl, groundShade } from './geo'
 import { applyVision } from './vision'
+import { makeBanner, waveFlag, type StandardFlag } from './standards'
 
 const woodMat = applyVision(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.9 }), '', false, false, true)
 
@@ -287,7 +288,8 @@ class OutpostView {
   readonly group = new THREE.Group()
   private palisade: THREE.Mesh
   private camp: THREE.Mesh
-  private flag: THREE.Mesh
+  private standard: THREE.Group
+  private flag: StandardFlag
   private color: string
   constructor(o: Outpost, engine: GameEngine, geos: Record<string, [THREE.BufferGeometry, THREE.BufferGeometry]>) {
     this.color = engine.factionColor(o.faction)
@@ -298,16 +300,15 @@ class OutpostView {
       m.castShadow = true
       m.receiveShadow = true
     }
-    const pole = new THREE.Mesh(merge([part(cyl(0.3, 0.3, 14, 5), 0x3b2f25, { y: 7 })]), woodMat)
-    pole.position.set(-8, 20, -6)
-    this.flag = new THREE.Mesh(new THREE.PlaneGeometry(7, 4.5), applyVision(new THREE.MeshStandardMaterial({ color: this.color, side: THREE.DoubleSide })))
-    this.flag.position.set(-4.5, 31, -6)
-    // The banner stands on a corner tower, the mangonel, the command tent or the storehouse.
+    // The banner (a swallowtail in the owner's colours on a crossbar standard) stands on a corner
+    // tower, the mangonel, the command tent or the storehouse.
     const at: Record<string, [number, number, number]> = { castrum: [50, 24, 50], laager: [0, 6, 0], redoubt: [-10, 14, 0], pavilion: [0, 7, 1], depot: [-13, 20, -14] }
     const [px, py, pz] = at[o.kind] ?? [0, 6, 0]
-    pole.position.set(px, py, pz)
-    this.flag.position.set(px + 3.5, py + 11, pz)
-    this.group.add(this.palisade, this.camp, pole, this.flag)
+    const banner = makeBanner({ color: this.color, pattern: o.kind === 'castrum' ? 'quarterly' : o.kind === 'depot' ? 'fess' : 'pale', finial: 'spear', scale: 0.72, seed: o.id.length })
+    banner.group.position.set(px, py, pz)
+    this.standard = banner.group
+    this.flag = banner.flag
+    this.group.add(this.palisade, this.camp, this.standard)
     // Stand on the highest ground under the works and raise an earth platform beneath, so on a
     // slope nothing sinks into the hillside and nothing hangs in the air.
     const world = engine.world
@@ -346,8 +347,8 @@ class OutpostView {
       this.camp.visible = o.progress >= 1 && stock > 0.02
       this.camp.scale.set(1, Math.max(0.15, stock), 1)
     }
-    this.flag.visible = o.progress >= 1
-    this.flag.rotation.y = Math.sin(time * 2 + o.x) * 0.3
+    this.flag.mesh.visible = o.progress >= 1
+    if (o.progress >= 1) waveFlag(this.flag, time, 0.9)
     // Burning: sink and darken a little.
     this.group.scale.setScalar(1 - o.raze * 0.25)
   }

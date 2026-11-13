@@ -53,6 +53,8 @@ export class RTSCamera {
   /** The ground under the army, smoothed: the view rides over hills instead of bobbing with them. */
   private chaseGround: number | null = null
   private lastDt = 1 / 60
+  /** The ground under the view's centre, smoothed: panning over hills glides instead of bobbing. */
+  private groundSmooth: number | null = null
   /** Swinging round behind the army (until it is back behind it). */
   private chaseTurning = false
   private savedDistance: number | null = null
@@ -125,6 +127,10 @@ export class RTSCamera {
   jumpTo(x: number, z: number, distance?: number) {
     this.goal.x = this.target.x = x
     this.goal.z = this.target.y = z
+    // A jump is a cut: no gliding up or down from where the view was.
+    this.groundSmooth = null
+    this.lift = 0
+    this.liftVel = 0
     if (distance) this.goal.distance = this.distance = distance
     this.apply()
   }
@@ -199,6 +205,8 @@ export class RTSCamera {
     this.yaw += (this.goal.yaw - this.yaw) * kc
     this.chaseBlend += ((this.chaseOn ? 1 : 0) - this.chaseBlend) * (1 - Math.exp(-dt * 2.5))
     this.lastDt = dt
+    const g = Math.max(0, this.world.heightAt(this.target.x, this.target.y))
+    this.groundSmooth = this.groundSmooth === null ? g : this.groundSmooth + (g - this.groundSmooth) * (1 - Math.exp(-dt * 2.5))
     // A wider lens in the commander's view: more of the land ahead, and a feel for how far it runs.
     const fov = lerp(this.baseFov, Math.max(this.baseFov, CHASE.fov), this.chaseBlend)
     if (Math.abs(this.camera.fov - fov) > 0.01) {
@@ -212,20 +220,20 @@ export class RTSCamera {
     const p = this.pitch
     // Usually aimed a little into the ground (which flattens hills); low over the land, at the
     // smoothed ground under the army, so the picture does not bob with every rise and dip ahead.
-    const tGround = Math.max(0, this.world.heightAt(this.target.x, this.target.y))
+    const tGround = this.groundSmooth ?? Math.max(0, this.world.heightAt(this.target.x, this.target.y))
     const ty = lerp(tGround * 0.6, this.chaseGround ?? tGround, this.chaseBlend)
     const h = Math.cos(p) * this.distance
     const c = this.camera.position
     c.set(this.target.x + Math.sin(this.yaw) * h, ty + Math.sin(p) * this.distance, this.target.y + Math.cos(this.yaw) * h)
     const ground = this.world.heightAt(c.x, c.z)
-    if (this.chaseBlend > 0.05) {
-      // Low over the land: rise over a ridge underneath, or a hill between the camera and the army,
+    {
+      // Rise over a hill underneath (and, low over the land, one between the camera and the army)
       // quickly; sink back slowly. Never jump.
-      let need = Math.max(c.y, ground + 30)
+      let need = Math.max(c.y, ground + lerp(60, 30, this.chaseBlend))
       const ax = this.chaseAt.x
       const az = this.chaseAt.z
       const ay = (this.chaseGround ?? Math.max(0, this.world.heightAt(ax, az))) + 6
-      for (let i = 1; i < 9; i++) {
+      for (let i = 1; i < 9 && this.chaseBlend > 0.05; i++) {
         const t = i / 10
         const clear = this.world.heightAt(c.x + (ax - c.x) * t, c.z + (az - c.z) * t) + 8
         // The line's height at t: c.y + (ay - c.y) * t >= clear.
@@ -234,17 +242,12 @@ export class RTSCamera {
       const want = need - c.y
       const dt = this.lastDt
       // A critically damped spring: it gathers and sheds speed smoothly instead of lurching.
-      const k = want > this.lift ? 3 : 1.1
+      const k = want > this.lift ? (this.chaseBlend > 0.05 ? 3 : 5) : this.chaseBlend > 0.05 ? 1.1 : 1.5
       this.liftVel += ((want - this.lift) * k * k - 2 * k * this.liftVel) * dt
       this.lift += this.liftVel * dt
       c.y += Math.max(0, this.lift)
       // Whatever the easing, never inside the ground.
       if (c.y < ground + 8) c.y = ground + 8
-    } else {
-      this.lift = 0
-      this.liftVel = 0
-      // Keep the camera above terrain when zoomed in near hills.
-      if (c.y < ground + 60) c.y = ground + 60
     }
     this.camera.lookAt(this.target.x, ty, this.target.y)
   }

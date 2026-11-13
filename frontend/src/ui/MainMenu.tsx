@@ -1,4 +1,4 @@
-import { Dices, Handshake, LoaderCircle, Moon, RotateCcw, ScrollText, Swords } from 'lucide-react'
+import { Crown, Dices, Handshake, LoaderCircle, Moon, RotateCcw, ScrollText, Swords } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { api } from '../api/client'
 import { GameEngine } from '../game/engine'
@@ -7,6 +7,7 @@ import { generateCountryside } from '../game/countryside'
 import { generateMap, type GeneratedMap } from '../game/mapgen'
 import { CONVOY, generateConvoyMap } from '../game/convoymap'
 import { NIGHT, generateNightMap } from '../game/nightmap'
+import { generateGrandMap } from '../game/grandmap'
 import { Glyph } from './Glyph'
 import { PixelPortrait } from './PixelPortrait'
 import { drawStructures } from './mapPaint'
@@ -65,7 +66,7 @@ const DIFFS: {
   },
 ]
 
-type MenuMode = 'conquest' | 'alliance' | 'convoy' | 'nightfall'
+type MenuMode = 'conquest' | 'alliance' | 'convoy' | 'nightfall' | 'grand'
 type Side = 'escort' | 'raid'
 /** Who may lead the escort (the spymaster leads the raiders; the King stays at court). */
 const ESCORT_COMMANDERS = ['godfrey', 'elowen', 'varian', 'isolde', 'bran']
@@ -118,6 +119,13 @@ const MODES: {
     tagline: "Hold the King's city till dawn",
     text: 'The Endless Night pours from its rifts, wave on wave, against the royal city and its two rings of walls. Keep the Citadel and the King until the sun rises.',
   },
+  {
+    key: 'grand',
+    name: 'Three Crowns',
+    icon: <Crown size={22} />,
+    tagline: 'Three realms, one continent',
+    text: 'The King, the Usurper Queen and the Sun Emperor, each in a walled royal city ringed by vassal lords, at war for a whole continent. No time limit: shatter both rival crowns.',
+  },
 ]
 
 export function MainMenu({ content, error, onRetry, onStart }: Props) {
@@ -127,6 +135,7 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
   const mode: GameMode = menuMode === 'conquest' ? 'survival' : menuMode
   const convoy = mode === 'convoy'
   const nightfall = mode === 'nightfall'
+  const grand = mode === 'grand'
   const [side, setSide] = useState<Side>('escort')
   const [escortCmd, setEscortCmd] = useState('godfrey')
   const [difficulty, setDifficulty] = useState<Difficulty>('normal')
@@ -146,9 +155,11 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
   const scenario = content?.scenarios[0]
   // In Alliance War the difficulty shapes the map (how much of it your alliance holds).
   const mapDiff = mode === 'alliance' ? difficulty : undefined
-  const previewKey = nightfall ? `nightfall|${seed}|${difficulty}` : convoy ? `convoy|${side}|${seed}` : `${mode}|${mapType}|${seed}|${mapSize}|${mapDiff ?? ''}`
+  const previewKey = grand ? `grand|${seed}` : nightfall ? `nightfall|${seed}|${difficulty}` : convoy ? `convoy|${side}|${seed}` : `${mode}|${mapType}|${seed}|${mapSize}|${mapDiff ?? ''}`
   const makeMap = () =>
-    nightfall
+    grand
+      ? generateGrandMap(seed)
+      : nightfall
       ? generateNightMap(seed, difficulty)
       : convoy
       ? generateConvoyMap(seed, {
@@ -187,7 +198,7 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
       // (Convoy Raid's commander is chosen after the map: always rebuild it with the current choice.)
       const map = cached && !convoy ? cached : makeMap()
       const engine = GameEngine.create(content, map.scenario, map.rules, difficulty, map.world)
-      const defaultName = nightfall ? map.scenario.name : convoy ? `Convoy Raid · ${side === 'escort' ? 'Escort' : 'Raid'}` : `${mode === 'alliance' ? 'Alliance War' : 'Conquest'} · ${MAPS[mapType].name}`
+      const defaultName = nightfall || grand ? map.scenario.name : convoy ? `Convoy Raid · ${side === 'escort' ? 'Escort' : 'Raid'}` : `${mode === 'alliance' ? 'Alliance War' : 'Conquest'} · ${MAPS[mapType].name}`
       const matchName = defaultName
       const record = await api
         .createCampaign({
@@ -206,7 +217,7 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
     }
   }
 
-  const biome = MAPS[nightfall ? 'kingsvale' : convoy ? 'greenwood' : mapType]
+  const biome = MAPS[grand ? 'continent' : nightfall ? 'kingsvale' : convoy ? 'greenwood' : mapType]
   const def = preview?.key === previewKey ? (preview.map?.scenario.definition ?? scenario?.definition) : undefined
 
   return (
@@ -240,26 +251,26 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
             <section className="panel iron-frame flex min-h-0 flex-col rounded-md p-[clamp(10px,1.7vw,22px)]">
               <h2 className="panel-title mb-[clamp(4px,1.2vh,14px)] short:hidden">Prepare for War</h2>
               <Label>Game mode</Label>
-              <div className="grid grid-cols-4 gap-[clamp(6px,0.9vw,12px)]">
+              <div className="grid grid-cols-5 gap-[clamp(5px,0.7vw,10px)] max-[900px]:grid-cols-3">
                 {MODES.map((m) => {
                   const active = menuMode === m.key
                   return (
                     <button key={m.key} onClick={() => {
                         setMenuMode(m.key)
                         if (m.key !== 'alliance' && difficulty === 'brutal') setDifficulty('hard')
-                      }} className={`menu-card text-left ${active ? 'is-active' : ''}`}>
-                      <div className="flex items-center gap-2">
-                        <span className="menu-card-icon short:hidden">{m.icon}</span>
-                        <span className="font-display text-[clamp(13px,1.9vh,17px)] leading-tight font-bold short:text-[11.5px]">{m.name}</span>
-                      </div>
-                      <div className="menu-card-tag mt-0.5 text-[clamp(11.5px,1.6vh,13.5px)] font-bold short:hidden">{m.tagline}</div>
-                      <div className="menu-card-text mt-1 line-clamp-2 text-[13px] leading-snug tall:line-clamp-3 short:hidden">{m.text}</div>
+                      }} className={`menu-card flex min-w-0 flex-col text-left ${active ? 'is-active' : ''}`}>
+                      <span className="menu-card-icon mb-1 short:hidden">{m.icon}</span>
+                      <span className="block min-h-[2.3em] font-display text-[clamp(12px,1.65vh,15px)] leading-[1.15] font-bold text-balance break-words short:min-h-0 short:text-[11.5px]">{m.name}</span>
+                      <div className="menu-card-tag mt-1 line-clamp-2 text-[clamp(11px,1.5vh,12.5px)] leading-snug font-bold short:hidden">{m.tagline}</div>
+                      <div className="menu-card-text mt-1 line-clamp-2 text-[12px] leading-snug tall:line-clamp-3 short:hidden">{m.text}</div>
                     </button>
                   )
                 })}
               </div>
 
-              {nightfall ? (
+              {grand ? (
+                <GrandSetup def={preview?.key === previewKey ? preview.map?.scenario.definition : undefined} />
+              ) : nightfall ? (
                 <NightSetup def={preview?.key === previewKey ? preview.map?.scenario.definition : undefined} name={preview?.key === previewKey ? preview.map?.scenario.name : undefined} />
               ) : convoy ? (
                 <ConvoySetup side={side} setSide={setSide} commander={escortCmd} setCommander={setEscortCmd} content={content} />
@@ -288,7 +299,12 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
               )}
 
               <div className="mt-[clamp(6px,1.8vh,20px)] grid grid-cols-[3fr_4fr] gap-[clamp(8px,1.4vw,18px)]">
-                {nightfall ? (
+                {grand ? (
+                  <div className="min-w-0 short:hidden">
+                    <Label>The war</Label>
+                    <p className="text-[12.5px] leading-snug text-ink-300">No time limit. A long campaign across a vast continent.</p>
+                  </div>
+                ) : nightfall ? (
                   <div className="min-w-0 short:hidden">
                     <Label>Until dawn</Label>
                     <p className="text-[12.5px] leading-snug text-ink-300">{NIGHT.minutes[difficulty]} minutes. Waves grow with every one.</p>
@@ -313,7 +329,7 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
                     <p className="mt-1 line-clamp-2 text-[12.5px] leading-snug text-ink-400 short:hidden">{SIZE_HINT[mode as 'survival' | 'alliance'][mapSize]}</p>
                   </div>
                 )}
-                <div className={`min-w-0 ${convoy || nightfall ? 'short:col-span-2' : ''}`}>
+                <div className={`min-w-0 ${convoy || nightfall || grand ? 'short:col-span-2' : ''}`}>
                   <Label>Difficulty</Label>
                   <div className={`grid gap-1 ${diffs.length === 4 ? 'grid-cols-4' : 'grid-cols-3'}`}>
                     {diffs.map((d) => (
@@ -511,6 +527,37 @@ function NightSetup({ def, name }: { def?: ScenarioDefinition; name?: string }) 
   )
 }
 
+/** The War of the Three Crowns: the three realms and what it takes to win. */
+function GrandSetup({ def }: { def?: ScenarioDefinition }) {
+  const crowns = (def?.factions ?? []).filter((f) => f.id === 'player' || f.leader)
+  const keep = (id: string) => def?.castles.find((c) => c.faction === id && c.capital && c.tier >= ROYAL_SEAT_TIER)?.name
+  const who: Record<string, string> = { A: 'King Aldric', B: 'Queen Morwenna, the Usurper', C: 'Vaelor, the Sun Emperor' }
+  return (
+    <div className="mt-[clamp(6px,1.8vh,20px)] flex flex-1 flex-col short:mt-1">
+      <Label>Three crowns</Label>
+      <ul className="space-y-[clamp(3px,0.8vh,8px)]">
+        {crowns.map((f) => (
+          <li key={f.id} className="flex items-center gap-2 text-[clamp(11.5px,1.6vh,13.5px)] leading-snug text-ink-300">
+            <span className="size-3 shrink-0 rounded-sm" style={{ background: f.color }} />
+            <span className="truncate">
+              <b className="text-ink-100">{f.name}</b> · {who[f.team]}
+              {keep(f.id) ? <span className="text-ink-500"> · {keep(f.id)}</span> : null}
+            </span>
+          </li>
+        ))}
+        <li className="flex gap-2 text-[clamp(11.5px,1.6vh,13.5px)] leading-snug text-ink-300">
+          <Glyph name="crown" size={15} className="mt-0.5 text-gold-300" />
+          <span className="line-clamp-2 short:line-clamp-1">Shatter both rival crowns (slay the monarch or take the Citadel). Lose your Citadel and the King, and the war is lost.</span>
+        </li>
+        <li className="flex gap-2 text-[clamp(11.5px,1.6vh,13.5px)] leading-snug text-ink-300">
+          <Glyph name="swords" size={15} className="mt-0.5 text-gold-300" />
+          <span className="line-clamp-2 short:line-clamp-1">The rival crowns fight each other too, and both lean on whoever grows strongest.</span>
+        </li>
+      </ul>
+    </div>
+  )
+}
+
 /** Convoy Raid: which side to take, and (escorting) who leads the guard. */
 function ConvoySetup({ side, setSide, commander, setCommander, content }: { side: Side; setSide: (s: Side) => void; commander: string; setCommander: (k: string) => void; content: GameContent }) {
   const cmds = ESCORT_COMMANDERS.map((k) => content.commanders.find((c) => c.key === k)).filter((c): c is NonNullable<typeof c> => !!c)
@@ -524,7 +571,7 @@ function ConvoySetup({ side, setSide, commander, setCommander, content }: { side
     {
       key: 'raid',
       name: 'Raid',
-      text: "Rob the train: Corvin Ashe's hidden band, light horse and sappers lie in three camps in the forest.",
+      text: "Rob the train: Corvin Ashe's Whisper Blades strike down the guards' leaders; bowmen, light horse and sappers lie in three camps in the forest.",
     },
   ]
   return (
@@ -697,7 +744,7 @@ function MapPreview({ world, castles, factions, seed, plain, bridge, rifts }: { 
         continue
       }
       const t = team(k.faction)
-      ctx.fillStyle = k.faction === 'player' ? '#5f93ec' : t === 'A' ? '#4fd1c5' : t === 'B' ? '#de5f45' : '#d1a73f'
+      ctx.fillStyle = k.faction === 'player' ? '#5f93ec' : t === 'A' ? '#4fd1c5' : t === 'B' ? '#de5f45' : t === 'C' ? '#e8a030' : '#d1a73f'
       const rank = k.tier >= ROYAL_SEAT_TIER ? 'royal' : k.capital ? 'lord' : 'castle'
       drawShield(ctx, x, y, rank === 'royal' ? 13 : rank === 'lord' ? 10 : 8, ctx.fillStyle as string, rank)
     }

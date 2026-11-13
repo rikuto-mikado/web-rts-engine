@@ -1,10 +1,13 @@
 import { FactionAI } from './ai'
 import { ConvoyAI, besideRoad, runStances } from './convoyai'
+import { isFieldStance, runFieldStances } from './fieldorders'
 import { NightAI } from './nightai'
 import type { GlyphName } from '../render/glyphs'
 import { generateCountryside, RESOURCE, RESOURCE_STOCK } from './countryside'
+import { DOCTRINES, doctrineMix, doctrineOf } from './doctrines'
 import { MIN_ENGINEERS, OUTPOST_KINDS, OUTPOST_ORDER, buildSeconds, type OutpostKind } from './outposts'
 import { TRAITS, combineTraits, type TraitMods } from './traits'
+import { ICE } from './world'
 import { SEASON_SECONDS, WEATHER_LABEL, climate, nextWeather, seasonAt, type ClimateEffects } from './weather'
 import { COLUMN, FORMATIONS, suggestFormation, type FormationDef } from './formations'
 import { clamp, mulberry32 } from './noise'
@@ -22,6 +25,7 @@ import {
   total,
   totalInt,
   visionRadius,
+  subTroops,
 } from './troops'
 import type {
   HoldingKind,
@@ -58,7 +62,7 @@ import type {
   Troops,
   UnitType,
 } from './types'
-import { World, holdingRadius, villageRadius, wallRadius, type BridgeInfo } from './world'
+import { World, holdingRadius, villageRadius, wallRAt, wallRadius, type BridgeInfo } from './world'
 
 export const TICK = 0.1
 const ENGAGE_DIST = 46
@@ -214,17 +218,22 @@ export const FEATURES = {
   cragSight: 2.2,
   stonesTaken: 0.8,
   thicketArrows: 0.6,
-  terraceRanged: 1.15,
-  terraceDefense: 1.15,
-  terraceCharge: 0.5,
   bogCavalry: 0.7,
+  /** Old-growth forest: giant trees, high canopy, open floor. */
+  oldwood: { arrows: 0.7, charge: 0.6, taken: 0.9, horse: 0.65, hide: 4 },
+  /**
+   * The Deepwood: a sea of trees. Any host inside is seen only this close (our Wardens and the
+   * Thorn Hunt read its tracks out to their reveal range), and from inside sees only half as far.
+   */
+  deepwood: { arrows: 0.5, cavalry: 0.7, horse: 0.35, foot: 0.75, seen: 170, sight: 0.5 },
 }
 /** What each terrain feature does, for the panels and help. */
 export const FEATURE_INFO: Record<string, { name: string; effect: string }> = {
   stones: { name: 'Standing stones', effect: 'Charges fail here; 20% fewer losses to blades and arrows; a little slow.' },
-  terraces: { name: 'Terraced slopes', effect: 'Archers here shoot 15% harder and everyone takes 15% less; charges against them lose half their force; 0.8x pace.' },
   thicket: { name: 'Windfall thicket', effect: 'Horses barely pass (0.2x), foot 0.7x; arrows do 40% less; troops waiting hide in 5 s.' },
   crag: { name: 'Crag overlook', effect: 'A party of 50 or fewer on top sees 2.2x as far: hidden troops and exact numbers.' },
+  oldwood: { name: 'Old-growth forest', effect: 'Giant trees under a high canopy: arrows do 30% less, charges lose 40% of their force, 10% fewer losses; horses 0.65x; troops waiting hide in 4 s.' },
+  deepwood: { name: 'The Deepwood', effect: 'A sea of trees: any host inside is seen only within 170m (Wardens read its tracks out to 450m) and sees half as far itself. No charges; arrows do 50% less, horsemen 30% less; foot 0.75x, horses 0.35x.' },
 }
 
 /** How far each side sees enemy armies (castles and holdings are always known). */
@@ -234,9 +243,29 @@ export const SIGHT = { army: 600, castle: 800, holding: 500, outpost: 600, tower
  * The Sovereign and the Royal Guard: knights brought from the homeland, who
  * can never be replaced. Their presence steadies every army near them.
  */
+/**
+ * How many soldiers one army may hold: a named commander leads up to 1500, a captain 800. (The Long
+ * Night and Convoy Raid field the forces they set out with, and have no cap.) Larger forces march as
+ * a battle group: a lead army and up to four escorts (see fieldorders.ts).
+ */
+export const ARMY_CAP = { commander: 1500, captain: 800, escorts: 4 }
+/**
+ * How long a commander is out of action (seconds, before an abbey's nursing and their own rank):
+ * regrouping after a rout (from reaching a castle of theirs), wounded when their army is destroyed,
+ * struck down by assassins (BLADES.wound). Each rank above the first takes 10% off, at most half.
+ */
+export const DOWNTIME = { rout: 90, destroyed: 240, perStar: 0.1, minStar: 0.5 }
+/** Assaulting a castle from several sides at once: the defenders' walls count for less (per extra side, at most). */
+export const ENCIRCLE = { perSide: 0.1, max: 0.3, apart: 1.05 }
+
+/** War of the Three Crowns: the commanders who serve the Sun Emperor (the rest of the enemy's serve the Usurper). */
+export const SUN_COURT = ['emperor', 'vesk', 'sabine', 'ulric']
+
 export const ROYAL = {
   key: 'sovereign',
   guard: 520,
+  /** Their own troops: Household Knights (never raised in a castle). */
+  unit: 'guard',
   attack: 1.2, // 2.4 against an ordinary knight's 2.0
   taken: 0.68, // defence 2.2 against 1.5
   speed: 1.75 / 1.7,
@@ -250,6 +279,8 @@ export const ROYAL = {
   flight: 1.3,
   /** The enemy's sovereign: the Usurper Queen, at the head of the Thorn Guard. */
   foeKey: 'usurper',
+  /** War of the Three Crowns: the third crowned head, the Sun Emperor, and his Solar Guard. */
+  sunKey: 'emperor',
   /** Sightings of a sovereign within this range of our forces are reported. */
   sightRange: 650,
 }
@@ -265,10 +296,8 @@ export const SPY = {
   key: 'ashe',
   foeKey: 'abbess',
   keys: ['ashe', 'abbess'],
-  /** Most men he can hide, by his level (1-5). */
-  cap: [500, 500, 1000, 1000, 1500],
   /** Troops that can pass unseen. */
-  units: ['infantry', 'archers', 'cavalry', 'engineers'],
+  units: ['infantry', 'archers', 'cavalry', 'engineers', 'assassins', 'saboteurs'],
   pace: 0.85,
   /** The watch on an enemy castle's walls finds them this far out from the wall (more when they are only disguised). */
   castleWatch: 150,
@@ -298,7 +327,8 @@ export const BLADES = {
   key: 'ashe',
   name: 'Whisper Blades',
   size: 130,
-  unit: 'infantry',
+  /** Their own troops: Assassins (never raised in a castle). */
+  unit: 'assassins',
   retreatAt: 0.35,
   /** Any army Ashe leads moves this much faster than an ordinary one. */
   pace: 1.28,
@@ -318,17 +348,92 @@ export const BLADES = {
   crowdMax: 0.2,
   /** Every attempt on the Queen makes her guard warier. */
   wary: 0.07,
+  /** A harder foe keeps a closer watch on its leaders (taken off the chance of a strike on its armies). */
+  bodyguard: { easy: 0.08, normal: 0.16, hard: 0.34, brutal: 0.38 } as Record<string, number>,
   /** Men lost: on success, on failure, on failure against the Queen's Thorn Guard. */
   lossWin: [0.06, 0.14],
-  lossFail: [0.3, 0.45],
-  lossFailQueen: [0.5, 0.7],
+  lossFail: [0.25, 0.35],
+  lossFailQueen: [0.4, 0.55],
+  /** Even a failed strike leaves its mark: knives in the camp, the leader's guard in uproar (morale lost by the host; the Queen's Thorn Guard less). */
+  failMorale: 20,
+  failMoraleQueen: 10,
+  /** The enemy's band: the Grey Sisters, led by Mother Sereth. */
+  foeName: 'Grey Sisters',
+  /** A band wiped out: the spymaster recovers and raises a new one this long after, this strong (filled up at an abbey). */
+  returnAfter: 300,
+  returnSize: 60,
+  /** Strikes on the player's armies: how closely the player's leaders are guarded, by difficulty (an easier war, a safer King). */
+  playerGuard: { easy: 0.36, normal: 0.3, hard: 0.22, brutal: 0.16 } as Record<string, number>,
   /** Before they can strike again. */
   cooldown: 150,
   /** A struck commander is carried from the field for this long. */
-  wound: 240,
+  wound: 300,
 }
 
-/** Corvin Ashe's sabotage: quiet work at an enemy stronghold that weakens it without a fight. */
+/**
+ * The Wardens of the March (Rowan Fenwick) and their mirror across the lines, the Thorn Hunt
+ * (Corrick Vane): a small fixed band of mounted bowmen, raised at the seat on the first day like the
+ * Blades. They fight poorly but see far, find hidden bands close by (the other side's spymaster's
+ * people among them) and keep what they sight marked on their side's map for a while.
+ */
+export const WARDENS = {
+  key: 'warden',
+  foeKey: 'huntmaster',
+  keys: ['warden', 'huntmaster'],
+  name: 'Wardens of the March',
+  foeName: 'Thorn Hunt',
+  size: 150,
+  /** Their own troops: Outriders, mounted bowmen (never raised in a castle). */
+  unit: 'outriders',
+  retreatAt: 0.45,
+  pace: 1.25,
+  /** How much farther than an ordinary army they see. */
+  sight: 1.8,
+  /** Hidden bands of the other side are found this close (concealed or disguised alike). */
+  reveal: 450,
+  /** Enemy armies they sight stay on their side's map this long after. */
+  mark: 60,
+  /** Wiped out: the warden gathers a new band this long after, this strong (filled up at an abbey). */
+  returnAfter: 300,
+  returnSize: 70,
+}
+
+/**
+ * The Night Sappers (Tamsin Holt) and their mirror, the Rootcutters (Brother Gall): a small fixed
+ * band of saboteurs who hide by the same rules as the Blades (concealed under cover, disguised in the
+ * open) and do the quiet work at an enemy stronghold (see SABOTAGE): the Blades strike at leaders,
+ * the Sappers at walls, wells and stores. With the spymaster's knives close by to cover them they work
+ * faster and are less often found out afterwards.
+ */
+export const SAPPERS = {
+  key: 'sapmaster',
+  foeKey: 'rootcutter',
+  keys: ['sapmaster', 'rootcutter'],
+  name: 'Night Sappers',
+  foeName: 'Rootcutters',
+  size: 90,
+  /** Their own troops: Saboteurs (never raised in a castle). */
+  unit: 'saboteurs',
+  retreatAt: 0.4,
+  /** The Blades (or the Grey Sisters) this close cover their work. */
+  cover: 320,
+  coveredWork: 8,
+  coveredAlarm: 0.15,
+  /** Wiped out: the sapmaster gathers a new band this long after, this strong (filled up at an abbey). */
+  returnAfter: 300,
+  returnSize: 40,
+}
+
+/** Commanders whose bands hide on their own (concealed or disguised): the spymasters and the sapmasters. */
+export const HIDING_KEYS = [...SPY.keys, ...SAPPERS.keys]
+
+/** The commanders who lead a fixed band of their own and nothing else: the spymasters, the sapmasters and the wardens. */
+export const BAND_KEYS = [...SPY.keys, ...SAPPERS.keys, ...WARDENS.keys]
+
+/** Convoy Raid: the Whisper Blades on the forest road (tuned against the gold train). */
+export const CONVOY_BLADES = { size: 130 }
+
+/** The Night Sappers' sabotage: quiet work at an enemy stronghold that weakens it without a fight. */
 export const SABOTAGE = {
   /**
    * How close to the walls (beyond them) / to a field work the band must lie. It waits outside the
@@ -358,8 +463,19 @@ export const SABOTAGE_KINDS: Record<SabotageKind, { name: string; on: 'castle' |
 export const SANCTUARY = {
   range: 240,
   /** Men restored a second, and gold a man (lay brothers sworn to the Crown are not cheap). */
-  rate: { royal: 3, blades: 1 },
-  cost: { royal: 2, blades: 4 },
+  rate: { royal: 3, blades: 1, wardens: 2, sappers: 1 },
+  cost: { royal: 2, blades: 4, wardens: 3, sappers: 4 },
+}
+
+/** Deep Freeze: when, in each winter, the rivers ice over and thaw again (seconds into winter). */
+export const FREEZE = {
+  warn: 60,
+  freeze: 150,
+  /** Before the end of winter: the warning, and the thaw. */
+  thawWarn: 135,
+  thaw: 90,
+  /** Men lost by an army still on the ice when it breaks up. */
+  drown: 0.1,
 }
 
 /** Hidden troops: how close the other side must come to find them. */
@@ -416,6 +532,7 @@ const RANK_REACH: Record<GameMode, Record<MapSize, number>> = {
   alliance: { small: 2.8, medium: 2.8, large: 3.0 },
   convoy: { small: 3, medium: 3, large: 3 },
   nightfall: { small: 3, medium: 3, large: 3 },
+  grand: { small: 3.2, medium: 3.2, large: 3.2 },
 }
 
 /** Rear attacks: joining a fight already under way from behind the enemy line. */
@@ -487,12 +604,22 @@ export function upgradeCost(tier: number) {
 }
 
 /** Recruitment mixes used by auto-recruit and the AI. */
-export const RECRUIT_TEMPLATES: Record<string, { name: string; mix: Record<string, number> }> = {
-  balanced: { name: 'Balanced', mix: { infantry: 0.48, cavalry: 0.2, archers: 0.25, engineers: 0.07 } },
-  levy: { name: 'Foot & bow', mix: { infantry: 0.6, archers: 0.4 } },
-  siege: { name: 'Siege train', mix: { infantry: 0.5, archers: 0.2, engineers: 0.3 } },
-  cavalry: { name: 'Cavalry', mix: { cavalry: 0.8, archers: 0.2 } },
+/**
+ * Auto-recruit: each castle that has it on raises troops towards a mix (the recommended one, or one
+ * commander's kind of host), always the troop it is shortest of first. It spends only a share of the
+ * realm's net income, and never the last of the treasury.
+ */
+export const AUTO_RECRUIT = {
+  /** Gold always kept back. */
+  reserve: 400,
+  /** Share of net income spent, by setting. */
+  budgets: { low: 0.25, normal: 0.5, high: 0.75 } as Record<string, number>,
+  /** Ready for any commander: a combined-arms garrison with a corps of engineers. */
+  recommended: { infantry: 0.45, cavalry: 0.18, archers: 0.27, engineers: 0.1 } as Record<string, number>,
+  /** Most a castle saves up between purchases. */
+  bankCap: 800,
 }
+export const AUTO_BUDGET_LABEL: Record<string, string> = { low: 'Thrifty', normal: 'Steady', high: 'Eager' }
 
 const NO_TRAITS = combineTraits([])
 
@@ -610,16 +737,24 @@ export class GameEngine {
     for (const f of Object.values(state.factions)) {
       if (f.id !== PLAYER && f.team !== 'N') this.ais.set(f.id, state.rules.mode === 'convoy' ? new ConvoyAI(this, f.id) : f.undying ? new NightAI(this, f.id) : new FactionAI(this, f.id))
     }
+    // A saved game in the depth of winter: the ice is where it was.
+    if (state.frozen) this.world.setFrozen(true)
     this.updateVision()
     // A new war: the Sovereign rides with the Royal Guard from the capital's keep.
     if (state.royalId === undefined) this.spawnRoyal()
     // Corvin Ashe keeps his Whisper Blades about him from the first day.
     if (state.bladesId === undefined) this.spawnBlades()
+    // Rowan Fenwick's Wardens ride the march, and Corrick Vane's Thorn Hunt the enemy's.
+    if (state.wardensId === undefined) this.spawnWardens()
+    // Tamsin Holt's Night Sappers, and Brother Gall's Rootcutters across the lines.
+    if (state.sappersId === undefined) this.spawnSappers()
     // ...and across the lines, the Usurper Queen holds court in the enemy High Seat with her Thorn Guard.
     if (state.foeRoyalId === undefined) {
       this.spawnFoeRoyal()
       this.prepareFrontier()
     }
+    // The Three Crowns: the Sun Emperor and his Solar Guard in the eastern Citadel.
+    if (state.sunRoyalId === undefined) this.spawnSunRoyal()
   }
 
   /** The hand-made campaign scenario stored in the database. */
@@ -704,9 +839,12 @@ export class GameEngine {
       district: !!c.district,
     }))
     const enemyLeader = factionDefs.find((f) => f.team === 'B' && f.leader)?.id ?? factionDefs.find((f) => f.team === 'B')?.id ?? 'enemy'
+    // The Three Crowns: the Sun Emperor keeps a court of his own (the rest serve the Usurper).
+    const sunLeader = factionDefs.find((f) => f.team === 'C' && f.leader)?.id
     const commanders: GameState['commanders'] = {}
     for (const c of content.commanders) {
-      commanders[c.key] = { key: c.key, owner: c.faction === 'player' ? PLAYER : enemyLeader, level: 1, xp: 0, armyId: null, woundedUntil: 0, traits: [], traitChoices: null }
+      const owner = c.faction === 'player' ? PLAYER : sunLeader && SUN_COURT.includes(c.key) ? sunLeader : enemyLeader
+      commanders[c.key] = { key: c.key, owner, level: 1, xp: 0, armyId: null, woundedUntil: 0, traits: [], traitChoices: null }
     }
     const state: GameState = {
       version: 2,
@@ -736,11 +874,12 @@ export class GameEngine {
       contrib: {},
       pacts: {},
       diploCooldown: {},
-      teamFocus: { A: null, B: null },
+      teamFocus: { A: null, B: null, C: null },
       stats: { battlesWon: 0, battlesLost: 0, enemyKilled: 0, playerLost: 0, castlesTaken: 0 },
       // Convoy Raid has neither crowned head in the field; on the Long Night only the King stands.
-      ...(rules.mode === 'convoy' ? { royalId: null, foeRoyalId: null, bladesId: null } : {}),
-      ...(rules.mode === 'nightfall' ? { foeRoyalId: null, bladesId: null } : {}),
+      ...(rules.mode === 'convoy' ? { royalId: null, foeRoyalId: null, bladesId: null, sistersId: null, wardensId: null, huntId: null, sappersId: null, cuttersId: null } : {}),
+      ...(rules.mode === 'nightfall' ? { foeRoyalId: null, bladesId: null, sistersId: null, wardensId: null, huntId: null, sappersId: null, cuttersId: null } : {}),
+      ...(rules.mode !== 'grand' ? { sunRoyalId: null } : {}),
     }
     const engine = new GameEngine(content, state, world)
     engine.initRanks()
@@ -812,7 +951,7 @@ export class GameEngine {
   relation(f: Faction): 'self' | 'ally' | 'enemy' | 'neutral' {
     if (f === PLAYER) return 'self'
     const t = this.team(f)
-    return t === 'A' ? 'ally' : t === 'B' ? 'enemy' : 'neutral'
+    return t === 'A' ? 'ally' : t === 'N' ? 'neutral' : 'enemy'
   }
   factionColor(f: Faction): string {
     return this.state.factions[f]?.color ?? '#888888'
@@ -844,9 +983,45 @@ export class GameEngine {
   armyPower(army: Army): number {
     return power(army.troops, this.units, this.commanderOf(army), this.commanderLevel(army))
   }
+  /** Is the size of an army capped in this war? */
+  get capsArmies(): boolean {
+    const m = this.state.rules.mode
+    return m !== 'convoy' && m !== 'nightfall'
+  }
+  /** The most soldiers an army led by this commander (or by a captain) may hold. */
+  armyCap(commanderKey: string | null | undefined): number {
+    if (!this.capsArmies) return Infinity
+    return commanderKey ? ARMY_CAP.commander : ARMY_CAP.captain
+  }
+  /** Troops trimmed (evenly across the arms) to fit under an army's cap. */
+  private fitCap(t: Troops, commanderKey: string | null | undefined): Troops {
+    const cap = this.armyCap(commanderKey)
+    const n = total(t)
+    if (n <= cap) return t
+    return floorTroops(scaleTroops(t, cap / n))
+  }
+  /** The armies riding as escorts with this one (its battle group). */
+  escortsOf(a: Army): Army[] {
+    return this.state.armies.filter((x) => x.stance?.kind === 'escortArmy' && x.stance.targetId === a.id)
+  }
   armySpeed(army: Army): number {
+    const v = this.baseSpeed(army)
+    // An escorted army keeps to the pace of its slowest escort (see fieldorders.ts).
+    return army.paceCap !== undefined ? Math.min(v, army.paceCap) : v
+  }
+  /**
+   * The panel asked for an army of ours to be picked on the map (the one this army is to escort or
+   * follow): the next tap on one of our armies sets the order instead of selecting it. (UI state.)
+   */
+  picking: { armyId: string; kind: 'escortArmy' | 'follow' } | null = null
+  setPicking(p: { armyId: string; kind: 'escortArmy' | 'follow' } | null) {
+    this.picking = p
+    this.notify()
+  }
+  /** An army's own marching speed, before any escort holds it back. */
+  baseSpeed(army: Army): number {
     const fm = army.column ? COLUMN.speed : FORMATIONS[army.formation].speed
-    return armySpeed(army.troops, this.units, this.commanderOf(army)) * fm * this.traitsOf(army).speed * this.groundSeasonSpeed(army.x, army.z) * this.pace * this.enginePace(army) * (army.royal ? ROYAL.speed : 1) * ((army.fleeUntil ?? 0) > this.state.time ? ROYAL.flight : 1) * (army.commanderKey === BLADES.key && this.state.rules.mode !== 'convoy' ? BLADES.pace : army.veil ? SPY.pace : 1) * (this.state.night && this.state.factions[army.faction]?.undying ? NIGHT_TEMPO.march : 1)
+    return armySpeed(army.troops, this.units, this.commanderOf(army)) * fm * this.traitsOf(army).speed * this.groundSeasonSpeed(army.x, army.z) * this.pace * this.enginePace(army) * (army.royal ? ROYAL.speed : 1) * ((army.fleeUntil ?? 0) > this.state.time ? ROYAL.flight : 1) * (this.isSpyBand(army) ? BLADES.pace : 1) * (army.wardens ? WARDENS.pace : 1) * (this.state.night && this.state.factions[army.faction]?.undying ? NIGHT_TEMPO.march : 1)
   }
   /** Siege engines slow the army that pushes them (the slowest one counts). */
   enginePace(a: Army): number {
@@ -964,39 +1139,120 @@ export class GameEngine {
   royalArmy(f: Faction = PLAYER): Army | undefined {
     return this.state.armies.find((a) => a.royal && a.faction === f)
   }
+  /** A fixed band's own unit, or (content from before it existed) the ordinary one it stands in for. */
+  bandUnit(key: string, fallback: string): string {
+    return this.units.has(key) ? key : fallback
+  }
+  /** The troops a fixed band is made of (its largest part), to fill its ranks with. */
+  troopsOf(a: Army): string {
+    let best = ''
+    let n = -1
+    for (const k in a.troops) if ((a.troops[k] ?? 0) > n) [best, n] = [k, a.troops[k] ?? 0]
+    return best || 'infantry'
+  }
+  /** Riders in a body of troops: every mounted unit (cavalry, Household Knights, Outriders). */
+  mounted(t: Troops): number {
+    let n = 0
+    for (const k in t) if (this.units.get(k)?.category === 'cavalry' || k === WARDENS.unit) n += t[k] ?? 0
+    return n
+  }
+  /** The units a castle can raise (not the fixed bands' own). */
+  get recruitUnits(): UnitType[] {
+    return this.unitList.filter((u) => u.recruitable !== false)
+  }
   /** Raise the Royal Guard at the player's capital at the start of a war. */
   private spawnRoyal() {
     this.state.royalId = null
     if (!this.commanders.has(ROYAL.key)) return
     const cap = this.castle(this.state.factions[PLAYER]?.capitalId) ?? this.state.castles.find((c) => c.faction === PLAYER && !c.village)
     if (!cap) return
-    cap.garrison.cavalry = (cap.garrison.cavalry ?? 0) + ROYAL.guard
-    const res = this.formArmy(cap.id, PLAYER, { cavalry: ROYAL.guard }, { commanderKey: ROYAL.key, name: 'Royal Guard', retreatAt: ROYAL.retreatAt, order: { type: 'station', castleId: cap.id } })
+    const unit = this.bandUnit(ROYAL.unit, 'cavalry')
+    cap.garrison[unit] = (cap.garrison[unit] ?? 0) + ROYAL.guard
+    const res = this.formArmy(cap.id, PLAYER, { [unit]: ROYAL.guard }, { commanderKey: ROYAL.key, name: 'Royal Guard', retreatAt: ROYAL.retreatAt, order: { type: 'station', castleId: cap.id } })
     if (typeof res === 'string') {
-      cap.garrison.cavalry = Math.max(0, (cap.garrison.cavalry ?? 0) - ROYAL.guard)
+      cap.garrison[unit] = Math.max(0, (cap.garrison[unit] ?? 0) - ROYAL.guard)
       return
     }
     res.royal = true
+    res.fullStrength = ROYAL.guard
     this.state.royalId = res.id
   }
-  /** Corvin Ashe's Whisper Blades: a fixed band he leads from the capital, if he serves the player. */
+  /**
+   * The spymasters' own bands, fixed like the Royal Guard: Corvin Ashe's Whisper Blades at the
+   * player's capital, Mother Sereth's Grey Sisters at the enemy's seat. Neither spymaster leads anything else.
+   */
   private spawnBlades() {
     this.state.bladesId = null
+    this.state.sistersId = null
     // Not on the forest road or the Long Night (a game saved before the Blades existed loads here too).
     if (this.state.rules.mode === 'convoy' || this.state.rules.mode === 'nightfall') return
-    const s = this.state.commanders[BLADES.key]
-    if (!s || s.owner !== PLAYER || s.armyId || !this.units.has(BLADES.unit)) return
-    const cap = this.castle(this.state.factions[PLAYER]?.capitalId) ?? this.state.castles.find((c) => c.faction === PLAYER && !c.village)
-    if (!cap) return
-    cap.garrison[BLADES.unit] = (cap.garrison[BLADES.unit] ?? 0) + BLADES.size
-    const res = this.formArmy(cap.id, PLAYER, { [BLADES.unit]: BLADES.size }, { commanderKey: BLADES.key, name: BLADES.name, retreatAt: BLADES.retreatAt, order: { type: 'station', castleId: cap.id } })
+    this.state.bladesId = this.raiseSpyBand(SPY.key, BLADES.size)
+    this.state.sistersId = this.raiseSpyBand(SPY.foeKey, BLADES.size)
+  }
+  /** The Wardens of the March at the player's capital, the Thorn Hunt at the enemy's seat. */
+  private spawnWardens() {
+    this.state.wardensId = null
+    this.state.huntId = null
+    if (this.state.rules.mode === 'convoy' || this.state.rules.mode === 'nightfall') return
+    this.state.wardensId = this.raiseSpyBand(WARDENS.key, WARDENS.size)
+    this.state.huntId = this.raiseSpyBand(WARDENS.foeKey, WARDENS.size)
+  }
+  /** The Night Sappers at the player's capital, the Rootcutters at the enemy's seat. */
+  private spawnSappers() {
+    this.state.sappersId = null
+    this.state.cuttersId = null
+    if (this.state.rules.mode === 'convoy' || this.state.rules.mode === 'nightfall') return
+    this.state.sappersId = this.raiseSpyBand(SAPPERS.key, SAPPERS.size)
+    this.state.cuttersId = this.raiseSpyBand(SAPPERS.foeKey, SAPPERS.size)
+  }
+  /** Raise a fixed band (a spymaster's knives, a sapmaster's saboteurs or a warden's riders; n strong) at the seat of the faction its leader serves. */
+  private raiseSpyBand(key: string, n: number): string | null {
+    const s = this.state.commanders[key]
+    const riders = WARDENS.keys.includes(key)
+    const sappers = SAPPERS.keys.includes(key)
+    // (No Saboteurs in the content yet: no band; ordinary engineers would not hide.)
+    if (sappers && !this.units.has(SAPPERS.unit)) return null
+    const unit = riders ? this.bandUnit(WARDENS.unit, 'cavalry') : sappers ? SAPPERS.unit : this.bandUnit(BLADES.unit, 'infantry')
+    if (!s || s.armyId || !this.units.has(unit)) return null
+    const f = s.owner
+    const seat = f === PLAYER ? this.castle(this.state.factions[PLAYER]?.capitalId) : this.castle(this.state.factions[f]?.capitalId)
+    const cap = seat && seat.faction === f ? seat : this.state.castles.find((c) => c.faction === f && !c.village)
+    if (!cap) return null
+    cap.garrison[unit] = (cap.garrison[unit] ?? 0) + n
+    const name = riders ? (key === WARDENS.key ? WARDENS.name : WARDENS.foeName) : sappers ? (key === SAPPERS.key ? SAPPERS.name : SAPPERS.foeName) : key === SPY.key ? BLADES.name : BLADES.foeName
+    const res = this.formArmy(cap.id, f, { [unit]: n }, { commanderKey: key, name, retreatAt: riders ? WARDENS.retreatAt : sappers ? SAPPERS.retreatAt : BLADES.retreatAt, order: { type: 'station', castleId: cap.id } })
     if (typeof res === 'string') {
-      cap.garrison[BLADES.unit] = Math.max(0, (cap.garrison[BLADES.unit] ?? 0) - BLADES.size)
-      return
+      cap.garrison[unit] = Math.max(0, (cap.garrison[unit] ?? 0) - n)
+      return null
     }
-    res.blades = true
-    res.fullStrength = BLADES.size
-    this.state.bladesId = res.id
+    if (riders) {
+      res.wardens = true
+      res.fullStrength = WARDENS.size
+      res.formation = 'loose'
+    } else if (sappers) {
+      res.sappers = true
+      res.fullStrength = SAPPERS.size
+    } else {
+      res.blades = true
+      res.fullStrength = BLADES.size
+    }
+    return res.id
+  }
+  /** A spymaster whose band was wiped out raises a new one once recovered. */
+  private updateSpyReturns() {
+    const t = this.state.time
+    for (const [key, field] of [[SPY.key, 'bladesId'], [SPY.foeKey, 'sistersId'], [WARDENS.key, 'wardensId'], [WARDENS.foeKey, 'huntId'], [SAPPERS.key, 'sappersId'], [SAPPERS.foeKey, 'cuttersId']] as const) {
+      const at = this.state.spyReturnAt?.[key]
+      if (!at || t < at) continue
+      delete this.state.spyReturnAt![key]
+      const riders = WARDENS.keys.includes(key)
+      const sappers = SAPPERS.keys.includes(key)
+      const n = riders ? WARDENS.returnSize : sappers ? SAPPERS.returnSize : BLADES.returnSize
+      const id = this.raiseSpyBand(key, n)
+      this.state[field] = id
+      const a = this.army(id)
+      if (a && a.faction === PLAYER) this.log('deploy', `${a.name} return`, `${this.armyLeader(a)} has gathered ${n} new ${riders ? 'riders' : sappers ? 'sappers' : 'knife-men'}. An abbey of ours can bring them back to full strength.`, a.x, a.z)
+    }
   }
   /** The enemy's crowned head: raised at the seat of the enemy alliance's leader (the Conquest coalition's overlord). */
   private spawnFoeRoyal() {
@@ -1008,13 +1264,15 @@ export class GameEngine {
     if (!cap) return
     const st = this.state.commanders[ROYAL.foeKey]
     if (st) st.owner = leader.id
-    cap.garrison.cavalry = (cap.garrison.cavalry ?? 0) + ROYAL.guard
-    const res = this.formArmy(cap.id, leader.id, { cavalry: ROYAL.guard }, { commanderKey: ROYAL.foeKey, name: 'Thorn Guard', retreatAt: ROYAL.retreatAt, order: { type: 'station', castleId: cap.id } })
+    const unit = this.bandUnit(ROYAL.unit, 'cavalry')
+    cap.garrison[unit] = (cap.garrison[unit] ?? 0) + ROYAL.guard
+    const res = this.formArmy(cap.id, leader.id, { [unit]: ROYAL.guard }, { commanderKey: ROYAL.foeKey, name: 'Thorn Guard', retreatAt: ROYAL.retreatAt, order: { type: 'station', castleId: cap.id } })
     if (typeof res === 'string') {
-      cap.garrison.cavalry = Math.max(0, (cap.garrison.cavalry ?? 0) - ROYAL.guard)
+      cap.garrison[unit] = Math.max(0, (cap.garrison[unit] ?? 0) - ROYAL.guard)
       return
     }
     res.royal = true
+    res.fullStrength = ROYAL.guard
     this.state.foeRoyalId = res.id
     // Everyone knows where she holds court at the start of the war.
     this.state.foeSighting = { x: cap.x, z: cap.z, t: 0, castleId: cap.id, how: 'court' }
@@ -1055,7 +1313,7 @@ export class GameEngine {
     for (const sp of spots) {
       if (placed >= want) break
       const [x, z] = this.world.nearestPassable(sp.x, sp.z)
-      if (this.siteProblemAt(sp.owner.faction, x, z)) continue
+      if (this.siteProblemAt(sp.owner.faction, x, z, sp.kind)) continue
       const def = OUTPOST_KINDS[sp.kind]
       s.outposts.push({ id: this.newId('o'), name: `${sp.owner.name} ${def.name}`, kind: sp.kind, faction: sp.owner.faction, x, z, progress: 1, raze: 0, builtAt: 0 })
       placed++
@@ -1063,6 +1321,60 @@ export class GameEngine {
     if (placed) this.log('info', 'The last line is ready', `Our alliance has raised ${placed} forts at the fords and before the frontier castles. Man them before the enemy comes.`)
   }
 
+  /** The Three Crowns: the Sun Emperor rides out from his Citadel with the Solar Guard. */
+  private spawnSunRoyal() {
+    this.state.sunRoyalId = null
+    if (this.state.rules.mode !== 'grand' || !this.commanders.has(ROYAL.sunKey)) return
+    const leader = Object.values(this.state.factions).find((f) => f.team === 'C' && f.leader)
+    if (!leader) return
+    const cap = this.castle(leader.capitalId) ?? this.state.castles.find((c) => c.faction === leader.id && !c.village)
+    if (!cap) return
+    const st = this.state.commanders[ROYAL.sunKey]
+    if (st) st.owner = leader.id
+    const unit = this.bandUnit(ROYAL.unit, 'cavalry')
+    cap.garrison[unit] = (cap.garrison[unit] ?? 0) + ROYAL.guard
+    const res = this.formArmy(cap.id, leader.id, { [unit]: ROYAL.guard }, { commanderKey: ROYAL.sunKey, name: 'Solar Guard', retreatAt: ROYAL.retreatAt, order: { type: 'station', castleId: cap.id } })
+    if (typeof res === 'string') {
+      cap.garrison[unit] = Math.max(0, (cap.garrison[unit] ?? 0) - ROYAL.guard)
+      return
+    }
+    res.royal = true
+    res.fullStrength = ROYAL.guard
+    this.state.sunRoyalId = res.id
+  }
+  /** The Sun Emperor's Solar Guard, if it still rides. */
+  sunRoyal(): Army | undefined {
+    return this.state.sunRoyalId ? this.army(this.state.sunRoyalId) : undefined
+  }
+  /** The Three Crowns: which crowned head a guard army is (for its harness and its fall). */
+  crownOf(a: Army): 'king' | 'queen' | 'emperor' | null {
+    if (!a.royal) return null
+    if (a.id === this.state.foeRoyalId) return 'queen'
+    if (a.id === this.state.sunRoyalId) return 'emperor'
+    return a.faction === PLAYER ? 'king' : null
+  }
+  /**
+   * The Three Crowns' balance of power: how much less (below 1) or more (above 1) a lord of one
+   * realm minds the distance to a target of another. Each realm leans on the stronger of its two
+   * rivals, so no crown is ganged up on for long; and the King is left be a little early on.
+   */
+  targetBias(me: Faction, target: Faction): number {
+    if (this.state.rules.mode !== 'grand') return 1
+    const t = this.team(target)
+    const mine = this.team(me)
+    if (t === 'N' || t === mine) return 1
+    if (this.state.time >= this.powerAt + 10) {
+      this.powerAt = this.state.time
+      for (const k of ['A', 'B', 'C'] as const) this.powers[k] = this.teamPower(k).power
+    }
+    const others = (['A', 'B', 'C'] as const).filter((k) => k !== mine)
+    const strongest = others.reduce((b, k) => (this.powers[k] > this.powers[b] ? k : b), others[0])
+    let k = t === strongest ? 0.72 : 1.2
+    if (t === 'A' && this.state.time < 900) k *= 1.35
+    return k
+  }
+  private powerAt = -999
+  private powers: Record<'A' | 'B' | 'C', number> = { A: 0, B: 0, C: 0 }
   /** The Usurper's Thorn Guard, if it still rides. */
   foeRoyal(): Army | undefined {
     return this.state.foeRoyalId ? this.army(this.state.foeRoyalId) : undefined
@@ -1106,6 +1418,9 @@ export class GameEngine {
     const q = this.foeRoyal()
     const qf = q ? this.state.factions[q.faction] : undefined
     if (qf && c.faction === qf.id && c.id === qf.capitalId) return 'royal'
+    const sun = this.sunRoyal()
+    const sf = sun ? this.state.factions[sun.faction] : undefined
+    if (sf && c.faction === sf.id && c.id === sf.capitalId) return 'royal'
     return c.capital && this.state.factions[c.faction]?.capitalId === c.id ? 'lord' : 'castle'
   }
 
@@ -1138,6 +1453,7 @@ export class GameEngine {
     else if (depot) g.order = { type: 'move', x: depot.x, z: depot.z }
     else g.order = { type: 'hold' }
     if (g.faction === PLAYER) this.log('warning', `${c.name} has fallen! The King rides out`, `The Royal Guard breaks out by the far gate${refuge ? ` and makes for ${refuge.name}` : ''}. Keep the pursuit off them.`, g.x, g.z)
+    else if (g.id === this.state.sunRoyalId) this.log('victory', 'The Sun Emperor flees!', `The Solar Guard breaks out of ${c.name}${refuge ? ` and rides for ${refuge.name}` : ''}.`, g.x, g.z)
     else if (g.id === this.state.foeRoyalId) {
       this.log('victory', 'The Usurper flees!', `The Thorn Guard breaks out of ${c.name}${refuge ? ` and rides for ${refuge.name}` : ''}. Run them down.`, g.x, g.z)
       this.state.foeSighting = { x: Math.round(g.x), z: Math.round(g.z), t: this.state.time, castleId: null, how: 'seen' }
@@ -1149,10 +1465,15 @@ export class GameEngine {
     return c.village || !this.world.walls.has(c.id) ? holdingRadius(c) + 30 : wallRadius(c.tier) * 0.45
   }
   /** Is this army inside the walls of a castle of its own side (and so out of sight)? */
+  /** Where a castle's curtain stands on the bearing towards (x, z) (its walls follow its site). */
+  wallAt(c: Castle, x: number, z: number): number {
+    const w = this.world.walls.get(c.id)
+    return w ? wallRAt(w, Math.atan2(z - c.z, x - c.x)) : wallRadius(c.tier)
+  }
   insideWalls(a: Army): boolean {
     for (const c of this.state.castles) {
       if (c.village || this.team(c.faction) !== this.team(a.faction)) continue
-      const r = wallRadius(c.tier) - 10
+      const r = this.wallAt(c, a.x, a.z) - 10
       if (Math.abs(c.x - a.x) < r && Math.abs(c.z - a.z) < r && Math.hypot(c.x - a.x, c.z - a.z) < r) return true
     }
     return false
@@ -1189,11 +1510,26 @@ export class GameEngine {
     if (a.veil) return false
     // The Endless Night does not hide: the Rift's light and the tramp of the dead give it away.
     if (this.state.factions[a.faction]?.undying) return true
+    // Sighted by this side's Wardens a little while ago: still on the map.
+    if ((a.marked?.[team] ?? 0) > this.state.time) return true
     const hidden = this.isHidden(a)
     const near = (x: number, z: number, r: number) => Math.abs(x - a.x) < r && Math.abs(z - a.z) < r && Math.hypot(x - a.x, z - a.z) < r
+    // In the Deepwood a host is lost among the trees: seen only close by (the Wardens read its tracks
+    // further off), and those inside see only half as far out.
+    const woods = !!this.world.def.features?.length
+    if (woods && this.world.featureKindAt(a.x, a.z) === 'deepwood') {
+      const D = FEATURES.deepwood
+      for (const b of this.state.armies) {
+        if (this.team(b.faction) !== team) continue
+        if (near(b.x, b.z, b.wardens ? WARDENS.reveal : hidden ? Math.min(D.seen, STEALTH.uncover) : D.seen)) return true
+      }
+      for (const c of this.state.castles) if (!c.ruined && this.team(c.faction) === team && near(c.x, c.z, holdingRadius(c) + D.seen * 0.6)) return true
+      return false
+    }
     for (const b of this.state.armies) {
       if (this.team(b.faction) !== team) continue
-      if (near(b.x, b.z, (hidden ? STEALTH.uncover : SIGHT.army * this.sightScale) * this.lookout(b))) return true
+      const blind = woods && this.world.featureKindAt(b.x, b.z) === 'deepwood' ? FEATURES.deepwood.sight : 1
+      if (near(b.x, b.z, (hidden ? STEALTH.uncover : SIGHT.army * this.sightScale) * this.lookout(b) * (b.wardens ? WARDENS.sight : 1) * blind)) return true
     }
     for (const c of this.state.castles) {
       if (c.ruined || this.team(c.faction) !== team) continue
@@ -1216,7 +1552,7 @@ export class GameEngine {
     for (const c of this.state.castles) if (this.team(c.faction) === team && Math.abs(c.x - x) < r && Math.hypot(c.x - x, c.z - z) < r) return true
     for (const a of this.state.armies) {
       if (this.team(a.faction) !== team) continue
-      const rr = r * this.lookout(a)
+      const rr = r * this.lookout(a) * (a.wardens ? 1.5 : 1)
       if (Math.abs(a.x - x) < rr && Math.abs(a.z - z) < rr && Math.hypot(a.x - x, a.z - z) < rr) return true
     }
     return false
@@ -1294,10 +1630,15 @@ export class GameEngine {
   private featureStep(a: Army): number {
     if (!this.world.def.features?.length) return 1
     const k = this.world.featureKindAt(a.x, a.z)
-    if (k !== 'thicket') return 1
+    if (k !== 'thicket' && k !== 'oldwood' && k !== 'deepwood') return 1
     const n = total(a.troops) || 1
+    const horse = this.mounted(a.troops) / n > 0.05
+    // Old-growth forest: room to walk between the trunks, but horses pick their way.
+    if (k === 'oldwood') return horse ? FEATURES.oldwood.horse : 1
+    // The Deepwood: slow going for anyone, a misery for horses.
+    if (k === 'deepwood') return horse ? FEATURES.deepwood.horse : FEATURES.deepwood.foot
     // Windfall: horses can barely get through at all.
-    return (a.troops.cavalry ?? 0) / n > 0.05 ? 0.2 : 0.7
+    return horse ? 0.2 : 0.7
   }
   /** Does the besieging side have a siege tower at the walls? */
   private towerAt(b: Battle): boolean {
@@ -1320,6 +1661,17 @@ export class GameEngine {
     return this.team(c.faction) === team || this.closeTo(team, c.x, c.z) ? p : p * this.rumour(team, c.id)
   }
   /** Abbeys nurse the wounded: each shortens a commander's recovery (25%, 40% walled), down to 40% of the usual time. */
+  /** A commander out of action for `base` seconds, shortened by abbeys (their realm's) and their own rank. */
+  putOut(key: string, base: number, why: 'wounded' | 'regroup') {
+    const s = this.state.commanders[key]
+    if (!s) return
+    const rank = Math.max(DOWNTIME.minStar, 1 - DOWNTIME.perStar * (s.level - 1))
+    const until = this.state.time + base * this.woundFactor(s.owner) * rank
+    if (until > s.woundedUntil) {
+      s.woundedUntil = until
+      s.downReason = why
+    }
+  }
   woundFactor(f: Faction): number {
     let k = 1
     for (const c of this.state.castles) if (c.faction === f && c.holding === 'abbey' && this.isVassal(c)) k *= 1 - (HOLDING_EFFECTS.abbeyWounds[c.tier] ?? 0.25)
@@ -1395,7 +1747,8 @@ export class GameEngine {
   freeCommanders(faction: Faction): CommanderDef[] {
     return this.content.commanders.filter((c) => {
       const s = this.state.commanders[c.key]
-      return s && c.key !== ROYAL.key && c.key !== ROYAL.foeKey && s.owner === faction && !s.armyId && !s.stationedAt && s.woundedUntil <= this.state.time
+      // (The Sovereigns and the spymasters lead their own fixed bands, and nothing else.)
+      return s && c.key !== ROYAL.key && c.key !== ROYAL.foeKey && !BAND_KEYS.includes(c.key) && s.owner === faction && !s.armyId && !s.stationedAt && s.woundedUntil <= this.state.time
     })
   }
   /** Commanders quartered in a depot: the only ones who can lead armies raised there. */
@@ -1481,7 +1834,8 @@ export class GameEngine {
   }
   incomeMult(f: Faction) {
     if (f === PLAYER) return 1
-    if (this.team(f) !== 'B') return 0.85
+    const ft = this.team(f)
+    if (ft !== 'B' && ft !== 'C') return 0.85
     // In Alliance War the player's allies already balance the scales, so the enemy side is richer.
     return foeDifficulty(this.state.rules.mode, this.state.difficulty).income * (this.state.rules.mode === 'alliance' ? 1.4 : 1)
   }
@@ -1512,6 +1866,7 @@ export class GameEngine {
     const u = this.units.get(unitKey)
     const f = this.faction(faction)
     if (!c || !u || !f) return 'Unknown castle or unit.'
+    if (u.recruitable === false) return `${u.name} are never raised in a castle.`
     if (c.faction !== faction) return 'You do not hold this castle.'
     if (c.battleId) return 'Cannot recruit while under siege.'
     count = Math.floor(count)
@@ -1536,7 +1891,7 @@ export class GameEngine {
     const c = this.castle(castleId)
     const u = this.units.get(unitKey)
     const f = this.faction(faction)
-    if (!c || !u || !f || c.battleId) return 0
+    if (!c || !u || !f || c.battleId || u.recruitable === false) return 0
     return Math.max(0, Math.floor(Math.min(this.capacity(c) - total(c.garrison), c.manpower / u.cost_manpower, f.gold / this.unitCost(faction, unitKey))))
   }
 
@@ -1614,8 +1969,10 @@ export class GameEngine {
     if (!c || c.faction !== faction) return 'You do not hold this castle.'
     if (this.state.rules.mode === 'convoy' && !opts.vassal) return 'On the forest road there are no fresh troops to call on: the forces you set out with are all there are.'
     if (c.village && !opts.vassal) return 'A vassal village keeps its militia: it fights for you on its own.'
-    const take: Troops = {}
+    let take: Troops = {}
     for (const k in troops) take[k] = Math.max(0, Math.min(Math.floor(troops[k]), Math.floor(c.garrison[k] ?? 0)))
+    // No more than an army may hold (the rest stay in the garrison).
+    take = this.fitCap(take, opts.commanderKey)
     const n = total(take)
     if (n < 10) return 'An army needs at least 10 soldiers.'
     if (opts.commanderKey) {
@@ -1674,7 +2031,7 @@ export class GameEngine {
     if (army.commanderKey) this.state.commanders[army.commanderKey].armyId = army.id
     this.state.armies.push(army)
     // The Royal Guard is raised in the keep at the start of the war: it does not march anywhere yet.
-    if (faction === PLAYER && army.commanderKey !== ROYAL.key) {
+    if (faction === PLAYER && army.commanderKey !== ROYAL.key && !(opts?.commanderKey && BAND_KEYS.includes(opts.commanderKey) && opts.order?.type === 'station')) {
       this.log('deploy', `${army.name} marches out`, `${totalInt(army.troops)} soldiers set out from ${c.name}.`, army.x, army.z)
       this.notify()
     }
@@ -1690,8 +2047,9 @@ export class GameEngine {
   ): Army | string {
     if (o.kind !== 'depot' || o.faction !== faction || o.progress < 1) return 'You do not hold this depot.'
     const g = o.garrison ?? {}
-    const take: Troops = {}
+    let take: Troops = {}
     for (const k in troops) take[k] = Math.max(0, Math.min(Math.floor(troops[k]), Math.floor(g[k] ?? 0)))
+    take = this.fitCap(take, opts.commanderKey)
     const n = total(take)
     if (n < 10) return 'An army needs at least 10 soldiers.'
     if (opts.commanderKey) {
@@ -2116,7 +2474,8 @@ export class GameEngine {
 
   /** Inside an enemy's sprung mud pit, or wading a ford: no charge, no square, and more losses. */
   private mired(a: Army): boolean {
-    if (this.world.fordAt(a.x, a.z) || this.world.rulesAt(a.x, a.z).mired) return true
+    // Fords, marshes and the ice of a frozen river: bad footing for a fight.
+    if (this.world.fordAt(a.x, a.z) || this.world.rulesAt(a.x, a.z).mired || this.world.iceAt(a.x, a.z)) return true
     const r = OBSTACLE.pit.radius
     return (this.state.obstacles ?? []).some((o) => o.kind === 'pit' && o.sprung && this.isHostile(o.faction, a.faction) && Math.abs(o.x - a.x) < r && Math.abs(o.z - a.z) < r && Math.hypot(o.x - a.x, o.z - a.z) < r)
   }
@@ -2656,7 +3015,7 @@ export class GameEngine {
         step = 0
       }
     }
-    if (!w.path.length || Math.hypot(dest.x - w.x, dest.z - w.z) < (dest.village ? holdingRadius(dest) + 25 : wallRadius(dest.tier) + 30)) {
+    if (!w.path.length || Math.hypot(dest.x - w.x, dest.z - w.z) < (dest.village ? holdingRadius(dest) + 25 : this.wallAt(dest, w.x, w.z) + 30)) {
       const f = this.state.factions[w.faction]
       if (f) f.gold += w.gold ?? 0
       // An abbey's volunteers swell the castle's manpower.
@@ -2688,10 +3047,23 @@ export class GameEngine {
     if (order.type === 'join' && (a.royal || this.army(order.armyId)?.royal)) return
     if (order.type === 'reinforce' && a.royal) order = { type: 'station', castleId: order.castleId }
     // Nor do the Whisper Blades, who are no siege troops either.
-    if (order.type === 'join' && (a.blades || this.army(order.armyId)?.blades)) return
-    if (order.type === 'reinforce' && a.blades) order = { type: 'station', castleId: order.castleId }
-    if (order.type === 'attack' && a.blades && this.castle(order.castleId) && this.isHostile(this.castle(order.castleId)!.faction, a.faction)) {
-      if (a.faction === PLAYER) this.log('info', 'The Blades will not storm walls', 'The Whisper Blades strike at commanders, not castles. Send them after an army, or set them to sabotage.', a.x, a.z)
+    // Nor do the Wardens: a fixed band of riders, no siege troops.
+    const fixed = (x?: Army) => !!x && this.isBand(x)
+    if (order.type === 'join' && (fixed(a) || fixed(this.army(order.armyId)))) return
+    if (order.type === 'reinforce' && fixed(a)) order = { type: 'station', castleId: order.castleId }
+    if (order.type === 'attack' && fixed(a) && this.castle(order.castleId) && this.isHostile(this.castle(order.castleId)!.faction, a.faction)) {
+      if (a.faction === PLAYER)
+        this.log(
+          'info',
+          a.wardens ? 'The Wardens will not storm walls' : a.sappers ? 'The Sappers will not storm walls' : 'The Blades will not storm walls',
+          a.wardens
+            ? 'The Wardens of the March scout and hunt; walls are for the hosts. Send them to watch a road or ride with an army.'
+            : a.sappers
+              ? 'The Night Sappers work unseen, not in the breach. Bring them close to the walls hidden and set them to sabotage.'
+              : 'The Whisper Blades strike at commanders, not castles. Send them after an army; the Night Sappers do the work on walls.',
+          a.x,
+          a.z,
+        )
       return
     }
     if (!internal) {
@@ -2737,7 +3109,8 @@ export class GameEngine {
     } else {
       const home = this.nearestCastle(a.x, a.z, a.faction)
       if (home) {
-        a.order = { type: 'station', castleId: home.id }
+        // Back home, our ordinary armies go into the garrison (their commander free to lead again).
+        a.order = a.faction === PLAYER && !this.keepsTogether(a) && !home.village && this.capsArmies ? { type: 'reinforce', castleId: home.id } : { type: 'station', castleId: home.id }
         a.path = []
         a.pathTarget = null
       }
@@ -2745,12 +3118,20 @@ export class GameEngine {
     this.notify()
   }
 
+  /** Armies that come home as they are rather than going into a garrison: the fixed bands, and battle groups. */
+  keepsTogether(a: Army): boolean {
+    return !!a.royal || this.isBand(a) || a.stance?.kind === 'escortArmy' || this.escortsOf(a).length > 0
+  }
+  /** One of the small fixed bands (the Blades and Sisters, the Sappers and Rootcutters, the Wardens and Hunt). */
+  isBand(a: Army): boolean {
+    return !!(a.blades || a.wardens || a.sappers)
+  }
   /** Merge an army standing at a friendly castle into its garrison (or march to one). */
   garrisonArmy(armyId: string): string | null {
     const a = this.army(armyId)
     if (!a) return 'No such army.'
-    if (a.royal || a.blades) {
-      // The Royal Guard (or the Whisper Blades) does not join a garrison: it waits in the keep of the nearest castle.
+    if (a.royal || this.isBand(a)) {
+      // The Royal Guard (or the Whisper Blades, the Sappers, or the Wardens) does not join a garrison: it waits in the keep of the nearest castle.
       const keep = this.nearestCastle(a.x, a.z, a.faction)
       if (!keep) return 'There is no castle to withdraw to.'
       this.orderArmy(a.id, { type: 'station', castleId: keep.id })
@@ -2785,6 +3166,34 @@ export class GameEngine {
   mergeArmies(dst: Army, src: Army) {
     const nd = total(dst.troops)
     const ns = total(src.troops)
+    // An army holds no more than its cap: what does not fit stays with the other, which rides on
+    // beside it as an escort (in its battle group) if there is a place.
+    const room = this.armyCap(dst.commanderKey ?? src.commanderKey) - nd
+    if (ns > room) {
+      if (room >= 1) {
+        const part = floorTroops(scaleTroops(src.troops, room / ns))
+        dst.morale = (dst.morale * nd + src.morale * total(part)) / Math.max(1, nd + total(part))
+        dst.troops = addTroops(dst.troops, part)
+        dst.initialTotal = total(dst.troops)
+        src.troops = subTroops(src.troops, part)
+        src.initialTotal = Math.max(1, total(src.troops))
+      }
+      src.order = { type: 'hold' }
+      src.path = []
+      src.pathTarget = null
+      const joined = this.escortsOf(dst).length < ARMY_CAP.escorts && src.faction === dst.faction && !src.royal && !this.isBand(src)
+      if (joined) src.stance = { kind: 'escortArmy', targetId: dst.id }
+      if (dst.faction === PLAYER)
+        this.log(
+          'info',
+          `${dst.name} is at full strength`,
+          `An army holds at most ${this.armyCap(dst.commanderKey)}. ${room >= 1 ? `${totalInt(src.troops)} of ${src.name} stay apart` : `${src.name} stays apart`}${joined ? ' and ride beside it as an escort.' : '.'}`,
+          dst.x,
+          dst.z,
+        )
+      if (total(src.troops) < 1) this.removeArmy(src)
+      return
+    }
     dst.morale = (dst.morale * nd + src.morale * ns) / Math.max(1, nd + ns)
     dst.troops = addTroops(dst.troops, src.troops)
     // Engines come along with the troops that pushed them.
@@ -2808,6 +3217,8 @@ export class GameEngine {
     if (!a) return 'No such army.'
     if (a.royal) return 'The Royal Guard never leaves the King.'
     if (a.blades) return 'The Whisper Blades are too few to divide.'
+    if (a.wardens) return 'The Wardens ride as one band.'
+    if (a.sappers) return 'The Sappers work as one band.'
     if (a.battleId || a.status === 'retreating') return 'Cannot split an army in battle or retreat.'
     const part = floorTroops(scaleTroops(a.troops, clamp(fraction, 0.05, 0.95)))
     const n = total(part)
@@ -2936,17 +3347,11 @@ export class GameEngine {
 
   /** Is this army led by the spymaster? */
   isSpyBand(a: Army): boolean {
-    return !!a.commanderKey && SPY.keys.includes(a.commanderKey)
-  }
-  /** How many men the spymaster leading this army can hide. */
-  spyCap(a: Army): number {
-    return SPY.cap[Math.max(0, Math.min(SPY.cap.length - 1, this.commanderLevel(a) - 1))]
+    return !!a.commanderKey && HIDING_KEYS.includes(a.commanderKey)
   }
   /** Why the spymaster's army cannot hide as it is, or null if it can. */
   veilProblem(a: Army): string | null {
     if (!this.isSpyBand(a)) return 'Only an army the spymaster leads can hide.'
-    const n = total(a.troops)
-    if (n > this.spyCap(a)) return `Too many to hide: he can hide ${this.spyCap(a)} at his rank.`
     for (const k in a.troops) if ((a.troops[k] ?? 0) >= 1 && !SPY.units.includes(k)) return 'Only light troops can hide (no knights or heavy foot).'
     if (a.engines && (a.engines.tower || a.engines.ram || a.engines.mantlet)) return 'Siege engines cannot be hidden.'
     if (a.battleId || a.status === 'retreating') return 'Not while fighting or retreating.'
@@ -2991,7 +3396,7 @@ export class GameEngine {
    * and outposts. r: how close a concealed band may come; rd: a disguised one. (Recomputed each second.)
    */
   spyWatches(faction: Faction): { x: number; z: number; r: number; rd: number; name: string; who: string; secret: boolean }[] {
-    const key = `${faction}|${Math.floor(this.state.time)}|${this.state.castles.length}|${this.state.outposts.length}`
+    const key = `${faction}|${Math.floor(this.state.time)}|${this.state.castles.length}|${this.state.outposts.length}|${this.state.armies.length}`
     const hit = this.watchCache.get(faction)
     if (hit && hit.key === key) return hit.list
     const hostile = (f: Faction) => f !== NEUTRAL && this.isHostile(f, faction)
@@ -3004,6 +3409,11 @@ export class GameEngine {
     for (const o of this.state.outposts) {
       if (o.progress < 1 || !hostile(o.faction)) continue
       list.push({ x: o.x, z: o.z, r: SPY.postWatch + 40, rd: SPY.postWatchDisguised + 40, name: o.name, who: `The sentries of ${o.name}`, secret: !!o.secret })
+    }
+    // The other side's Wardens (or Thorn Hunt): a watch on horseback. Secret while we cannot see them.
+    for (const b of this.state.armies) {
+      if (!b.wardens || !hostile(b.faction) || b.status === 'retreating') continue
+      list.push({ x: b.x, z: b.z, r: WARDENS.reveal, rd: WARDENS.reveal, name: b.name, who: `The riders of ${b.name}`, secret: !this.canSee(this.team(faction), b) })
     }
     this.watchCache.set(faction, { key, list })
     return list
@@ -3058,6 +3468,24 @@ export class GameEngine {
   /** Does this side know the outpost is there? (A secret camp is unknown to its enemies until found.) */
   outpostKnown(team: Team, o: Outpost): boolean {
     return !o.secret || this.team(o.faction) === team
+  }
+  /** How far a band of Wardens sees. */
+  wardenSight(): number {
+    return SIGHT.army * this.sightScale * WARDENS.sight
+  }
+  /** Each second: what the Wardens (and the Thorn Hunt) sight stays marked on their side's map for a while. */
+  private updateWardens() {
+    const t = this.state.time
+    const r = this.wardenSight()
+    for (const w of this.state.armies) {
+      if (!w.wardens || w.status === 'retreating') continue
+      const team = this.team(w.faction)
+      for (const a of this.state.armies) {
+        if (a.veil || !this.isHostile(a.faction, w.faction) || a.faction === NEUTRAL) continue
+        if (Math.abs(a.x - w.x) > r || Math.abs(a.z - w.z) > r || Math.hypot(a.x - w.x, a.z - w.z) > r) continue
+        a.marked = { ...(a.marked ?? {}), [team]: t + WARDENS.mark }
+      }
+    }
   }
   /** Each second: the spymaster's bands hide, change cover, or are found out; secret camps are found. */
   private updateVeils() {
@@ -3135,7 +3563,7 @@ export class GameEngine {
     const raid = this.trainRaider()!
     const ai = escort === PLAYER ? raid : escort
     // The computer's side grows with the difficulty (its raiders a little more: lying in wait is the harder part to play).
-    const k = ((ai === raid ? { easy: 0.8, normal: 1.1, hard: 1.35, brutal: 1.6 } : { easy: 0.65, normal: 1, hard: 1.2, brutal: 1.4 }) as Record<string, number>)[s.difficulty] ?? 1
+    const k = ((ai === raid ? { easy: 0.62, normal: 0.85, hard: 1.2, brutal: 1.4 } : { easy: 0.65, normal: 1, hard: 1.2, brutal: 1.4 }) as Record<string, number>)[s.difficulty] ?? 1
     const scale = (f: Faction, t: Troops): Troops => (f === ai ? floorTroops(scaleTroops(t, k)) : t)
     const rnd = mulberry32(s.scenario.seed + 4242)
     // The road's bridge is a timber one: raiders can pull it down, the escort's pioneers put it up again.
@@ -3173,9 +3601,18 @@ export class GameEngine {
     const sapperCamp = byBridge[0]
     const rest = camps.filter((c) => c !== sapperCamp)
     const spyKey = raid === PLAYER ? SPY.key : SPY.foeKey
-    // A stronger AI raider brings more men: the Grey Abbess comes at a rank that can hide them.
-    if (raid !== PLAYER && k > 1 && s.commanders[spyKey]) s.commanders[spyKey].level = 3
-    this.spawnBand(raid, scale(raid, { infantry: 190, archers: 160, cavalry: 90 }), [rest[rest.length - 1].x, rest[rest.length - 1].z], { commanderKey: spyKey })
+    const spyCamp = rest[rest.length - 1]
+    // The spymaster brings the fixed band (Corvin Ashe his Whisper Blades, Mother Sereth her Grey
+    // Sisters); the foresters lie in the same camp under a captain of their own.
+    this.spawnBand(raid, scale(raid, { infantry: 190, archers: 160, cavalry: 90 }), [spyCamp.x, spyCamp.z], raid === PLAYER ? { name: 'Hooded Bowmen', captainName: 'Mara' } : { name: 'Grey Bowmen', captainName: 'Sister Ysolde' })
+    if (this.units.has(BLADES.unit) && s.commanders[spyKey]) {
+      const [bx, bz] = this.world.nearestPassable(spyCamp.x + 40, spyCamp.z + 30)
+      const bl = this.spawnBand(raid, { [this.bandUnit(BLADES.unit, 'infantry')]: CONVOY_BLADES.size }, [bx, bz], { commanderKey: spyKey, name: raid === PLAYER ? BLADES.name : BLADES.foeName })
+      bl.blades = true
+      bl.fullStrength = CONVOY_BLADES.size
+      if (raid === PLAYER) s.bladesId = bl.id
+      else s.sistersId = bl.id
+    }
     const horse = this.spawnBand(raid, scale(raid, { cavalry: 220 }), [rest[0].x, rest[0].z], { name: 'Light Horse', captainName: 'Wren' })
     const sappers = this.spawnBand(raid, scale(raid, { infantry: 170, engineers: 40 }), [sapperCamp.x, sapperCamp.z], { name: 'Sappers', captainName: 'Old Garr' })
     // Standing orders for the bands without a commander: the horse harry the guards near the middle of the road, the sappers see to the bridge.
@@ -3268,10 +3705,24 @@ export class GameEngine {
     this.log(mine ? 'deploy' : 'warning', `Gold wagon ${roman(n)} sets out`, mine ? `${cv.wagons - n} more to follow.` : `The enemy's wagon ${roman(n)} of ${cv.wagons} is on the road.`, w.x, w.z)
     this.notify()
   }
-  /** Convoy Raid: give an army a standing order (null: back to orders by hand). */
-  setStance(armyId: string, stance: Stance | null) {
+  /**
+   * Give an army a standing order (null: back to orders by hand). Convoy Raid has its own; on the
+   * open field the player's armies can escort or follow another of ours, or guard a post.
+   */
+  setStance(armyId: string, stance: Stance | null): string | null {
     const a = this.army(armyId)
-    if (!a || !this.state.train) return
+    if (!a) return 'No such army.'
+    if (stance && (this.state.train ? isFieldStance(stance) : !isFieldStance(stance) || a.faction !== PLAYER)) return 'Not here.'
+    if (stance?.targetId) {
+      const t = this.army(stance.targetId)
+      if (!t || t.id === a.id || t.faction !== a.faction) return 'Choose another army of ours.'
+      // A battle group: a lead army and at most four escorts.
+      if (stance.kind === 'escortArmy' && this.escortsOf(t).filter((x) => x.id !== a.id).length >= ARMY_CAP.escorts) return `${t.name} already has ${ARMY_CAP.escorts} escorts.`
+      // An escort cannot itself lead escorts (no chains), nor guard one of its own escorts.
+      if (stance.kind === 'escortArmy' && t.stance?.kind === 'escortArmy') return `${t.name} is itself an escort.`
+      if (t.stance?.targetId === a.id) t.stance = undefined
+      if (stance.kind === 'escortArmy') for (const x of this.escortsOf(a)) x.stance = undefined
+    }
     a.stance = stance ?? undefined
     if (!stance) {
       a.order = { type: 'hold' }
@@ -3280,6 +3731,32 @@ export class GameEngine {
     }
     this.nextStanceAt = 0
     this.notify()
+    return null
+  }
+  /** How a battle group's escorts stand about its lead army. */
+  setGroupForm(armyId: string, form: 'box' | 'line' | 'wedge') {
+    const a = this.army(armyId)
+    if (!a) return
+    a.groupForm = form
+    this.nextStanceAt = 0
+    this.notify()
+  }
+  /**
+   * From how many sides a siege is being pressed: attacking armies more than about 60 degrees apart
+   * round the castle count as separate sides (an army in the gate and one round the back: two).
+   */
+  siegeSides(b: Battle): number {
+    if (b.kind !== 'siege') return 1
+    const c = this.castle(b.castleId)
+    if (!c) return 1
+    const angles: number[] = []
+    for (const id of b.sideA.armyIds) {
+      const a = this.army(id)
+      if (!a) continue
+      const ang = Math.atan2(a.z - c.z, a.x - c.x)
+      if (angles.every((x) => Math.abs(Math.atan2(Math.sin(ang - x), Math.cos(ang - x))) > ENCIRCLE.apart)) angles.push(ang)
+    }
+    return Math.max(1, angles.length)
   }
   /** The escort stops (or starts) the whole train. */
   setTrainHalted(faction: Faction, halted: boolean) {
@@ -3376,7 +3853,7 @@ export class GameEngine {
       }
     }
     const dest = this.castle(cv.toId)
-    if (dest && (!w.path.length || Math.hypot(dest.x - w.x, dest.z - w.z) < wallRadius(dest.tier) + 30)) {
+    if (dest && (!w.path.length || Math.hypot(dest.x - w.x, dest.z - w.z) < this.wallAt(dest, w.x, w.z) + 30)) {
       drop()
       tr.delivered++
       tr.wagons[idx] = 'delivered'
@@ -3593,7 +4070,7 @@ export class GameEngine {
       for (const b of this.state.armies) {
         if (b.id === a.id || b.battleId || b.status === 'retreating' || b.order.type === 'scout' || b.pursuit) continue
         if (!this.isHostile(b.faction, a.faction) || this.atPeace(b.faction, a.faction)) continue
-        const horse = (b.troops.cavalry ?? 0) / Math.max(1, total(b.troops))
+        const horse = this.mounted(b.troops) / Math.max(1, total(b.troops))
         if (roll(SCOUT.spotArmy * (horse > 0.25 ? 1.25 : 1), b.x, b.z)) spotted.push({ faction: b.faction, army: b })
       }
       for (const c of this.state.castles) {
@@ -3835,7 +4312,7 @@ export class GameEngine {
     const clim = this.climate()
     for (const a of this.state.armies) {
       // The dead neither eat nor tire; Corvin Ashe's people, posing as pilgrims and players, buy or beg it in the enemy's own villages.
-      if (this.state.factions[a.faction]?.undying || a.commanderKey === BLADES.key) {
+      if (this.state.factions[a.faction]?.undying || this.isSpyBand(a) || a.wardens) {
         a.supplied = true
         continue
       }
@@ -3905,7 +4382,7 @@ export class GameEngine {
   /** Price and odds of turning an enemy lord (Alliance War). */
   bribeOffer(fid: Faction): { price: number; chance: number } | null {
     const f = this.state.factions[fid]
-    if (!f || f.team !== 'B' || f.leader || !f.alive || this.state.rules.mode !== 'alliance') return null
+    if (!f || (f.team !== 'B' && f.team !== 'C') || f.leader || !f.alive || (this.state.rules.mode !== 'alliance' && this.state.rules.mode !== 'grand')) return null
     const castles = this.state.castles.filter((c) => c.faction === fid)
     const cap = this.castle(f.capitalId) ?? castles[0]
     if (!cap) return null
@@ -3941,7 +4418,7 @@ export class GameEngine {
   /** A truce: the lord will not attack your lands or armies for a few minutes. */
   pactOffer(fid: Faction): { price: number; duration: number } | null {
     const f = this.state.factions[fid]
-    if (!f || f.team !== 'B' || f.leader || !f.alive) return null
+    if (!f || (f.team !== 'B' && f.team !== 'C') || f.leader || !f.alive) return null
     return { price: Math.round(300 + this.factionSoldiers(fid) * 0.45), duration: 240 }
   }
   signPact(fid: Faction): string | null {
@@ -4014,6 +4491,7 @@ export class GameEngine {
   private outpostSiteProblem(a: Army): string | null {
     if (a.battleId || a.status === 'retreating') return 'Not while fighting or retreating.'
     if ((a.troops.engineers ?? 0) < MIN_ENGINEERS) return `Needs at least ${MIN_ENGINEERS} Engineers in the army.`
+    if (this.world.iceAt(a.x, a.z)) return 'Not on the ice: it will not hold through the thaw.'
     return this.siteProblemAt(a.faction, a.x, a.z)
   }
 
@@ -4025,8 +4503,12 @@ export class GameEngine {
       if (Math.hypot(c.x - x, c.z - z) - holdingRadius(c) < clear) return `Too close to ${c.name}.`
     }
     for (const r of this.state.sites ?? []) if (Math.hypot(r.x - x, r.z - z) < 120) return 'Too close to a mine or lumber camp.'
-    // Standing stones, terraces, windfall and crags: an outpost would sit on top of them.
-    for (const f of this.world.def.features ?? []) if (Math.hypot(x - f.x, z - f.z) < f.r + 55) return 'Too close to a landmark: find clear ground.'
+    // Standing stones, windfall and crags: an outpost would sit on top of them. (In the great woods
+    // the trees are simply cleared where it stands.)
+    for (const f of this.world.def.features ?? []) {
+      if (f.kind === 'oldwood' || f.kind === 'deepwood') continue
+      if (Math.hypot(x - f.x, z - f.z) < f.r + 55) return 'Too close to a landmark: find clear ground.'
+    }
     if (this.state.outposts.some((o) => Math.hypot(o.x - x, o.z - z) < OUTPOST.spacing)) return 'Too close to another outpost.'
     if (this.world.bridgeAt(x, z, 20) || this.world.heightAt(x, z) < 3 || !this.world.isPassable(x, z)) return 'Cannot build on a bridge or in the water.'
     if (kind && !this.terrainSuits(kind, x, z)) return `Needs: ${OUTPOST_KINDS[kind].terrain.toLowerCase()}.`
@@ -4352,7 +4834,10 @@ export class GameEngine {
       this.updateScouting(1)
       this.updateFoeSighting()
       this.updateVeils()
+      this.updateWardens()
       this.updateCovert(1)
+      this.updateFreeze()
+      this.updateSpyReturns()
       this.towerFire()
       if (this.state.night) this.wallFire()
       this.updateSupply(1)
@@ -4360,7 +4845,7 @@ export class GameEngine {
       this.nextEconomyAt = t + 1
     }
     if (t >= this.nextAutoRecruitAt) {
-      this.autoRecruit()
+      this.autoRecruit(3)
       this.nextAutoRecruitAt = t + 3
     }
     for (const ai of this.ais.values()) ai.update()
@@ -4371,6 +4856,10 @@ export class GameEngine {
         runStances(this)
         this.nextStanceAt = t + 1.5
       }
+    } else if (t >= this.nextStanceAt) {
+      // The field's standing orders: escort, follow, guard.
+      runFieldStances(this)
+      this.nextStanceAt = t + 1
     }
     this.updateConvoys(dt)
     this.updateVassals()
@@ -4437,23 +4926,57 @@ export class GameEngine {
     for (const key in s.commanders) {
       const cs = s.commanders[key]
       if (cs.woundedUntil > 0 && cs.woundedUntil <= s.time) {
+        const regrouped = cs.downReason === 'regroup'
         cs.woundedUntil = 0
+        cs.downReason = undefined
         const def = this.commanders.get(key)
-        if (cs.owner === PLAYER && def) this.log('info', `${def.name} has recovered`, 'Ready to lead an army again.')
+        if (cs.owner === PLAYER && def) this.log('info', regrouped ? `${def.name} has regrouped` : `${def.name} has recovered`, 'Ready to lead an army again.')
       }
     }
   }
 
-  private autoRecruit() {
+  /** The mix an auto-recruiting castle raises troops towards. */
+  autoRecruitMix(choice: string | null | undefined): Record<string, number> {
+    if (!choice || choice === 'recommended' || !(choice === 'captain' || DOCTRINES[choice])) return AUTO_RECRUIT.recommended
+    const d = doctrineOf(choice === 'captain' ? null : choice)
+    return doctrineMix(d, d.engineers)
+  }
+  /** Every 3 seconds: auto-recruiting castles buy the troop they are shortest of, from a share of net income. */
+  private autoRecruit(seconds = 3) {
     const f = this.state.factions[PLAYER]
     if (!f) return
-    const reserve = 150
-    for (const c of this.state.castles) {
-      if (c.faction !== PLAYER || !c.autoRecruit || c.battleId) continue
-      const tpl = RECRUIT_TEMPLATES[c.autoRecruit]
-      if (!tpl || f.gold <= reserve) continue
-      this.recruitMix(c.id, tpl.mix, (f.gold - reserve) * 0.4, PLAYER)
+    const list = this.state.castles.filter((c) => c.faction === PLAYER && !c.village && c.autoRecruit && !c.battleId)
+    if (!list.length) return
+    const t = this.totals(PLAYER)
+    const share = AUTO_RECRUIT.budgets[this.state.recruitBudget ?? 'normal'] ?? 0.5
+    const each = (Math.max(0, t.income - t.upkeep) * share * seconds) / list.length
+    for (const c of list) {
+      c.autoBank = Math.min(AUTO_RECRUIT.bankCap, (c.autoBank ?? 0) + each)
+      const mix = this.autoRecruitMix(c.autoRecruit)
+      const n = total(c.garrison) || 1
+      // The troop furthest below its share of the garrison.
+      let pick: string | null = null
+      let gap = -Infinity
+      for (const [k, want] of Object.entries(mix)) {
+        if (!want || !this.units.has(k)) continue
+        const g = want - (c.garrison[k] ?? 0) / n
+        if (g > gap) {
+          gap = g
+          pick = k
+        }
+      }
+      if (!pick) continue
+      const cost = this.unitCost(PLAYER, pick)
+      const spend = Math.min(c.autoBank, f.gold - AUTO_RECRUIT.reserve)
+      const count = Math.floor(spend / cost)
+      if (count < 1) continue
+      const before = f.gold
+      if (!this.recruit(c.id, pick, count, PLAYER)) c.autoBank -= before - f.gold
     }
+  }
+  setRecruitBudget(level: string) {
+    this.state.recruitBudget = level
+    this.notify()
   }
 
   private moraleCap(a: Army) {
@@ -4479,6 +5002,9 @@ export class GameEngine {
     } else if (a.status === 'idle' && ground === 'thicket') {
       // Windfall: hidden after 5 seconds instead of 8.
       if (a.hiddenSince === null) a.hiddenSince = this.state.time - (HIDE_SECONDS - 5)
+    } else if (a.status === 'idle' && ground === 'oldwood') {
+      // Among the giant trunks: hidden after 4 seconds.
+      if (a.hiddenSince === null) a.hiddenSince = this.state.time - (HIDE_SECONDS - FEATURES.oldwood.hide)
     } else if (a.status === 'idle' && this.world.forestAt(a.x, a.z) > 0.3) {
       if (a.hiddenSince === null) a.hiddenSince = this.state.time
     } else if (a.status !== 'idle') a.hiddenSince = null
@@ -4514,7 +5040,22 @@ export class GameEngine {
       if (this.moveTowards(a, c.x, c.z, dt, this.arriveDist(c), 1.1)) {
         a.status = 'idle'
         a.order = { type: 'station', castleId: c.id }
+        // Our armies that fall back to a castle of ours go into its garrison (their commander free to
+        // lead again). The fixed bands wait in the keep; a battle group's lead keeps its escorts.
+        if (a.faction === PLAYER && !this.keepsTogether(a) && !c.village && c.faction === a.faction && this.capsArmies) {
+          const who = a.commanderKey ? this.commanders.get(a.commanderKey)?.name : null
+          this.log('retreat', `${a.name} reaches safety`, `The survivors (${totalInt(a.troops)}) fall back into the garrison of ${c.name}.${who ? ` ${who} must regroup before leading again.` : ''}`, c.x, c.z)
+          if (a.scoutReport && Object.keys(a.scoutReport).length) this.applyReport(a)
+          c.garrison = floorTroops(addTroops(c.garrison, a.troops))
+          const key = a.commanderKey
+          this.removeArmy(a)
+          // Beaten and routed: the commander needs time to regroup before taking the field again.
+          if (key) this.putOut(key, DOWNTIME.rout, 'regroup')
+          return
+        }
         if (a.faction === PLAYER) this.log('retreat', `${a.name} reaches safety`, `The survivors regroup at ${c.name}.`, c.x, c.z)
+        // (The enemy's commanders too: a beaten one must regroup before leading a new army.)
+        if (a.commanderKey && !this.keepsTogether(a)) this.putOut(a.commanderKey, DOWNTIME.rout, 'regroup')
       }
       return
     }
@@ -4524,8 +5065,8 @@ export class GameEngine {
       if (!c.gate || !this.isHostile(c.faction, a.faction)) continue
       if (Math.abs(c.x - a.x) > 120 || Math.abs(c.z - a.z) > 120) continue
       if (Math.hypot(c.x - a.x, c.z - a.z) < holdingRadius(c) + 16) {
-        // The Whisper Blades do not storm gates.
-        if (a.blades) continue
+        // The fixed bands (Blades, Sappers, Wardens) do not storm gates.
+        if (this.isBand(a)) continue
         this.beginSiege(a, c)
         return
       }
@@ -4563,8 +5104,8 @@ export class GameEngine {
           a.order = { type: 'station', castleId: c.id }
           break
         }
-        if (this.moveTowards(a, c.x, c.z, dt, c.village ? holdingRadius(c) + 28 : wallRadius(c.tier) + 40)) {
-          if (a.blades) a.order = { type: 'hold' }
+        if (this.moveTowards(a, c.x, c.z, dt, c.village ? holdingRadius(c) + 28 : this.wallAt(c, a.x, a.z) + 40)) {
+          if (this.isBand(a)) a.order = { type: 'hold' }
           else this.beginSiege(a, c)
         }
         break
@@ -4838,6 +5379,8 @@ export class GameEngine {
         const near = sc ? holdingRadius(sc) + 70 : JOIN_DIST
         if (Math.abs(b.x - a.x) > near || Math.abs(b.z - a.z) > near) continue
         if (Math.hypot(b.x - a.x, b.z - a.z) > near) continue
+        // An escort whose lead is assaulting this castle goes round to its own side first, and joins from there.
+        if (b.kind === 'siege' && a.stance?.kind === 'escortArmy' && b.sideA.armyIds.includes(a.stance.targetId ?? '')) continue
         if (b.sideA.team === team) {
           this.joinBattle(a, b, 'A')
           break
@@ -4880,6 +5423,56 @@ export class GameEngine {
     }
   }
 
+  // --- Deep Freeze ------------------------------------------------------------------------------
+
+  /** Each second: in the depth of winter the rivers freeze over, and thaw before spring. */
+  private updateFreeze() {
+    const w = this.world
+    if (!w.canFreeze) return
+    const t = this.state.time
+    const S = SEASON_SECONDS
+    const winter = seasonAt(t) === 'Winter'
+    const into = winter ? t - Math.floor(t / S) * S : -1
+    const want = winter && into >= FREEZE.freeze && into < S - FREEZE.thaw
+    const year = Math.floor(t / (S * 4))
+    // Warnings (each once a winter): 1 = ice forming, 2 = thaw coming.
+    const stage = (this.state.freezeWarned ?? 0) - year * 10
+    if (winter && into >= FREEZE.warn && into < FREEZE.freeze && stage < 1) {
+      this.state.freezeWarned = year * 10 + 1
+      this.log('warning', 'The rivers are icing over', `In the hard frost, stretches of the rivers${w.iceLakes.length ? ' and some lakes' : ''} will freeze solid in ${Math.round(FREEZE.freeze - into)} seconds: armies will cross them anywhere. A river line will hold nobody back.`)
+    }
+    if (winter && into >= S - FREEZE.thawWarn && into < S - FREEZE.thaw && stage < 2) {
+      this.state.freezeWarned = year * 10 + 2
+      this.log('warning', 'The ice is groaning', `The thaw comes in ${Math.round(S - FREEZE.thaw - into)} seconds. Get off the ice before it breaks up.`)
+    }
+    if (want === !!this.state.frozen) return
+    this.state.frozen = want
+    w.setFrozen(want)
+    // Every march is planned afresh across (or around) the rivers.
+    for (const a of this.state.armies) {
+      a.path = []
+      a.pathTarget = null
+    }
+    if (want) {
+      this.log('warning', 'Deep Freeze', `${w.iceSegs.length ? 'Stretches of the rivers' : 'Lakes'}${w.iceSegs.length && w.iceLakes.length ? ' and some lakes' : ''} are frozen solid: armies can walk across them anywhere, slowly (${Math.round(ICE.speed * 100)}% pace), and fighting on the ice is treacherous (no charges, no squares).`)
+      return
+    }
+    // The thaw: whoever is still on the ice goes through it, and struggles to the nearest bank.
+    for (const a of this.state.armies) {
+      if (w.isPassable(a.x, a.z) || !w.iceZone(a.x, a.z)) continue
+      const n = total(a.troops)
+      a.troops = scaleTroops(a.troops, 1 - FREEZE.drown)
+      if (a.faction === PLAYER) this.state.stats.playerLost += n * FREEZE.drown
+      const [x, z] = w.nearestPassable(a.x, a.z)
+      a.x = x
+      a.z = z
+      a.steer = undefined
+      a.vel = 0
+      if (a.faction === PLAYER) this.log('lost', `The ice breaks under ${a.name}`, `${Math.round(n * FREEZE.drown)} men are lost in the freezing water; the rest struggle ashore.`, x, z)
+    }
+    this.log('info', 'The thaw', 'The ice on the rivers breaks up: they can only be crossed at bridges and fords again.')
+  }
+
   // --- Corvin Ashe: the Whisper Blades' strikes, sabotage, and an abbey's sanctuary ---------------
 
   /** Can these Whisper Blades strike now? */
@@ -4889,11 +5482,17 @@ export class GameEngine {
   /** The chance a strike by these Blades on this army finds its mark (0-1). */
   strikeChance(bl: Army, foe: Army): number {
     const B = BLADES
-    const queen = !!foe.royal && foe.id === this.state.foeRoyalId
-    let p = queen ? B.chance.sovereign - B.wary * (this.state.foeAttempts ?? 0) : foe.commanderKey ? B.chance.commander - B.perLevel * (this.commanderLevel(foe) - 1) : B.chance.captain
+    // A crowned head (the Queen, or our King): each attempt makes the guard warier.
+    const queen = !!foe.royal
+    const tries = foe.faction === PLAYER ? (this.state.kingAttempts ?? 0) : (this.state.foeAttempts ?? 0)
+    let p = queen ? B.chance.sovereign - B.wary * tries : foe.commanderKey ? B.chance.commander - B.perLevel * (this.commanderLevel(foe) - 1) : B.chance.captain
     p += bl.veil === 'concealed' ? B.hidden : bl.veil === 'disguised' ? B.disguised : 0
     p += B.perAsheLevel * (this.commanderLevel(bl) - 1)
     p -= Math.min(B.crowdMax, (total(foe.troops) / 1000) * B.crowd)
+    // (The Queen's Thorn Guard has its own measure: warier with every attempt.)
+    if (bl.faction === PLAYER && !queen) p -= B.bodyguard[this.state.difficulty] ?? 0
+    // The enemy's knives: an easier war guards our leaders (the King too) more closely.
+    if (foe.faction === PLAYER) p -= B.playerGuard[this.state.difficulty] ?? 0
     // Too few left to get close.
     const strength = total(bl.troops) / (bl.fullStrength ?? B.size)
     if (strength < 0.4) p *= strength / 0.4
@@ -4906,7 +5505,7 @@ export class GameEngine {
     if (this.state.factions[foe.faction]?.undying) return false
     const B = BLADES
     const t = this.state.time
-    const queen = !!foe.royal && foe.id === this.state.foeRoyalId
+    const queen = !!foe.royal
     const p = this.strikeChance(bl, foe)
     const hit = Math.random() < p
     const roll = (r: number[]) => r[0] + Math.random() * (r[1] - r[0])
@@ -4921,16 +5520,17 @@ export class GameEngine {
     // Steel drawn: the secret is out either way.
     this.unveil(bl, null)
     const leader = this.armyLeader(foe)
-    if (queen) this.state.foeAttempts = (this.state.foeAttempts ?? 0) + 1
+    if (queen && foe.faction === PLAYER) this.state.kingAttempts = (this.state.kingAttempts ?? 0) + 1
+    else if (queen) this.state.foeAttempts = (this.state.foeAttempts ?? 0) + 1
     if (hit) {
       if (queen) {
-        this.destroyArmy(foe, 'is left without its Queen: a knife in the dark found her')
+        this.destroyArmy(foe, foe.faction === PLAYER ? 'is left without its King: a knife in the dark found him' : 'is left without its Queen: a knife in the dark found her')
       } else {
         // The leader is carried from the field; leaderless, the host breaks.
         if (foe.commanderKey) {
           const s = this.state.commanders[foe.commanderKey]
           if (s) {
-            s.woundedUntil = t + B.wound * this.woundFactor(s.owner)
+            this.putOut(foe.commanderKey, B.wound, 'wounded')
             s.armyId = null
           }
           foe.commanderKey = null
@@ -4942,12 +5542,21 @@ export class GameEngine {
         else if (foe.faction === PLAYER) this.log('lost', `${leader} is struck down`, `Assassins reached ${foe.name}'s leader. The army breaks.`, foe.x, foe.z)
       }
     } else {
-      foe.morale = Math.max(0, foe.morale - 10)
+      foe.morale = Math.max(0, foe.morale - (queen ? B.failMoraleQueen : B.failMorale))
+      if (foe.faction === PLAYER) {
+        this.log(
+          'warning',
+          queen ? 'Assassins at the King!' : `Assassins at ${leader}`,
+          queen ? `${bl.name} fell on the Royal Guard; the knights cut them down before they reached the King. His guard will be warier now.` : `${bl.name} went for ${leader}, and the bodyguard drove them off. The ranks are shaken (morale -${B.failMorale}).`,
+          foe.x,
+          foe.z,
+        )
+      }
       if (bl.faction === PLAYER) {
         this.log(
           'defeat',
           queen ? 'The attempt on the Queen fails' : `The strike on ${leader} fails`,
-          queen ? `The Thorn Guard closed about her; the Blades are cut to pieces getting out. Her guard will be warier now.` : `${leader}'s bodyguard was ready for them. The Blades fall back, ${totalInt(bl.troops)} left.`,
+          queen ? `The Thorn Guard closed about her; the Blades are cut to pieces getting out. Her guard will be warier now.` : `${leader}'s bodyguard was ready for them. The Blades fall back, ${totalInt(bl.troops)} left; knives in the camp have shaken ${foe.name} (morale -${B.failMorale}).`,
           foe.x,
           foe.z,
         )
@@ -4959,9 +5568,9 @@ export class GameEngine {
     return true
   }
 
-  /** Enemy strongholds Corvin Ashe's band could sabotage from where it stands, with what it could do there. */
+  /** Enemy strongholds the Sappers could sabotage from where they stand, with what they could do there. */
   sabotageTargets(a: Army): { id: string; name: string; x: number; z: number; kinds: SabotageKind[] }[] {
-    if (a.commanderKey !== BLADES.key) return []
+    if (!a.sappers) return []
     const out: { id: string; name: string; x: number; z: number; kinds: SabotageKind[] }[] = []
     for (const c of this.state.castles) {
       if (c.village || c.ruined || !this.isHostile(c.faction, a.faction) || c.faction === NEUTRAL) continue
@@ -4973,9 +5582,13 @@ export class GameEngine {
     }
     return out
   }
-  /** Why Ashe's band cannot start sabotage now, or null. */
+  /** The spymaster's knives of the same side close enough to cover the Sappers' work, if any. */
+  sapperCover(a: Army): Army | undefined {
+    return this.state.armies.find((b) => b.blades && b.faction === a.faction && !b.battleId && b.status !== 'retreating' && Math.hypot(b.x - a.x, b.z - a.z) < SAPPERS.cover)
+  }
+  /** Why the Sappers cannot start sabotage now, or null. */
   sabotageProblem(a: Army): string | null {
-    if (a.commanderKey !== BLADES.key) return 'Only Corvin Ashe\'s people can do this.'
+    if (!a.sappers) return 'Only the Sappers can do this.'
     if (a.battleId || a.status === 'retreating') return 'Not while fighting or retreating.'
     if (a.sabotage) return 'Already at work.'
     const wait = (a.sabotageReadyAt ?? 0) - this.state.time
@@ -4984,18 +5597,20 @@ export class GameEngine {
     if (this.sabotageTargets(a).length === 0) return 'No enemy castle or fieldwork close enough.'
     return null
   }
-  /** Set Ashe's band to sabotage an enemy stronghold close by. */
+  /** Set the Sappers to sabotage an enemy stronghold close by. */
   startSabotage(armyId: string, targetId: string, kind: SabotageKind): string | null {
     const a = this.army(armyId)
-    if (!a || a.faction !== PLAYER) return 'No such band.'
+    if (!a) return 'No such band.'
     const why = this.sabotageProblem(a)
     if (why) return why
     const tg = this.sabotageTargets(a).find((x) => x.id === targetId)
     if (!tg || !tg.kinds.includes(kind)) return 'Out of reach.'
     this.orderArmy(a.id, { type: 'hold' })
     a.steer = undefined
-    a.sabotage = { targetId, kind, doneAt: this.state.time + SABOTAGE.work }
-    this.log('deploy', `${a.name} sets to work`, `${SABOTAGE_KINDS[kind].name} at ${tg.name}: ${SABOTAGE.work} seconds, and they must not be seen.`, tg.x, tg.z)
+    const covered = !!this.sapperCover(a)
+    const work = covered ? SAPPERS.coveredWork : SABOTAGE.work
+    a.sabotage = { targetId, kind, doneAt: this.state.time + work }
+    if (a.faction === PLAYER) this.log('deploy', `${a.name} set to work`, `${SABOTAGE_KINDS[kind].name} at ${tg.name}: ${work} seconds${covered ? ', the Blades keeping watch' : ''}, and they must not be seen.`, tg.x, tg.z)
     this.notify()
     return null
   }
@@ -5022,20 +5637,24 @@ export class GameEngine {
       else if (job.kind === 'works') o.progress = Math.min(o.progress, 1 - S.works.progress)
     } else return
     const k = SABOTAGE_KINDS[job.kind]
-    this.log('victory', `${k.name}: done`, `${this.armyLeader(a)}'s people did their work at ${name}. ${k.blurb}`, c?.x ?? o!.x, c?.z ?? o!.z)
-    if (Math.random() < S.alarm) this.unveil(a, `The alarm went up at ${name} after the deed.`)
+    const victim = c?.faction ?? o!.faction
+    if (a.faction === PLAYER) this.log('victory', `${k.name}: done`, `${this.armyLeader(a)}'s people did their work at ${name}. ${k.blurb}`, c?.x ?? o!.x, c?.z ?? o!.z)
+    else if (victim === PLAYER) this.log('lost', `Saboteurs at ${name}`, `Enemy agents struck: ${k.name.toLowerCase()}. ${k.blurb}`, c?.x ?? o!.x, c?.z ?? o!.z)
+    if (Math.random() < (this.sapperCover(a) ? SAPPERS.coveredAlarm : S.alarm)) this.unveil(a, `The alarm went up at ${name} after the deed.`)
   }
 
   /** Royal Guard or Whisper Blades short of men, near enough to this abbey of ours to take sanctuary. */
   sanctuaryArmies(c: Castle): Army[] {
     if (c.holding !== 'abbey' || c.faction !== PLAYER || c.ruined) return []
-    return this.state.armies.filter((a) => a.faction === PLAYER && (a.royal || a.blades) && !a.battleId && a.status !== 'retreating' && Math.hypot(a.x - c.x, a.z - c.z) < SANCTUARY.range && total(a.troops) < this.fullStrength(a) - 0.5)
+    return this.state.armies.filter((a) => a.faction === PLAYER && (a.royal || this.isBand(a)) && !a.battleId && a.status !== 'retreating' && Math.hypot(a.x - c.x, a.z - c.z) < SANCTUARY.range && total(a.troops) < this.fullStrength(a) - 0.5)
   }
   fullStrength(a: Army): number {
-    return a.fullStrength ?? (a.royal ? ROYAL.guard : a.blades ? BLADES.size : total(a.troops))
+    return a.fullStrength ?? (a.royal ? ROYAL.guard : a.blades ? BLADES.size : a.wardens ? WARDENS.size : a.sappers ? SAPPERS.size : total(a.troops))
   }
   /** Gold one man restored costs (and men restored a second) for this army in an abbey's sanctuary. */
   sanctuaryTerms(a: Army): { rate: number; cost: number } {
+    if (a.wardens) return { rate: SANCTUARY.rate.wardens, cost: SANCTUARY.cost.wardens }
+    if (a.sappers) return { rate: SANCTUARY.rate.sappers, cost: SANCTUARY.cost.sappers }
     return a.royal ? { rate: SANCTUARY.rate.royal, cost: SANCTUARY.cost.royal } : { rate: SANCTUARY.rate.blades, cost: SANCTUARY.cost.blades }
   }
   /** The Royal Guard or the Whisper Blades rest in this abbey: the wounded nursed, the gaps filled, for gold. */
@@ -5057,6 +5676,14 @@ export class GameEngine {
   private updateCovert(dt: number) {
     const t = this.state.time
     for (const a of this.state.armies) {
+      // The enemy's Grey Sisters mend in a castle of theirs (their convent takes them in).
+      // (And the Thorn Hunt in a castle of theirs.)
+      if (this.isBand(a) && a.faction !== PLAYER && a.order.type === 'station' && a.status !== 'marching' && this.insideWalls(a)) {
+        const full = this.fullStrength(a)
+        const n = total(a.troops)
+        const unit = this.troopsOf(a)
+        if (n < full) a.troops = { ...a.troops, [unit]: (a.troops[unit] ?? 0) + Math.min(0.5 * dt, full - n) }
+      }
       if (a.sabotage) {
         // Found out, drawn into a fight, or moved off: the work is abandoned.
         const tg = this.sabotageTargets(a).some((x) => x.id === a.sabotage!.targetId)
@@ -5078,7 +5705,7 @@ export class GameEngine {
         const n = total(a.troops)
         const add = Math.min(rate * dt, full - n, f.gold / cost)
         if (add > 0) {
-          const k = a.royal ? 'cavalry' : BLADES.unit
+          const k = this.troopsOf(a)
           a.troops = { ...a.troops, [k]: (a.troops[k] ?? 0) + add }
           f.gold -= add * cost
           a.morale = Math.min(100, a.morale + 2 * dt)
@@ -5195,6 +5822,19 @@ export class GameEngine {
     }
   }
 
+  /**
+   * A battle group's escort, standing at its own place round a castle its lead is assaulting, joins
+   * the siege from there (so the walls are pressed from several sides, not only at the gate).
+   */
+  joinSiegeAt(a: Army, castleId: string): boolean {
+    const b = this.state.battles.find((x) => x.kind === 'siege' && x.castleId === castleId)
+    if (!b || a.battleId || a.status === 'retreating' || b.sideA.team !== this.team(a.faction)) return false
+    a.order = { type: 'attack', castleId }
+    a.path = []
+    a.pathTarget = null
+    this.joinBattle(a, b, 'A')
+    return true
+  }
   private joinBattle(a: Army, b: Battle, side: 'A' | 'B') {
     const s = side === 'A' ? b.sideA : b.sideB
     if (s.team !== this.team(a.faction)) return
@@ -5338,12 +5978,12 @@ export class GameEngine {
       const feat = b.kind === 'field' && this.world.def.features?.length ? this.world.featureKindAt(a.x, a.z) : null
       const ground = feat
         ? {
-            melee: feat === 'stones' ? FEATURES.stonesTaken : 1,
-            ranged: feat === 'stones' ? FEATURES.stonesTaken : feat === 'thicket' ? FEATURES.thicketArrows : 1,
-            charge: feat === 'terraces' ? FEATURES.terraceCharge : 1,
-            rangedOut: feat === 'terraces' ? FEATURES.terraceRanged : 1,
-            cavOut: 1,
-            noCharge: false,
+            melee: feat === 'stones' ? FEATURES.stonesTaken : feat === 'oldwood' ? FEATURES.oldwood.taken : 1,
+            ranged: feat === 'stones' ? FEATURES.stonesTaken : feat === 'thicket' ? FEATURES.thicketArrows : feat === 'oldwood' ? FEATURES.oldwood.arrows : feat === 'deepwood' ? FEATURES.deepwood.arrows : 1,
+            charge: feat === 'oldwood' ? FEATURES.oldwood.charge : feat === 'deepwood' ? 0 : 1,
+            rangedOut: 1,
+            cavOut: feat === 'deepwood' ? FEATURES.deepwood.cavalry : 1,
+            noCharge: feat === 'deepwood',
           }
         : undefined
       // No square can be formed in the water or the mud.
@@ -5353,7 +5993,7 @@ export class GameEngine {
         cmd: this.commanderOf(a),
         level: this.commanderLevel(a),
         morale: a.morale,
-        terrainDef: onWalls ? (sc!.walls > 0 ? 2.2 : 1.3) : b.kind === 'field' ? this.world.defenseAt(a.x, a.z) * (camp ? OUTPOST_KINDS[camp.kind].defense : 1) * (feat === 'terraces' ? FEATURES.terraceDefense : 1) : 1,
+        terrainDef: onWalls ? (sc!.walls > 0 ? 2.2 : 1.3) : b.kind === 'field' ? this.world.defenseAt(a.x, a.z) * (camp ? OUTPOST_KINDS[camp.kind].defense : 1) : 1,
         // Palisades and walls break any charge against their defenders.
         // Walls, palisades, stakes or a ring of standing stones break any charge.
         formation: onWalls || feat === 'stones' || (camp && OUTPOST_KINDS[camp.kind].braces) || (b.kind === 'field' && this.amongStakes(a.x, a.z, this.team(a.faction))) ? { ...fm, bracesCharge: true } : fm,
@@ -5378,8 +6018,9 @@ export class GameEngine {
           cmd: null,
           level: 1,
           morale: (c.shakenUntil ?? 0) > t ? 85 - ENGINES.ramShock : 85,
-          // A siege tower's bridge on the walls robs the defenders of them.
-          terrainDef: c.walls > 0 && !this.towerAt(b) ? 2.2 : 1.3,
+          // A siege tower's bridge on the walls robs the defenders of them; assaulted from several
+          // sides at once, they cannot man every stretch of wall.
+          terrainDef: (c.walls > 0 && !this.towerAt(b) ? 2.2 : 1.3) * (1 - Math.min(ENCIRCLE.max, (this.siegeSides(b) - 1) * ENCIRCLE.perSide)),
           formation: FORMATIONS.line,
           inColumn: false,
           sheltered: true,
@@ -5542,7 +6183,7 @@ export class GameEngine {
     // Enemy horse in a field fight put the torch to a siege tower.
     if (b.kind === 'field' && this.state.time - b.startedAt > 6) {
       for (const [mine, foes] of [[A, B], [B, A]] as const) {
-        const horse = foes.reduce((n, f) => n + (f.troops.cavalry ?? 0), 0)
+        const horse = foes.reduce((n, f) => n + this.mounted(f.troops), 0)
         if (horse < 30) continue
         for (const f of mine) {
           if (!f.army?.engines?.tower) continue
@@ -5648,7 +6289,8 @@ export class GameEngine {
         if (!a) continue
         let ang = Math.atan2(a.z - castle.z, a.x - castle.x)
         if (!Number.isFinite(ang)) ang = 0
-        place(a, castle.x + Math.cos(ang) * R, castle.z + Math.sin(ang) * R, castle.x, castle.z)
+        const Ra = castle.village ? R : this.wallAt(castle, castle.x + Math.cos(ang), castle.z + Math.sin(ang)) + 30
+        place(a, castle.x + Math.cos(ang) * Ra, castle.z + Math.sin(ang) * Ra, castle.x, castle.z)
       }
       return
     }
@@ -5767,11 +6409,37 @@ export class GameEngine {
       this.state.foeFallen = true
       this.state.foeRoyalId = null
       this.state.foeSighting = null
-      this.log('victory', 'The Usurper has fallen!', `The Thorn Guard is ${how}. Without their Queen the enemy alliance breaks apart.`, a.x, a.z)
+      if (this.state.rules.mode === 'grand') {
+        this.state.crownsFallen = { ...(this.state.crownsFallen ?? {}), B: true }
+        this.log('victory', 'The Usurper has fallen!', `The Thorn Guard is ${how}. The Queen's crown is shattered; her lords fight on as they may.`, a.x, a.z)
+      } else this.log('victory', 'The Usurper has fallen!', `The Thorn Guard is ${how}. Without their Queen the enemy alliance breaks apart.`, a.x, a.z)
+    }
+    if (a.royal && a.id === this.state.sunRoyalId) {
+      this.state.sunRoyalId = null
+      this.state.crownsFallen = { ...(this.state.crownsFallen ?? {}), C: true }
+      this.log('victory', 'The Sun Emperor has fallen!', `The Solar Guard is ${how}. The Emperor's crown is shattered; his lords fight on as they may.`, a.x, a.z)
     }
     if (a.commanderKey) {
       const s = this.state.commanders[a.commanderKey]
-      if (s) s.woundedUntil = this.state.time + 120 * this.woundFactor(s.owner)
+      if (s) this.putOut(a.commanderKey, DOWNTIME.destroyed, 'wounded')
+      // A spymaster's band wiped out: once recovered, the spymaster gathers a new one.
+      if (a.blades && SPY.keys.includes(a.commanderKey) && this.state.rules.mode !== 'convoy') {
+        this.state.spyReturnAt = { ...(this.state.spyReturnAt ?? {}), [a.commanderKey]: this.state.time + BLADES.returnAfter }
+        if (a.faction === PLAYER) this.state.bladesId = null
+        else this.state.sistersId = null
+      }
+      // Likewise a sapmaster whose people were cut down.
+      if (a.sappers && SAPPERS.keys.includes(a.commanderKey)) {
+        this.state.spyReturnAt = { ...(this.state.spyReturnAt ?? {}), [a.commanderKey]: this.state.time + SAPPERS.returnAfter }
+        if (a.faction === PLAYER) this.state.sappersId = null
+        else this.state.cuttersId = null
+      }
+      // Likewise a warden whose riders were cut down.
+      if (a.wardens && WARDENS.keys.includes(a.commanderKey)) {
+        this.state.spyReturnAt = { ...(this.state.spyReturnAt ?? {}), [a.commanderKey]: this.state.time + WARDENS.returnAfter }
+        if (a.faction === PLAYER) this.state.wardensId = null
+        else this.state.huntId = null
+      }
     }
     const b = this.battle(a.battleId)
     if (a.faction === PLAYER) {
@@ -6027,6 +6695,32 @@ export class GameEngine {
       this.recordFrame()
       this.events.push({ type: 'game_over', status })
       this.notify()
+      return
+    }
+    if (r.mode === 'grand') {
+      // The Three Crowns: a crown is shattered when its monarch falls or its Citadel is taken.
+      const cf = (this.state.crownsFallen ??= {})
+      for (const [team, keep, who] of [['B', 'keepB', "The Usurper's"], ['C', 'keepC', "The Sun Emperor's"]] as const) {
+        const c = this.castle(keep)
+        if (cf[team] || !c || this.team(c.faction) === team) continue
+        cf[team] = true
+        this.log(this.team(c.faction) === 'A' ? 'victory' : 'warning', `${c.name} has fallen`, `${who} Citadel is taken by ${this.factionName(c.faction)}. That crown is shattered; its lords fight on as they may.`, c.x, c.z)
+      }
+      const home = this.castle('keep')
+      const homeLost = !!home && this.team(home.faction) !== 'A'
+      if (homeLost && !cf.A) {
+        cf.A = true
+        if (!this.state.kingFallen) this.log('lost', `${home!.name} has fallen`, 'The King lives and rides on: while the Royal Guard holds together, so does the realm.', home!.x, home!.z)
+      }
+      const gone = r.defeatOnEliminated && !this.state.castles.some((c) => c.faction === PLAYER) && !this.state.armies.some((a) => a.faction === PLAYER)
+      if ((this.state.kingFallen && homeLost) || gone) status = 'defeat'
+      else if (cf.B && cf.C) status = 'victory'
+      if (status) {
+        this.state.status = status
+        this.recordFrame()
+        this.events.push({ type: 'game_over', status })
+        this.notify()
+      }
       return
     }
     if (r.timeLimit && this.state.time >= r.timeLimit) status = r.timeoutWinner === 'A' ? 'victory' : 'defeat'

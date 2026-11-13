@@ -25,10 +25,9 @@ export function generateCountryside(world: World, castles: CastleDef[], seed: nu
   const siteCount = Math.max(4, Math.round(12 * area))
   const taken: { x: number; z: number; r: number }[] = castles.map((c) => ({ x: c.x, z: c.z, r: holdingRadius(c) + 260 }))
   // A walled city keeps the countryside outside its walls.
-  const town = world.def.town
-  if (town) taken.push({ x: town.x, z: town.z, r: town.r + 220 })
+  for (const town of world.towns) taken.push({ x: town.x, z: town.z, r: town.r + 220 })
   const free = (x: number, z: number, r: number) => taken.every((t) => Math.hypot(t.x - x, t.z - z) > t.r + r)
-  // Terrain features (standing stones, terraces, windfall, crags) keep their ground to themselves.
+  // Terrain features (standing stones, windfall, crags, the great woods) keep their ground to themselves.
   const features = world.def.features ?? []
   const clearOfFeatures = (x: number, z: number, r: number) => features.every((f) => Math.hypot(f.x - x, f.z - z) > f.r + r)
   // A compound (and the fields round it) must stand on dry, passable, fairly even ground.

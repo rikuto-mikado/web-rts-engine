@@ -11,6 +11,28 @@ export function useEngine(engine: GameEngine) {
 
 /** Small hand-drawn glyphs for unit types (24x24 viewBox). */
 const GLYPHS: Record<string, ReactNode> = {
+  // The fixed bands' own troops.
+  guard: (
+    <>
+      <path d="M8 21 L9.5 13 C7 12 6 9 7.5 6.5 L10 4 L11 2 L12.5 4.2 C16 4.5 18.5 7 19 10.5 L19.5 14 L17.5 14.5 L16 11.5 L14.5 13 L15 21 Z" />
+      <path d="M2 4 L3.5 6.5 L5 3 L6.5 6.5 L8 4 L7.4 8.5 L2.6 8.5 Z" />
+    </>
+  ),
+  assassins: <path d="M17.5 2.5 L21.5 2.5 L21.5 6.5 L11.5 16.5 L7.5 12.5 Z M6 13 L11 18 L9.6 19.4 L8 17.8 L4.8 21 L3 19.2 L6.2 16 L4.6 14.4 Z" />,
+  saboteurs: (
+    <>
+      <path d="M4 20.5 L13.5 11 L15 12.5 L5.5 22 Z" />
+      <path d="M10.5 6 C13.5 3.5 18 3 21.5 4.5 C19 5 16.5 6.5 15 8.5 L17.5 11 L15.5 13 L9.5 7 Z" />
+      <path d="M17 15.5 h4 v5 h-4 z" opacity=".6" />
+    </>
+  ),
+  outriders: (
+    <>
+      <path d="M8 21 L9.5 13 C7 12 6 9 7.5 6.5 L10 4 L11 2 L12.5 4.2 C16 4.5 18.5 7 19 10.5 L19.5 14 L17.5 14.5 L16 11.5 L14.5 13 L15 21 Z" opacity=".55" />
+      <path d="M3 2.5 C8 6 8 15 3 21.5 L2 20.6 C6 15 6 7 2 3.4 Z M2.6 3 L2.6 21" />
+      <path d="M2.2 3 L3 3 L3 21 L2.2 21 Z" />
+    </>
+  ),
   infantry: (
     <>
       <path d="M15 2 L17 6.5 L15.8 6.5 L15.8 22 L14.2 22 L14.2 6.5 L13 6.5 Z" />

@@ -76,7 +76,7 @@ export function ChronicleLog({ engine, onClose, onFocus }: { engine: GameEngine;
   const [filter, setFilter] = useState<'all' | 'mine' | 'ally'>('all')
   const entries = engine.state.chronicle.filter((e) => filter === 'all' || (filter === 'ally' ? e.kind === 'ally' : e.kind !== 'ally'))
   return (
-    <div className="parchment animate-slide-in pointer-events-auto absolute top-[64px] right-2 bottom-2 left-2 z-40 flex flex-col rounded-sm sm:top-[68px] sm:right-3 sm:bottom-auto sm:left-auto sm:max-h-[calc(100%-300px)] sm:w-[380px]">
+    <div className="parchment animate-slide-in pointer-events-auto absolute top-[64px] right-2 bottom-2 left-2 z-40 flex flex-col rounded-sm sm:top-[68px] sm:right-3 sm:bottom-auto sm:left-auto sm:max-h-[calc(100%-300px)] sm:w-[380px] short:sm:bottom-2 short:sm:max-h-none">
       <div className="flex items-center justify-between border-b border-[#6d5430]/40 px-4 py-3">
         <h3 className="flex items-center gap-2 font-display text-base font-bold">
           <ScrollText size={16} /> War Chronicle

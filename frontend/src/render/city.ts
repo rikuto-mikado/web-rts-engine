@@ -1,11 +1,14 @@
 import * as THREE from 'three'
 import { mulberry32 } from '../game/noise'
-import type { CityWall } from '../game/types'
-import { ROYAL_SEAT_TIER, castleRadius, distToSegment, type World } from '../game/world'
-import { Frame, PAL, house, newKit, tree, type HouseOpts, type Kit } from './buildings'
-import { bmerge, box, cone, cyl, groundShade, sphere } from './geo'
+import type { CityWall, TownDef } from '../game/types'
+import { ROYAL_SEAT_TIER, castleRadius, distToSegment, holdingRadius, wardReach, type World } from '../game/world'
+import { Frame, PAL, barrel, crate, gable, house, newKit, tree, type HouseOpts, type Kit } from './buildings'
+import { bmerge, bpart, box, cone, cyl, groundShade, sphere } from './geo'
 import { chapel, buildMat } from './villages'
-import { applyVision } from './vision'
+import { applyVision, visionUniforms } from './vision'
+import { buildCityCountry, type CityCountry } from './citycountry'
+import { chunkInstances } from './terrain'
+import { coursedCone, mottle, sailsGeometry, type FortStyle } from './fortress'
 
 /**
  * The royal city (The Long Night): its great double curtain walls, and the city inside them,
@@ -29,7 +32,7 @@ export function buildCityWalls(world: World): THREE.Group {
   if (!walls.length) return group
   const k = newKit()
   const banners: THREE.BufferGeometry[] = []
-  walls.forEach((w, wi) => buildWall(world, w, wi === walls.length - 1, k, banners))
+  walls.forEach((w, wi) => buildWall(world, w, w.outer ?? wi === walls.length - 1, k, banners))
   const mesh = new THREE.Mesh(groundShade(bmerge([...k.walls, ...k.roofs]), 5, 0.3), buildMat)
   mesh.castShadow = true
   mesh.receiveShadow = true
@@ -160,7 +163,7 @@ interface Street {
 }
 
 /** Distance from the centre to an outline along a bearing (the outline round (cx, cz)). */
-function radiusAt(poly: [number, number][], cx: number, cz: number, a: number): number {
+export function radiusAt(poly: [number, number][], cx: number, cz: number, a: number): number {
   const dx = Math.cos(a)
   const dz = Math.sin(a)
   let best = 0
@@ -178,13 +181,82 @@ function radiusAt(poly: [number, number][], cx: number, cz: number, a: number): 
   return best
 }
 
-export function buildCity(world: World, mobile = false): THREE.Group {
+/**
+ * Every walled royal city on the map: the Long Night's one, or the Three Crowns' three, each with
+ * its gate towns and farmland outside the walls (in the style of the realm that holds it).
+ * `userData.cleared` lists the ground the countryside took (world circles, for clearing the wild
+ * trees) and `userData.smoke` its chimneys.
+ */
+export function buildCity(world: World, mobile = false, styles: FortStyle[] = [], avoid: { x: number; z: number; r: number }[] = []): THREE.Group {
   const group = new THREE.Group()
-  const town = world.def.town
-  const walls = world.def.walls ?? []
-  if (!town?.poly || walls.length < 2 || !walls[0].points || !walls[1].points) return group
-  const rnd = mulberry32(4711)
-  const [innerW, outerW] = walls
+  const cleared: { x: number; z: number; r: number }[] = []
+  const smoke: [number, number, number][] = []
+  world.towns.forEach((town, i) => {
+    const [innerW, outerW] = world.townWalls(town)
+    if (!town.poly || !innerW?.points || !outerW?.points) return
+    group.add(buildOneCity(world, town, innerW, outerW, mobile, 4711 + i * 977))
+    // Outside the walls: the gate towns and the farmland, clear of the other holdings, the other
+    // cities, the terrain features and whatever else must stay open.
+    const keep = new Set(world.def.castles.filter((c) => Math.hypot(c.x - town.x, c.z - town.z) < town.r + 20).map((c) => c.id))
+    const away = [
+      ...avoid,
+      ...world.def.castles.filter((c) => !keep.has(c.id)).map((c) => ({ x: c.x, z: c.z, r: holdingRadius(c) * 1.5 + 20 })),
+      ...world.towns.filter((t) => t !== town).map((t) => ({ x: t.x, z: t.z, r: t.r + 60 })),
+      ...(world.def.features ?? []).map((f) => ({ x: f.x, z: f.z, r: f.r + 25 })),
+    ]
+    const style = styles[i] ?? 'crown'
+    const cc = buildCityCountry(world, town, outerW, (a) => radiusAt(outerW.points!, town.x, town.z, a), style, mulberry32(9137 + i * 131), away, mobile)
+    group.add(countryMesh(cc, town.x, town.z, style))
+    for (const c of cc.cleared) cleared.push({ x: town.x + c.x, z: town.z + c.z, r: c.r })
+    for (const [x, y, z] of cc.smoke) smoke.push([town.x + x, cc.base + y, town.z + z])
+  })
+  group.userData.cleared = cleared
+  group.userData.smoke = smoke
+  return group
+}
+
+const goldMat = applyVision(new THREE.MeshStandardMaterial({ color: 0xd9b24a, metalness: 0.75, roughness: 0.32, flatShading: true, vertexColors: true }))
+const HUE: Record<FortStyle, number> = { crown: ROYAL_BLUE, thorn: 0x8a1e2a, sun: 0xc8902a, free: 0x6a6a72 }
+
+/** The meshes of a city's countryside, placed at its centre; the windmills' sails turn. */
+function countryMesh(cc: CityCountry, cx: number, cz: number, style: FortStyle): THREE.Group {
+  const g = new THREE.Group()
+  g.position.set(cx, cc.base, cz)
+  const stone = new THREE.Mesh(groundShade(bmerge(cc.stone), 4, 0.22), buildMat)
+  stone.castShadow = true
+  stone.receiveShadow = true
+  g.add(stone)
+  if (cc.flat.length) {
+    const fm = new THREE.Mesh(groundShade(bmerge(cc.flat), 2, 0.15), buildMat)
+    fm.castShadow = false
+    fm.receiveShadow = true
+    g.add(fm)
+  }
+  if (cc.roof.length) {
+    const m = new THREE.Mesh(bmerge(cc.roof), applyVision(new THREE.MeshStandardMaterial({ color: HUE[style], flatShading: true, roughness: 0.75, vertexColors: true })))
+    m.castShadow = true
+    g.add(m)
+  }
+  if (cc.gold.length) g.add(new THREE.Mesh(bmerge(cc.gold), goldMat))
+  if (cc.glow.length) g.add(new THREE.Mesh(bmerge(cc.glow), glowMat))
+  for (const m of cc.mills) {
+    const hub = new THREE.Group()
+    hub.position.set(m.x, m.y, m.z)
+    hub.rotation.y = m.ry
+    const sail = new THREE.Mesh(sailsGeometry(m.r), buildMat)
+    sail.castShadow = true
+    sail.onBeforeRender = () => {
+      sail.rotation.z = -visionUniforms.uTime.value * 0.6
+    }
+    hub.add(sail)
+    g.add(hub)
+  }
+  return g
+}
+
+function buildOneCity(world: World, town: TownDef, innerW: CityWall, outerW: CityWall, mobile: boolean, seed: number): THREE.Group {
+  const group = new THREE.Group()
+  const rnd = mulberry32(seed)
   const cx = town.x
   const cz = town.z
   const rIn = (a: number) => radiusAt(innerW.points!, cx, cz, a)
@@ -194,7 +266,17 @@ export function buildCity(world: World, mobile = false): THREE.Group {
 
   // --- Streets: the avenues from the gates, rings round the city, lanes between. ---
   const streets: Street[] = []
-  for (const l of town.lanes ?? []) streets.push({ pts: [l[0], l[1]], w: 20, kind: 'avenue' })
+  for (const l of town.lanes ?? []) {
+    // The avenues to the heart stop at the ring road round the foot of the Citadel's mount (the
+    // revetment and the ramps take it from there).
+    let [a0, a1] = [l[0], l[1]]
+    const foot = mount * 1.32
+    if (Math.hypot(a1[0] - cx, a1[1] - cz) < foot) {
+      const d = Math.hypot(a0[0] - cx, a0[1] - cz) || 1
+      a1 = [cx + ((a0[0] - cx) / d) * foot, cz + ((a0[1] - cz) / d) * foot]
+    }
+    streets.push({ pts: [a0, a1], w: 20, kind: 'avenue' })
+  }
   const ring = (rf: (a: number) => number, w: number) => {
     const pts: [number, number][] = []
     for (let i = 0; i <= 96; i++) pts.push(at(rf((i / 96) * Math.PI * 2), (i / 96) * Math.PI * 2))
@@ -223,7 +305,7 @@ export function buildCity(world: World, mobile = false): THREE.Group {
   }
 
   // --- Occupancy grid: streets, plazas and buildings keep their ground. ---
-  const CELL = 4
+  const CELL = 2
   const ext = town.r + 40
   const N = Math.ceil((ext * 2) / CELL)
   const occ = new Uint8Array(N * N)
@@ -248,6 +330,24 @@ export function buildCity(world: World, mobile = false): THREE.Group {
       }
     return true
   }
+  /** The cells under a building's turned footprint (as an Object3D's rotation.y turns it). */
+  const rectCells = (x: number, z: number, hw: number, hd: number, ry: number, fn: (cx: number, cz: number) => boolean | void) => {
+    const c = Math.cos(ry)
+    const sn = Math.sin(ry)
+    for (let u = -hw; u <= hw + 0.01; u += CELL * 0.9)
+      for (let v = -hd; v <= hd + 0.01; v += CELL * 0.9) if (fn(x + u * c + v * sn, z - u * sn + v * c) === false) return false
+    return true
+  }
+  const freeRect = (x: number, z: number, hw: number, hd: number, ry: number) =>
+    rectCells(x, z, hw, hd, ry, (px, pz) => {
+      const ci = cell(px, pz)
+      return ci >= 0 && !occ[ci]
+    })
+  const markRect = (x: number, z: number, hw: number, hd: number, ry: number) =>
+    rectCells(x, z, hw, hd, ry, (px, pz) => {
+      const ci = cell(px, pz)
+      if (ci >= 0) occ[ci] = 1
+    })
   const inCity = (x: number, z: number) => world.insideWall(outerW, x, z) && !world.onWall(x, z, 22)
   for (const s of streets)
     for (let i = 0; i < s.pts.length - 1; i++) {
@@ -259,17 +359,24 @@ export function buildCity(world: World, mobile = false): THREE.Group {
   // Strongholds and their plazas.
   const plazas: { x: number; z: number; r: number }[] = []
   for (const c of world.def.castles) {
-    if (c.id === 'keep') mark(c.x, c.z, mount * 1.22)
+    // The Citadel on its mount (Three Crowns has one in each city: keep_a and the like), and the
+    // ramps up to its four gates along the axes: no houses on the revetment or the ramps.
+    if (c.id === town.keep || (c.capital && Math.hypot(c.x - cx, c.z - cz) < 60)) {
+      mark(c.x, c.z, mount * 1.3)
+      for (let q = 0; q < 4; q++) for (let r = mount; r < mount * 1.62; r += 6) mark(c.x + Math.cos((q * Math.PI) / 2) * r, c.z + Math.sin((q * Math.PI) / 2) * r, 24)
+    }
     else if (c.district) {
-      plazas.push({ x: c.x, z: c.z, r: 72 })
-      mark(c.x, c.z, 76)
+      // (Exactly the ground the ward builds on: wardReach, as the map laid it out by.)
+      const r = wardReach(c.id)
+      plazas.push({ x: c.x, z: c.z, r })
+      mark(c.x, c.z, r + 4)
     } else if (c.gate) mark(c.x, c.z, 70)
   }
   // Small squares where the lanes cross the middle ring, each with a fountain or a statue.
   const squares: { x: number; z: number; r: number; kind: 'fountain' | 'statue' | 'well' }[] = []
-  for (let a = 0.15; a < Math.PI * 2; a += 0.55) {
+  for (let a = 0.15; a < Math.PI * 2; a += 0.4) {
     const [x, z] = at((rIn(a) + rOut(a)) / 2 + 8, a)
-    if (!inCity(x, z) || plazas.some((p) => Math.hypot(p.x - x, p.z - z) < 140)) continue
+    if (!inCity(x, z) || plazas.some((p) => Math.hypot(p.x - x, p.z - z) < p.r + 68)) continue
     const kind = (['fountain', 'statue', 'well'] as const)[squares.length % 3]
     squares.push({ x, z, r: 26, kind })
     mark(x, z, 28)
@@ -280,7 +387,6 @@ export function buildCity(world: World, mobile = false): THREE.Group {
   for (const s of streets) pave.ribbon(s.pts, s.w, s.kind === 'avenue' ? 0x9a9284 : s.kind === 'ring' ? 0x8f8778 : 0x857d6e, rnd)
   for (const p of plazas) pave.disc(p.x, p.z, p.r, 0x9d9483, rnd)
   for (const q of squares) pave.disc(q.x, q.z, q.r, 0x958c7c, rnd)
-  pave.disc(cx, cz, mount * 1.25, 0x8a8273, rnd)
   group.add(pave.mesh())
 
   // --- Houses: a range of kit-built town houses, drawn as instances. ---
@@ -314,20 +420,23 @@ export function buildCity(world: World, mobile = false): THREE.Group {
       const ry = -Math.atan2(uz, ux)
       for (const side of [-1, 1])
         for (const row of rows) {
-          let t = rnd() * 6
+          // Shoulder to shoulder: each house's footprint is checked as its own rectangle, so the
+          // next one goes up right against it.
+          let t = rnd() * 2
           while (t < L) {
             const v = rnd() < 0.012 && row === 1 ? churchIdx : rnd() < 0.015 ? towerIdx : Math.floor(rnd() * houseCount)
             const p = protos[v]
-            const half = (p.w * SCALE) / 2
-            const off = s.w / 2 + 2.5 + (p.d * SCALE) / 2 + (row - 1) * (p.d * SCALE + 4)
-            const x = ax + ux * t + -uz * side * off
-            const z = az + uz * t + ux * side * off
-            const r = Math.max(half, (p.d * SCALE) / 2) + 0.5
-            if (inCity(x, z) && free(x, z, r) && (row === 1 || rnd() < 0.6)) {
-              place(v, x, z, ry + (side < 0 ? Math.PI : 0), SCALE * (0.92 + rnd() * 0.16))
-              mark(x, z, r + 1)
-            }
-            t += p.w * SCALE + 1.2 + rnd() * 2.5
+            const sc = SCALE * (0.94 + rnd() * 0.12)
+            const half = (p.w * sc) / 2
+            const off = s.w / 2 + 1.8 + (p.d * sc) / 2 + (row - 1) * (p.d * sc + 3.5)
+            const x = ax + ux * (t + half) + -uz * side * off
+            const z = az + uz * (t + half) + ux * side * off
+            const hry = ry + (side < 0 ? Math.PI : 0)
+            if (inCity(x, z) && freeRect(x, z, half, (p.d * sc) / 2, hry) && (row === 1 || rnd() < 0.8)) {
+              place(v, x, z, hry, sc)
+              markRect(x, z, half + 0.15, (p.d * sc) / 2 + 0.3, hry)
+              t += p.w * sc + 0.2 + rnd() * 0.5
+            } else t += 2
           }
         }
     }
@@ -361,6 +470,17 @@ export function buildCity(world: World, mobile = false): THREE.Group {
     m.receiveShadow = true
     m.computeBoundingSphere()
     group.add(m)
+    if (p.detail) {
+      const dm = new THREE.InstancedMesh(p.detail, houseMat, lists[v].length)
+      lists[v].forEach((mx, i) => {
+        dm.setMatrixAt(i, mx)
+        dm.setColorAt(i, colors[v][i])
+      })
+      dm.castShadow = false
+      dm.receiveShadow = true
+      dm.computeBoundingSphere()
+      group.add(dm)
+    }
   })
 
   // --- Courtyards: trees in the open ground behind the houses. ---
@@ -381,15 +501,17 @@ export function buildCity(world: World, mobile = false): THREE.Group {
     mark(x, z, 5)
   }
   if (trees.length) {
-    const tm = new THREE.InstancedMesh(treeGeo, houseMat, trees.length)
-    trees.forEach((mx, i) => tm.setMatrixAt(i, mx))
-    tm.castShadow = !mobile
-    group.add(tm)
+    // In squares of the city, so the trees' shadows can follow the camera (see updateTreeShadows).
+    const tg = new THREE.Group()
+    tg.name = 'city-trees'
+    for (const m of chunkInstances(treeGeo, houseMat, trees, null, !mobile, 500)) tg.add(m)
+    group.add(tg)
   }
 
   // --- Squares, lamps: fountains, statues, wells, and lamp posts along the avenues. ---
   const props = newKit()
-  for (const q of [...squares, ...plazas.map((p) => ({ x: p.x + p.r * 0.7, z: p.z, r: 0, kind: 'statue' as const }))]) {
+  // (The wards dress their own plazas.)
+  for (const q of squares) {
     const f = new Frame(q.x, q.z, rnd() * 6, world.heightAt(q.x, q.z))
     if (q.kind === 'fountain') {
       f.put(props.walls, cyl(7, 7.5, 1.4, 14), PAL.stoneL, 0, 0.7, 0, { ao: 0 })
@@ -412,9 +534,32 @@ export function buildCity(world: World, mobile = false): THREE.Group {
       for (const s of [-1, 1]) f.put(props.walls, box(0.3, 3, 0.3), PAL.timber, s * 1.6, 2, 0)
       f.put(props.roofs, box(4, 0.3, 2.4), PAL.tile[0], 0, 3.6, 0, { rz: 0.3 })
     }
-    // Trees round each square.
+    if (!q.r) continue
+    // A market round each square: stalls under awnings with their wares, carts, a market cross
+    // where there is no fountain, benches, and trees round the edge.
+    const awn = [0xa8322a, 0x2f4f9a, 0x3f6a3a, 0xc8902a]
+    for (let i = 0; i < 7; i++) {
+      const a = (i / 7) * Math.PI * 2 + 0.25
+      const sf = f.sub(Math.cos(a) * q.r * 0.66, Math.sin(a) * q.r * 0.66, -a - Math.PI / 2)
+      sf.put(props.walls, box(4.6, 1.1, 2.4), PAL.timberL, 0, 0.8, 0)
+      for (const [lx, lz] of [[-2.2, -1.1], [2.2, -1.1], [-2.2, 1.3], [2.2, 1.3]]) sf.put(props.walls, box(0.22, 3, 0.22), PAL.timber, lx, 1.5, lz, { ao: 0 })
+      sf.put(props.walls, box(5.2, 0.16, 3.4), awn[i % 4], 0, 3.1, 0.2, { rx: 0.22 })
+      if (i % 2) crate(props, sf, -1, 1.35, 0, 0.8)
+      else barrel(props, sf, 1.2, 0.2, 0.7)
+    }
+    if (q.kind === 'well') {
+      for (let st = 0; st < 3; st++) f.put(props.walls, box(4.4 - st * 1.2, 0.6, 4.4 - st * 1.2), PAL.stoneD, q.r * 0.3, 0.3 + st * 0.6, 0)
+      f.put(props.walls, box(0.6, 5.5, 0.6), PAL.stoneL, q.r * 0.3, 4.6, 0)
+      f.put(props.walls, box(2.4, 0.5, 0.5), PAL.stoneL, q.r * 0.3, 6.2, 0)
+    }
     for (let i = 0; i < 4; i++) {
-      const a = (i / 4) * Math.PI * 2 + 0.4
+      const a = (i / 4) * Math.PI * 2 + 0.8
+      const bf = f.sub(Math.cos(a) * q.r * 0.38, Math.sin(a) * q.r * 0.38, -a)
+      bf.put(props.walls, box(3, 0.3, 0.9), PAL.timberL, 0, 0.8, 0)
+      for (const sx of [-1.2, 1.2]) bf.put(props.walls, box(0.3, 0.8, 0.8), PAL.stoneD, sx, 0.4, 0)
+    }
+    for (let i = 0; i < 7; i++) {
+      const a = (i / 7) * Math.PI * 2 + 0.4
       tree(props, f, Math.cos(a) * (q.r + 2), Math.sin(a) * (q.r + 2), rnd, 1.2)
     }
   }
@@ -440,7 +585,8 @@ export function buildCity(world: World, mobile = false): THREE.Group {
     }
   }
   const pm = new THREE.Mesh(groundShade(bmerge([...props.walls, ...props.roofs]), 3, 0.2), buildMat)
-  pm.castShadow = !mobile
+  // (Fountains, statues, stalls and lamps: small, no shadow of their own.)
+  pm.castShadow = false
   pm.receiveShadow = true
   group.add(pm)
   if (lamps.length) group.add(new THREE.Mesh(bmerge(lamps), lampMat))
@@ -448,9 +594,49 @@ export function buildCity(world: World, mobile = false): THREE.Group {
   return group
 }
 
-/** The kinds of town house (and church, and tower house) the city is built from. */
-function housePrototypes(rnd: () => number): { geo: THREE.BufferGeometry; w: number; d: number; kind: 'house' | 'church' | 'tower' }[] {
-  const out: { geo: THREE.BufferGeometry; w: number; d: number; kind: 'house' | 'church' | 'tower' }[] = []
+type ProtoKind = 'house' | 'church' | 'tower'
+type Proto = { geo: THREE.BufferGeometry; detail: THREE.BufferGeometry | null; w: number; d: number; kind: ProtoKind }
+
+/** Paint the owner-colour parts of a kit (awnings, banners, signs) a fixed colour, for instancing. */
+function tint(parts: THREE.BufferGeometry[], color: number) {
+  const c = new THREE.Color(color)
+  for (const g of parts) {
+    const col = g.attributes.color as THREE.BufferAttribute
+    for (let i = 0; i < col.count; i++) col.setXYZ(i, col.getX(i) * c.r, col.getY(i) * c.g, col.getZ(i) * c.b)
+  }
+  return parts
+}
+
+/** One prototype: what the kit built, on a stone footing that runs well down into the ground. */
+function proto(k: Kit, w: number, d: number, kind: ProtoKind, accent = 0xa8322a): Proto {
+  k.walls.push(bpartFoot(w, d))
+  const geo = groundShade(bmerge([...k.walls, ...k.roofs, ...tint(k.accents, accent)]), 3, 0.22)
+  // The fine work (framing, frames, shutters, props) is drawn apart and casts no shadow.
+  const detail = k.flat?.length ? groundShade(bmerge(k.flat), 3, 0.22) : null
+  return { geo, detail, w, d, kind }
+}
+/** A kit for a prototype: its fine work kept apart. */
+function pkit(): Kit {
+  const k = newKit()
+  k.flat = []
+  return k
+}
+/** A footing of dressed stone under a building: from its floor down into the slope. */
+function bpartFoot(w: number, d: number) {
+  const k = newKit()
+  new Frame(0, 0, 0).put(k.walls, box(w + 0.9, 5.2, d + 0.9), PAL.stoneD, 0, -1.7, 0, { ao: 0.25, jitter: 0.1 })
+  return k.walls[0]
+}
+
+/**
+ * The kinds of building the city is built from (some twenty): jettied half-timbered town houses
+ * of every size, plastered and stone houses, shops with awnings and their wares out, houses turned
+ * gable-end to the street, L-shaped houses, a terrace of three under one roof, an inn with its sign,
+ * a merchant's hall over an arcade, a smithy with its tall chimney, a warehouse, a thatched cottage,
+ * a tower house of the old families, a parish church. Each stands on a stone footing.
+ */
+function housePrototypes(rnd: () => number): Proto[] {
+  const out: Proto[] = []
   const specs: HouseOpts[] = [
     { w: 7.5, d: 6, storeys: 2, roof: 'tile', style: 'timber' },
     { w: 6.5, d: 5.5, storeys: 2, roof: 'shingle', style: 'timber' },
@@ -461,29 +647,116 @@ function housePrototypes(rnd: () => number): { geo: THREE.BufferGeometry; w: num
     { w: 6, d: 5, storeys: 1, roof: 'shingle', style: 'stone' },
     { w: 7, d: 6, storeys: 2, roof: 'tile', style: 'stone' },
     { w: 9, d: 5.5, storeys: 2, roof: 'tile', style: 'timber' },
-    { w: 6.5, d: 6, storeys: 1, roof: 'slate', style: 'plaster', annex: true },
+    { w: 6.5, d: 6, storeys: 2, roof: 'slate', style: 'plaster', annex: true },
+    { w: 5.5, d: 6.5, storeys: 2, roof: 'tile', style: 'timber' },
   ]
   for (const o of specs) {
-    const k = newKit()
-    house(k, new Frame(0, 0, 0), { ...o, detail: 'mid' }, rnd)
-    out.push({ geo: groundShade(bmerge([...k.walls, ...k.roofs]), 3, 0.22), w: o.w, d: o.d, kind: 'house' })
+    const k = pkit()
+    house(k, new Frame(0, 0, 0), { ...o, detail: 'high' }, rnd)
+    out.push(proto(k, o.w, o.d, 'house'))
+  }
+  // Shops: awnings over the front, trestles with their wares.
+  for (const [o, accent] of [[{ w: 7, d: 6, roof: 'tile', style: 'timber' }, 0xa8322a], [{ w: 6.5, d: 6, roof: 'slate', style: 'plaster' }, 0x2f4f9a], [{ w: 8, d: 6, roof: 'tile', style: 'stone' }, 0x3f6a3a]] as const) {
+    const k = pkit()
+    const f = new Frame(0, 0, 0)
+    house(k, f, { ...o, storeys: 2, detail: 'high' } as HouseOpts, rnd)
+    f.put(k.accents, box(o.w * 0.85, 0.14, 2.4), 0xffffff, 0, 3.1, o.d / 2 + 1.1, { rx: 0.32 })
+    for (const s of [-1, 1]) f.put(k.walls, box(0.16, 2.7, 0.16), PAL.timber, s * o.w * 0.4, 1.6, o.d / 2 + 2.2)
+    f.put(k.walls, box(o.w * 0.65, 0.9, 1.1), PAL.timberL, 0, 1.3, o.d / 2 + 1.5)
+    crate(k, f, -o.w * 0.25, 1.8, o.d / 2 + 1.5, 0.7)
+    barrel(k, f, o.w * 0.32, o.d / 2 + 1.7, 0.6)
+    out.push(proto(k, o.w, o.d + 2.5, 'house', accent))
+  }
+  // Gable-end to the street: the ridge runs back from the front.
+  {
+    const k = pkit()
+    house(k, new Frame(0, 0, Math.PI / 2), { w: 8, d: 5.5, storeys: 2, roof: 'tile', style: 'timber', detail: 'high' }, rnd)
+    out.push(proto(k, 5.5, 8, 'house'))
+  }
+  // An L: a house with a wing running back.
+  {
+    const k = pkit()
+    house(k, new Frame(0, 0, 0), { w: 8, d: 5.5, storeys: 2, roof: 'slate', style: 'stone', detail: 'high' }, rnd)
+    house(k, new Frame(-2.4, -5.2, Math.PI / 2), { w: 5.5, d: 4.5, storeys: 1, roof: 'slate', style: 'stone', detail: 'mid' }, rnd)
+    out.push(proto(k, 8, 10, 'house'))
+  }
+  // A terrace of three under one roof line.
+  {
+    const k = pkit()
+    for (let i = 0; i < 3; i++) house(k, new Frame(-5.6 + i * 5.6, 0, 0), { w: 5.5, d: 6, storeys: 2, roof: 'tile', style: i === 1 ? 'plaster' : 'timber', detail: 'high' }, rnd)
+    out.push(proto(k, 16.8, 6, 'house'))
+  }
+  // An inn: big, jettied, its sign on a bracket, benches out front.
+  {
+    const k = pkit()
+    const f = new Frame(0, 0, 0)
+    house(k, f, { w: 11, d: 8, storeys: 2, roof: 'tile', style: 'timber', detail: 'high', annex: true }, rnd)
+    f.put(k.walls, box(0.18, 0.18, 2.4), PAL.iron, 4, 4.6, 4.8)
+    f.put(k.accents, box(1.6, 1.3, 0.14), 0xffffff, 4, 3.7, 5.8)
+    for (const u of [-3, 1.5]) {
+      f.put(k.walls, box(3, 0.25, 1.2), PAL.timberL, u, 1.2, 6.6)
+      for (const s of [-1, 1]) f.put(k.walls, box(3, 0.2, 0.45), PAL.timber, u, 0.7, 6.6 + s * 1.1)
+    }
+    barrel(k, f, -5, 5, 0.8)
+    out.push(proto(k, 11, 10, 'house', 0x6a3a1e))
+  }
+  // A merchant's hall: stone, over an open arcade.
+  {
+    const k = pkit()
+    const f = new Frame(0, 0, 0)
+    house(k, f, { w: 13, d: 8, storeys: 2, roof: 'slate', style: 'stone', detail: 'high', banner: true }, rnd)
+    for (let i = 0; i < 5; i++) {
+      const u = -5.2 + i * 2.6
+      f.put(k.walls, cyl(0.32, 0.36, 3.2, 8), PAL.stoneL, u, 1.6, 5)
+      if (i < 4) f.put(k.walls, new THREE.TorusGeometry(1.3, 0.28, 3, 8, Math.PI), PAL.stoneL, u + 1.3, 3.1, 5, { ao: 0 })
+    }
+    f.put(k.walls, box(13, 0.5, 2.4), PAL.stoneD, 0, 4.3, 4.6)
+    out.push(proto(k, 13, 10.5, 'house', 0x2f4f9a))
+  }
+  // A smithy: a stone forge with its tall chimney and the anvil out front.
+  {
+    const k = pkit()
+    const f = new Frame(0, 0, 0)
+    house(k, f, { w: 8, d: 6.5, storeys: 1, roof: 'slate', style: 'stone', detail: 'high' }, rnd)
+    f.put(k.walls, box(1.6, 10, 1.6), PAL.soot, 3, 5, -2.4)
+    f.put(k.walls, box(1.5, 0.8, 0.7), PAL.iron, -1.5, 1.2, 4.4)
+    f.put(k.walls, box(0.8, 0.8, 0.8), 0x4a3a2a, -1.5, 0.4, 4.4)
+    out.push(proto(k, 8, 8, 'house'))
+  }
+  // A warehouse: tall timber, a hoist beam over the loft door.
+  {
+    const k = pkit()
+    const f = new Frame(0, 0, 0)
+    f.put(k.walls, box(10, 9, 8), PAL.timberL, 0, 4.5, 0)
+    for (let u = -4.5; u <= 4.5; u += 3) f.put(k.walls, box(0.35, 9, 0.4), PAL.timber, u, 4.5, 4.05)
+    f.put(k.walls, box(2.4, 3, 0.3), PAL.door, 0, 1.5, 4.1)
+    f.put(k.walls, box(2, 2.2, 0.3), PAL.dark, 0, 6.6, 4.1)
+    f.put(k.walls, box(0.3, 0.3, 2.6), PAL.timber, 0, 8.4, 5.2)
+    f.put(k.roofs, gable(9.4, 11, 4), PAL.tile[1], 0, 9, 0)
+    out.push(proto(k, 10, 8, 'house'))
+  }
+  // A thatched cottage that the city grew round.
+  {
+    const k = pkit()
+    house(k, new Frame(0, 0, 0), { w: 7, d: 5.5, storeys: 1, roof: 'thatch', style: 'timber', detail: 'high', annex: true }, rnd)
+    out.push(proto(k, 7, 5.5, 'house'))
   }
   {
-    const k = newKit()
+    const k = pkit()
     chapel(k, new Frame(0, 0, 0), rnd, false)
-    out.push({ geo: groundShade(bmerge([...k.walls, ...k.roofs]), 3, 0.2), w: 13, d: 9, kind: 'church' })
+    out.push(proto(k, 13, 9, 'church'))
   }
   {
-    // A tower house of the old families: tall, narrow, crenellated, a little turret.
-    const k = newKit()
+    // A tower house of the old families: tall, narrow, crenellated, a little turret with its spire.
+    const k = pkit()
     const f = new Frame(0, 0, 0)
     f.put(k.walls, box(7, 1.4, 7), PAL.stoneD, 0, 0.2, 0)
-    f.put(k.walls, box(6, 19, 6), PAL.stoneL, 0, 10, 0, { ao: 0.2 })
-    for (const y of [6, 11, 16]) f.put(k.walls, box(1, 1.6, 0.2), PAL.dark, 0, y, 3.05, { ao: 0 })
+    k.walls.push(mottle(bpart(new THREE.BoxGeometry(6, 19, 6, 2, 6, 2), PAL.stoneL, { y: 10, ao: 0.2 }), 0.05))
+    for (const y of [6, 11, 16]) for (let s = 0; s < 4; s++) new Frame(0, 0, (s * Math.PI) / 2).put(k.walls, box(1, 1.6, 0.2), PAL.dark, 0, y, 3.05, { ao: 0 })
     for (const [x, z] of [[-2.6, -2.6], [2.6, -2.6], [-2.6, 2.6], [2.6, 2.6], [0, -2.6], [0, 2.6], [-2.6, 0], [2.6, 0]]) f.put(k.walls, box(1.1, 1.4, 1.1), PAL.stone, x, 20.2, z, { ao: 0 })
     f.put(k.walls, cyl(1.3, 1.3, 4, 8), PAL.stone, 2.6, 21, 2.6)
-    f.put(k.roofs, cone(1.7, 3, 8), PAL.slate[0], 2.6, 24.5, 2.6)
-    out.push({ geo: groundShade(bmerge([...k.walls, ...k.roofs]), 3, 0.22), w: 7, d: 7, kind: 'tower' })
+    coursedCone(k.roofs, 2.6, 23, 2.6, 1.7, 3.6, PAL.slate[0], 8)
+    out.push(proto(k, 7, 7, 'tower'))
   }
   return out
 }

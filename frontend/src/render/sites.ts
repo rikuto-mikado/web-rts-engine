@@ -1,8 +1,9 @@
 import * as THREE from 'three'
 import type { GameEngine } from '../game/engine'
 import { Frame, PAL, barrel, cart, crate, gable, house, newKit, wheel, woodpile, type Kit } from './buildings'
-import { bmerge, box, cone, cyl, groundShade, merge, part } from './geo'
+import { bmerge, box, cone, cyl, groundShade } from './geo'
 import { applyVision } from './vision'
+import { makeBanner, recolorBanner, waveFlag, type StandardFlag } from './standards'
 
 const mat = applyVision(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.9 }), '', false, false, true)
 const O = new Frame(0, 0, 0)
@@ -101,7 +102,7 @@ function lumberGeometry() {
 /** Mines and lumber camps, with a little flag in the colours of whoever works them. */
 export class SiteRenderer {
   readonly group = new THREE.Group()
-  private views = new Map<string, { group: THREE.Group; flag: THREE.Mesh }>()
+  private views = new Map<string, { group: THREE.Group; flag: StandardFlag; color: string }>()
   private geos = { mine: mineGeometry(), lumber: lumberGeometry() }
   private engine: GameEngine
   constructor(engine: GameEngine) {
@@ -116,20 +117,27 @@ export class SiteRenderer {
         const m = new THREE.Mesh(this.geos[s.kind], mat)
         m.castShadow = true
         m.receiveShadow = true
-        const flag = new THREE.Mesh(new THREE.PlaneGeometry(4, 2.6), applyVision(new THREE.MeshStandardMaterial({ color: '#ffffff', side: THREE.DoubleSide })))
-        flag.position.set(8, 11, 4)
-        const pole = new THREE.Mesh(merge([part(cyl(0.2, 0.2, 9, 4), 0x3b2f25, { x: 6, y: 4.5, z: 4 })]), mat)
-        group.add(m, flag, pole)
+        // A small swallowtail on a crossbar pole, in the colours of whoever works the site.
+        const banner = makeBanner({ color: '#8a7a5a', finial: s.kind === 'mine' ? 'shield' : 'spear', scale: 0.5, seed: s.id.length })
+        banner.group.position.set(6, 0, 4)
+        group.add(m, banner.group)
+        const flag = banner.flag
         group.position.set(s.x, world.heightAt(s.x, s.z) - 0.3, s.z)
         group.rotation.y = (s.x * 3 + s.z * 7) % 6.28
         this.group.add(group)
-        v = { group, flag }
+        v = { group, flag, color: '' }
         this.views.set(s.id, v)
       }
       const w = this.engine.army(s.workerId)
-      v.flag.visible = !!w
-      if (w) (v.flag.material as THREE.MeshStandardMaterial).color.set(this.engine.factionColor(w.faction))
-      v.flag.rotation.y = Math.sin(time * 2 + s.x) * 0.3
+      v.flag.mesh.visible = !!w
+      if (w) {
+        const color = this.engine.factionColor(w.faction)
+        if (color !== v.color) {
+          v.color = color
+          recolorBanner(v.flag, color)
+        }
+        waveFlag(v.flag, time, 0.8)
+      }
     }
   }
 }

@@ -3,7 +3,7 @@ import type { PortraitSpec } from '../game/types'
 
 /**
  * Procedural 32x32 pixel-art bust, drawn from a small spec stored with each
- * commander in the database. Faces are bare (no helms or plate): soldiers
+ * commander in the database. Commanders' faces are bare (a captain may wear a nasal helm): soldiers
  * in quilted gambesons, tabards, fur mantles and travelling cloaks, with the
  * scars, beards and crowns of their trade.
  */
@@ -355,6 +355,25 @@ function draw(p: PortraitSpec): Px {
       const h = p.hat ?? trim
       rect(10, 8, 21, 8, h)
       rect(22, 8, 23, 11, shade(h, -0.2))
+      break
+    }
+    case 'helm': {
+      // A captain's nasal helm: a steel dome, a riveted brow band, a nasal bar, a mail coif at the cheeks.
+      const st = '#9aa3ad'
+      const stD = '#5f6770'
+      const stL = '#d4dbe2'
+      rect(10, 3, 21, 9, st)
+      rect(11, 2, 20, 2, st)
+      rect(12, 1, 19, 1, stD)
+      rect(11, 3, 14, 5, stL)
+      rect(20, 3, 21, 9, stD)
+      rect(9, 9, 22, 10, stD)
+      for (const x of [11, 14, 17, 20]) set(x, 9, stL)
+      rect(15, 10, 16, 15, st)
+      set(15, 10, stL)
+      // Mail coif down the cheeks and over the shoulders.
+      for (let y = 10; y <= 22; y++)
+        for (const x of [8, 9, 22, 23]) set(x, y, (x + y) % 2 ? '#7a828c' : '#5a626c')
       break
     }
   }

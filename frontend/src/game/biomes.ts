@@ -24,7 +24,7 @@ export type ClimateKey =
   | 'wasteland'
   | 'lakeland'
 
-export type MapType = 'crown' | 'delta' | 'frostfire' | 'coast' | 'basin' | 'divide' | 'greenwood' | 'kingsvale'
+export type MapType = 'crown' | 'delta' | 'frostfire' | 'coast' | 'basin' | 'divide' | 'greenwood' | 'kingsvale' | 'continent'
 
 type RGB = [number, number, number]
 
@@ -228,6 +228,18 @@ export function zoneWeights(map: MapType, u: number, v: number, n: number): [num
       const rim = sm(0.62, 0.76, r)
       return [lakes, Math.max(0, 1 - lakes - rim), rim]
     }
+    case 'continent': {
+      // The War of the Three Crowns: three realms round a contested heart. The King's golden
+      // grainlands in the west and south-west, the Usurper's snowy taiga in the north, the Sun
+      // Emperor's autumn highlands in the east and south-east; the borders wander between them.
+      const a = Math.atan2(v, u) + n * 0.45
+      const f = (c: number) => Math.pow(Math.max(0, Math.cos(a - c)), 3)
+      const w0 = f((5 * Math.PI) / 6)
+      const w1 = f(-Math.PI / 2)
+      const w2 = f(Math.PI / 6)
+      const sum = w0 + w1 + w2 || 1
+      return [w0 / sum, w1 / sum, w2 / sum]
+    }
     case 'kingsvale': {
       // The Long Night: green fields round the royal city, the blighted waste where the rifts open beyond.
       const r = Math.hypot(u, v) + n * 0.12
@@ -293,9 +305,9 @@ export const MAPS: Record<MapType, MapDef> = {
     key: 'coast',
     name: 'Gilded Coast',
     tagline: 'Cliffs and canyons',
-    description: 'The red mesa country ends in a sheer escarpment across the land, climbed only by three narrow canyons. Below it, the open coast and its fast shore road: easy to cross, hard to hold.',
+    description: 'The red mesa country ends in a sheer escarpment across the land, climbed only by three narrow canyons. Below it, the open coast: easy to cross, hard to hold.',
     zones: ['mesa', 'autumn', 'coast'],
-    regions: ['North: mesas behind the cliffs', 'The escarpment: three canyons', 'South: the coast and its shore road'],
+    regions: ['North: mesas behind the cliffs', 'The escarpment: three canyons', 'South: the open coast'],
     water: 0x2f7fa8,
     fog: 0xcfc4ae,
     gen: { forest: 0.55 },
@@ -337,6 +349,19 @@ export const MAPS: Record<MapType, MapDef> = {
     fog: 0xb8c4b4,
     gen: { forest: 0.9 },
     swatch: ['#2f4f3c', '#c0632a', '#d9b84a'],
+  },
+  // The War of the Three Crowns' own map.
+  continent: {
+    key: 'continent',
+    name: 'The Three Realms',
+    tagline: 'A continent, three crowns',
+    description: "Three walled royal cities across a great continent: the King's grainlands in the west, the Usurper's snowbound north, the Sun Emperor's autumn highlands in the east, and the ruined crossroads of the old empire at the heart where they meet.",
+    zones: ['grain', 'taiga', 'autumn'],
+    regions: ["West: the King's grainlands", "North: the Usurper's taiga", "East: the Sun Emperor's highlands"],
+    water: 0x2f5f78,
+    fog: 0x8a8a96,
+    gen: { forest: 0.5 },
+    swatch: ['#c8a84a', '#3f6a52', '#c0632a'],
   },
   // The Long Night's own map.
   kingsvale: {

@@ -42,6 +42,28 @@ npm run dev                  # http://localhost:5173 (proxies /api to :8000)
 | **Alliance War** | Random, 16 / 24 / 32 realms in two alliances | Your alliance takes the enemy High Seat                |
 | **Convoy Raid**  | The Greenwood Road (one forest road)         | Escort: bring 3 of 5 gold wagons in. Raid: seize 3     |
 | **The Long Night** | The Royal Vale (the King's walled city)    | Hold the Citadel and keep the King alive until dawn    |
+| **War of the Three Crowns** | The Three Realms (a continent, three royal cities) | Shatter both rival crowns: slay their monarchs or take their Citadels |
+
+### War of the Three Crowns
+
+A long, three-way war with no time limit on a continent of its own (`grand`,
+`game/grandmap.ts`): three walled royal cities in a great triangle, each laid
+out like the Long Night's (`layRoyalCity`: an inner and an outer wall with
+gatehouses, wards, streets and thousands of houses, the Citadel at the heart),
+and each ringed by three vassal lords and a march fortress. **Team A** is the
+player's (King Aldric, the Royal Guard, the Whisper Blades, the Night Sappers and the Wardens),
+**team B** the Usurper Queen's (Thorn Guard, Grey Sisters, Rootcutters, Thorn Hunt), and
+**team C** the Sun Emperor's (Vaelor the Sun-Crowned and his Solar Guard in
+bronze and gold; Vesk, Sabine and Ulric serve him). Between them: three rivers
+running out from the heart along the borders with mountain ranges broken by
+passes, free towns, and the ruined Imperial Crossroads inside the old empire's
+walls at the very centre. The rival crowns fight each other as well as the
+player, and every realm leans on whichever rival grows strongest (and leaves
+the King be for the first quarter hour). A crown is **shattered** when its
+monarch falls or its Citadel is taken (its lords fight on); shatter both to
+win. The war is lost only if the King has fallen *and* his Citadel is taken,
+or nothing of the realm is left. The **Three Crowns** panel shows each
+crown's rank, castles, Citadel walls and whether its monarch rides.
 
 ### The Long Night
 
@@ -51,7 +73,11 @@ three gatehouses round the royal quarter, a great outer wall with five round
 the lower city, both following the lie of the land, and thousands of houses,
 parish churches and tower houses between them. Five wards are strongholds
 that pay and raise men while they hold: the Market, the Smiths', the Granary,
-Cathedral Close (a great cathedral) and the Royal Barracks. Outside lie
+Cathedral Close (a great cathedral) and the Royal Barracks. Each ward's
+ground (its landmark, plaza and ring of houses) is laid out clear of the
+walls, the gates, the streets, the Citadel's mount and ramps and the other
+wards: the map searches round from its preferred bearing until it fits.
+Outside lie
 villages, mines and the river's two bridges and ford.
 
 The Endless Night (undying: no upkeep, no supply, never wiped out, and fearless:
@@ -99,9 +125,12 @@ all there are.
   it. Halt the whole train from the bar at the bottom of the screen, scout the
   woods, raise watch posts that find hidden raiders, and rebuild the bridge if
   it comes down. Win by bringing 3 wagons in.
-- **Raid** (Corvin Ashe, 440): his band hides on its own (see the spymaster),
-  with Light Horse (220) and Sappers (210), each in a hidden camp in the
-  forest. The sappers can pull the bridge down (the wagons then wade a ford,
+- **Raid** (Corvin Ashe): his Whisper Blades (130, hidden on their own; see
+  the spymaster) and his Hooded Bowmen (440, under a captain), with Light Horse
+  (220) and Sappers (210), each in a hidden camp in the forest. The Blades go
+  for the leader of a wagon's guards: struck down, the guards break and flee,
+  and the Blades take a wagon left bare themselves (the harder the difficulty,
+  the closer the guards watch their leaders). The sappers can pull the bridge down (the wagons then wade a ford,
   slowly) or bar the road with a barricade. Win by seizing 3 wagons. Routed
   raiders fall back to their camps.
 - **Standing orders**: so one player can run a whole side, every band can be
@@ -113,13 +142,15 @@ all there are.
   bridge). Raiders: *Ambush* (lie in the trees here and take a weakly guarded
   wagon), *Harass* (pin the guards of a wagon passing near here in a fight),
   *Bridge* (engineers: pull the bridge down as the wagons near it, then wait
-  where the ford road rejoins). The bands without a commander start on one
-  (Outriders hunt, Bowmen escort, Pioneers picket the bridge; Light Horse
-  harass, Sappers see to the bridge).
+  where the ford road rejoins), *Strike* (the Whisper Blades: lie hidden here
+  and, when ready, strike down the leader of a nearby wagon's guards, then take
+  a wagon left bare). The bands without a commander start on one
+  (Outriders hunt, Bowmen escort, Pioneers picket the bridge; Light Horse and
+  Hooded Bowmen harass, Sappers see to the bridge).
 - The computer plays the other side with the same standing orders: its ambushes
   move up the road ahead of the wagons, and its escort halts the train (never
   for more than 25 seconds) when a wagon is caught alone. Difficulty scales its
-  forces (raiders 0.8x to 1.35x, escort 0.65x to 1.2x; Last Stand is Alliance War's alone); in headless matches of
+  forces (raiders 0.62x to 1.2x besides the Grey Sisters, escort 0.65x to 1.2x; Last Stand is Alliance War's alone); in headless matches of
   the computer against itself, Normal comes out about even.
 - A side with no one left in the field loses.
 
@@ -134,7 +165,7 @@ preview of the map, and the minimap draws the walls, cliffs and roads.
 | Shattered Crown  | A snowbound range east to west, crossed by three passes                                                       |
 | Twin Sun Delta   | The Great River, west bank against east: a ford and the Great Bridge, then three fordable channels at the mouth (mud: slow, no charge) |
 | Frostfire Reach  | The Long Wall, corner to corner between ice and ash: impassable but at two gates and one breach               |
-| Gilded Coast     | The Red Escarpment: sheer cliffs across the land, climbed by three narrow canyons; a fast shore road below    |
+| Gilded Coast     | The Red Escarpment: sheer cliffs across the land, climbed by three narrow canyons; the open coast below       |
 | Whispering Basin | A ring of lakes round Heartmere, the island fortress, reached over narrow necks of land                        |
 | The Great Divide | Two rivers, west against east, three crossings each; Gravewatch citadel on the old battlefield between them   |
 
@@ -180,6 +211,14 @@ backend records each match's result and battle reports.
   morale.
 - **Seasons and weather**: winter slows marches and raises upkeep; rain and
   storms blunt archers; spring brings recruits, autumn the harvest.
+- **Deep Freeze**: in the depth of each winter (from 2½ minutes in until 1½
+  minutes before spring) stretches of the rivers and some lakes freeze solid
+  and can be crossed anywhere, at 60% pace; a fight on the ice is treacherous
+  (no charges, no squares, heavier losses). Which stretches freeze is fixed per
+  map: cold ground more often, warm volcanic ground and the sea never, and at
+  most half of a map's lakes. Warnings come before the freeze and the thaw; an
+  army still on the ice when it breaks up loses a tenth of its men. No outposts
+  on the ice.
 - **Ambush**: an army holding still in a forest becomes hidden and strikes
   first when an enemy blunders into it.
 - **Intrigue** (its own sidebar tab): buy truces, in Alliance War bribe enemy
@@ -218,9 +257,88 @@ backend records each match's result and battle reports.
   faster-healing commanders, infamy forgiven), wardens' keeps (riders that
   chase off scouts, wagons and small raids) and siege guildhalls (cheaper
   engineers, outposts and upgrades; walls mend faster).
+- **Castles** (`render/fortress.ts`, `castletown.ts`, `farmland.ts`; outlines in
+  `World.planCastle`): each lord's castle is built to its site, and the
+  armies' walls follow the same outline. On a river or lake the wall squares
+  off along the water (a road runs down from the gate facing it to a stone
+  quay with a jetty, boats, fishermen's huts and net racks); on a hill it is
+  drawn out along the ridge and hugs the brow over a battered revetment; on
+  the plain it is an irregular polygon with towers at its corners. Four gates
+  a quarter turn apart, the main gate towards the heart of the map (or the
+  landward side); armies pass the walls only at the gates. Tier 1 is a motte
+  and bailey; tier 2 a stone castle with a great keep; tier 3 adds an inner
+  ward and a barbican; tier 4 and up a lower outer wall on its own levelled
+  terrace, with drum towers where the roads pass. The realm that holds it
+  sets its style: the King's side pale limestone with conical roofs, the
+  Usurper's black basalt with iron thorns, the Sun Emperor's sandstone with
+  ribbed domes and gilt, free lords grey stone with timber hoardings; roofs
+  carry courses and eaves trim in the lord's hue (a castle taken across the
+  lines is rebuilt in its new lord's style). Inside: the four streets lined
+  shoulder to shoulder with tall jettied houses and shops, a ring lane and
+  back lanes, a guildhall with its arcade on the square, a fountain, a smithy
+  whose forge smokes, an armoury and weapon racks, barracks with archery
+  butts and a quintain, stables, a chapel, walled gardens. Outside, on a broad
+  gentle apron cleared of woods: faubourgs along curving roads out of the
+  gates (townhouses near the gate, an inn and a market cross on a plaza,
+  cottages with walled yards, farmsteads with barns; side alleys with a
+  tannery, a potter's kiln, a carpenter's yard), every building on a stepped
+  footing on a slope; and the farmland: fields of wheat, stubble with stooks,
+  cabbages, vines, ploughed loam and hay behind hurdles or hedgerows with
+  stiles, scarecrows and haystacks; a tower windmill with a gallery, a cap and
+  tailpole and turning lattice sails, and the miller's cottage; an orchard in
+  a stone-walled close with beehives; pastures of sheep, cattle or horses
+  with a trough and a hayrick. Chimneys, forges and kilns smoke. A ruin stands
+  broken among burnt houses and scorched fields.
+- **Royal cities** (`render/city.ts`, `citadel.ts`, `precinct.ts`,
+  `citycountry.ts`): the Citadel stands on the dead-level summit of its
+  mount, whose steep face is hidden by a battered stone revetment with a
+  string course, buttresses and a parapet; four grand ramps with balustrades,
+  steps, lamps and piers climb to its gates. The Great Keep rises in three
+  stages (the main block with an arcaded, gabled pavilion and a balcony on
+  each face; a corbelled, crenellated upper stage; a lantern of stained glass
+  under the great spire), with eight spires round it and flying buttresses,
+  pointed windows, pilasters, giant banners and gilded bands; a grand entrance
+  with twin towers, a great arch, a rose window and the royal arms heads the
+  stair. Covered arcaded galleries join it to the palace and its dome, the
+  great hall and the chapel. The gilding (finials, bands, the dome, the arms)
+  is a metal material. The Citadel's precinct has processional avenues paved in
+  a chequer with braziers, a ring road, a cloister round a fountain garden,
+  the Guard's barracks and drill yard, the royal stables, the great lords'
+  mansions, the treasury, the library tower and an observatory; each ward's
+  landmark stands on a plaza ringed by town houses and shops, with stalls,
+  carts, wells and smoke from the chimneys, and each gate has a square with a
+  guard house and a toll booth. The city is built from some twenty kinds of
+  house (jettied town houses, shops with awnings, terraces, an inn, a
+  merchant's hall over an arcade, a smithy, a warehouse, tower houses, parish
+  churches) on stone footings, wall to wall along the streets, its squares
+  dressed with markets, crosses, benches and trees. Outside the great outer
+  wall: gate towns, travellers' camps and a broad farmland of fields,
+  windmills, orchards, pastures and farmsteads.
+- **Rendering cost**: paving, fields, fences, hedges, animals, props and the
+  fine work of buildings (framing, frames, shutters) go into meshes that cast
+  no shadow; only walls, towers, keeps, building bodies and roofs, trees and
+  windmills draw into the shadow map. Trees (the wild wood, the deep woods and
+  the cities' courtyard trees) are split into chunks, and only the chunks near
+  the camera cast shadows. A castle is rebuilt only when its tier,
+  ruin, owner or style changes; castles off screen or far away skip their
+  flags, sails and smoke.
 - **Terrain**: three climates per map with their own rules, crossings by
-  bridge or ford, and features: standing stones, terraced slopes, windfall
-  thickets and crag overlooks.
+  bridge or ford, and features: standing stones, windfall thickets and crag
+  overlooks (none on a mountainside, a cliff or the water's edge), and the
+  great woods (`FEATURES.oldwood`,
+  `FEATURES.deepwood`; drawn in `render/woods.ts`):
+  - **Old-growth forest**: a stand of giant firs and ancient broadleaves over
+    an open floor of ferns, fallen giants and dappled light. Arrows do 30%
+    less, charges lose 40% of their force, 10% fewer losses; horses 0.65x;
+    troops waiting there hide in 4 seconds.
+  - **The Deepwood**: a sea of trees rising to a dome at its heart, with a
+    low mist drifting through it. Any host inside is seen only within 170m
+    (the Wardens and the Thorn Hunt read its tracks out to 450m) and sees
+    only half as far out itself. No charges; arrows do 50% less, horsemen
+    30% less; foot 0.75x, horses 0.35x, so marching hosts go round it unless
+    the way through is much shorter. Hidden bands are concealed there.
+    Outposts can be built in both kinds of wood: the trees are cleared where
+    they stand.
 - **Villages**: win free villages over with envoys and gold. A vassal village
   runs itself: it raises its own militia, sends tribute wagons to its lord's
   nearest castle, walls itself in stone in time and sends militia to help a
@@ -246,30 +364,102 @@ backend records each match's result and battle reports.
   steeling them with her presence. Destroy her guard and the war is won. Her
   last known whereabouts show as a red crown on the map and in the War tab;
   scouts who come near her bring word.
-- **The spymaster**: Corvin Ashe, Master of Whispers, hides the light troops
-  he leads on his own (500 men; 1000 at ★★★, 1500 at ★★★★★; no knights,
-  heavy foot or siege engines). In woods, thickets, river valleys, on a
+- **The spymaster**: Corvin Ashe, Master of Whispers, leads his Whisper Blades
+  (130 knife-men, fixed like the Royal Guard) and nothing else; they hide on
+  their own, strike at enemy commanders (the Usurper Queen too), cover the
+  Night Sappers' work, never run out of supply and march 1.28x. A
+  failed strike costs about 30% of the band but still shakes the host
+  (morale -20); the panel's *Strike odds* list shows the chance against every
+  enemy army in sight, and a tap sends them after it. Wiped
+  out, they gather again 5 minutes later, 60 strong; an abbey of yours fills
+  them up (the Royal Guard too). In woods, thickets, river valleys, on a
   mountain's flank, in a hidden camp, or in rain, storm and snow the band is
   **concealed**; on open ground in fair weather it is **disguised** as
   pilgrims and pedlars, which the enemy pays no heed, though scouts (280m),
   castle walls (240m) and watch posts look closer than they do at a concealed
-  band (150m from walls). Hidden bands march at 0.85x and go hungry half as
-  fast; engineers among them can raise a secret Outrider Pavilion the enemy
-  knows nothing about. Their first blow strikes 2.2x as hard (1.9x from
+  band (150m from walls). Their first blow strikes 2.2x as hard (1.9x from
   disguise) for 20 seconds. Found out, they cannot hide again for 90 seconds.
-  Our own hidden bands walk in a drifting mist, with an eye on their label
-  (closed: concealed, half-open: disguised, open: seen); in disguise they are
-  drawn as pilgrims, pack mules and covered carts, without banner or mounted
-  commander. With the band selected, every enemy watch shows on the ground (a
+  Our own hidden bands walk cloaked in swirling shadow, ringed by turning
+  violet arcs (concealed) or amber dashes (disguised), with an eye on their label
+  (closed: concealed, half-open: disguised, open: seen); in disguise their
+  standard is furled, and the enemy takes them for pilgrims, pack mules and
+  covered carts (our own we see as they are). With the band selected, every enemy watch shows on the ground (a
   red ring: even a concealed band is found inside it; a faint orange ring:
   where a disguise is seen through; enemy scouts in sight carry one too), the
   planned road is coloured green (under cover), gold (in disguise) or red
   (watched), and the panel sums up the road ahead.
-- **The Grey Abbess**: the Usurper's spymaster, Mother Sereth, sends bands of
-  grey pilgrims (by the same rules) behind our lines to seize wagon trains and
-  empty outposts, pressing on when found unless a stronger force closes in.
-  Our walls, wardens' keeps, outposts and scouts find them out, and the
-  chronicle reports it.
+- **The Night Sappers**: Tamsin Holt, Mistress of the Night Sappers, leads 90
+  Saboteurs (fixed like the Blades) and nothing else. They hide by the
+  Blades' rules (concealed under cover, disguised in the open; the enemy takes
+  them for pilgrims), never run out of supply, march 1.28x and are useless in
+  a fight. Unseen near an enemy castle or fieldwork they do the sabotage
+  (`SABOTAGE`): Foul the Wells, Fire the Granary, Undermine the Postern, Spoil
+  a depot's Stores, Fire the Works. With the Whisper Blades within 320m to
+  cover them (`SAPPERS.cover`; set them to Follow the Blades) the work takes 8
+  seconds instead of 12 and raises the alarm 15% of the time instead of 35%.
+  Wiped out, they gather again 5 minutes later (40 strong); an abbey fills
+  them up. The enemy has the same in Brother Gall's Rootcutters, who lie up
+  outside the castle a Great Host is marching on and open its postern, the
+  Grey Sisters covering them.
+- **The Wardens of the March**: Rowan Fenwick leads 150 Outriders (mounted
+  bowmen) and nothing else. They see 1.8x as far as an army, find hidden
+  bands within 450m (concealed or disguised alike), and keep every enemy army
+  they sight on our map for 60 seconds; poor in a stand-up fight, they storm
+  no walls, never run out of supply and march 1.25x. Selected, they show two
+  green rings: where they find hidden bands, and how far they see. The enemy
+  has the same in Corrick Vane's Thorn Hunt, which rides with the Great Hosts,
+  hunts our Whisper Blades and circles its frontier castle. Wiped out, they
+  gather again 5 minutes later (70 strong); an abbey fills them up.
+- **Army size and battle groups**: outside the Long Night and Convoy Raid an
+  army holds at most 1500 soldiers under a named commander and 800 under a
+  captain (`ARMY_CAP`); mustering more leaves the rest in the garrison, and
+  merging into a full army leaves the rest beside it as an escort. Larger
+  forces march as a **battle group**: a lead army and up to four escorts (the
+  Escort standing order). The lead's panel sets how they stand about it: *Box*
+  (left, right, ahead, behind), *Line* (abreast, two on either side) or
+  *Wedge* (a V behind the lead); the group keeps to its slowest army. When
+  the lead assaults a castle the escorts fan out round it (about 63 degrees
+  apart) and join the siege from their own sides: each extra side costs the
+  defenders 10% of their walls' worth, at most 30% (`ENCIRCLE`). The AI's
+  Great Hosts march as battle groups, and an AI muster larger than one army
+  goes out as a lead with escorts.
+- **Commanders out of action**: regrouping 90 s after a rout (from reaching a
+  castle), wounded 4 min when their army is destroyed, 5 min when struck down
+  by assassins (`DOWNTIME`, `BLADES.wound`); each star above the first takes
+  10% off (at most half), and abbeys nurse them faster. Both sides alike.
+- **Coming home**: an ordinary army of ours that retreats (by the Retreat
+  order, or routed from a fight) and reaches a castle of ours goes into its
+  garrison, its commander free to lead again; the fixed bands and battle
+  groups come home as they are (`keepsTogether`).
+- **Standing orders in the field**: from an army's panel, *Escort* another army
+  of ours (each escort takes a place of its own beside it: left, right, then
+  back-left, back-right, front-left, front-right; it joins the escorted army's
+  fights, and the escorted army keeps to the pace of its slowest escort),
+  *Follow* one a little way behind (several in a file), or *Guard* a post
+  (fall on visible enemies within 250/400/600m and come back; against a host
+  more than 1.6x as strong, stand fast at the post). The army to escort or
+  follow is picked by tapping it on the map (or from a list of the nearest).
+  Escorts never merge into the army they guard; any order by hand cancels a
+  standing order. Player armies only (`game/fieldorders.ts`).
+- **Fixed bands' own troops**: the Royal Guard and the Thorn Guard are
+  Household Knights, the Blades and the Sisters Assassins, the Sappers and the
+  Rootcutters Saboteurs, the Wardens and the Hunt Outriders: unit types of their own (`recruitable: false`), raised in no
+  castle, each drawn in its own harness.
+- **The Grey Abbess**: the Usurper's spymaster, Mother Sereth, leads her Grey
+  Sisters (130, by the same rules as the Blades): they strike at our
+  commanders (the King too, rarely; the easier the war, the closer our leaders
+  are guarded), cover Brother Gall's Rootcutters at their work on our
+  castles and rob our wagons, and mend in her castles. Our walls, wardens' keeps, outposts and scouts find them out, and
+  the chronicle reports it.
+- **Commanders' hosts**: an army takes its commander's kind of host (Godfrey a
+  siege train, Elowen raiding horse, Varian a pike wall, Isolde an archer host,
+  Bran a knightly charge; a captain combined arms) and formation; the one
+  choice left is whether to bring engineers (at least 20). Troops the garrison
+  lacks are filled from what it has, or hired on the spot.
+- **Auto-recruit**: per castle, off or raising troops for a kind of host (the
+  recommended mix suits any commander, engineers included); it buys whatever
+  the garrison is shortest of, spends at most 25 / 50 / 75% of net income
+  (Thrifty / Steady / Eager) and always leaves 400 gold for building.
 - **Alliance War difficulty** is how much of the land your alliance still
   holds: Squire 5:5, Knight 6:4, Warlord 7:3, Last Stand 8:2, against an enemy
   that always plays hard. From Warlord up, palisade forts and mangonel redoubts

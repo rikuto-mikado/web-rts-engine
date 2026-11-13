@@ -2,7 +2,7 @@ import { Castle as CastleIcon, ChevronDown, ChevronsLeft, ChevronsRight, CircleA
 import { Glyph } from './Glyph'
 import { useState } from 'react'
 import { useViewport } from './viewport'
-import { HOLDING_EFFECTS, HOLDINGS, NEUTRAL, PLAYER, ROYAL, type GameEngine } from '../game/engine'
+import { HOLDING_EFFECTS, HOLDINGS, NEUTRAL, PLAYER, ROYAL, BAND_KEYS, type GameEngine } from '../game/engine'
 import { FORMATIONS } from '../game/formations'
 import { fmt, roman, total, totalInt } from '../game/troops'
 import type { Selection } from '../render/GameRenderer'
@@ -287,6 +287,8 @@ function RealmTab({ engine, selection, onSelect }: { engine: GameEngine; selecti
           {engine.unitList.map((u) => {
             const n = totals.all[u.key] ?? 0
             const field = totals.field[u.key] ?? 0
+            // The fixed bands' own troops show only while there are some.
+            if (u.recruitable === false && n < 1) return null
             return (
               <div key={u.key} className="flex items-center gap-2 text-xs" title={`${fmt(field)} in the field, ${fmt(n - field)} in garrisons`}>
                 <UnitGlyph unit={u.key} size={14} color={u.color} />
@@ -470,8 +472,11 @@ function ArmiesTab({ engine, selection, onSelect, onFormArmy }: { engine: GameEn
             const army = st.armyId ? engine.army(st.armyId) : undefined
             const depot = st.stationedAt ? engine.outpost(st.stationedAt) : undefined
             const keep = army && engine.inKeep(army) && 'castleId' in army.order ? engine.castle(army.order.castleId) : undefined
-            const status = wound > 0 ? `Wounded · ${Math.floor(wound / 60)}:${String(wound % 60).padStart(2, '0')}` : keep ? `In the keep at ${keep.name}` : army ? `In the field · ${army.royal ? 'Royal Guard' : STATUS_TEXT[army.status]}` : depot ? `Quartered at ${depot.name}` : 'Ready to lead'
-            const tone = wound > 0 ? 'text-ember-300' : keep ? 'text-gold-300' : army ? 'text-royal-300' : depot ? 'text-ink-300' : 'text-emerald-400'
+            const clock = (sec: number) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`
+            // A spymaster whose band was wiped out gathers a new one: no other army is theirs to lead.
+            const regather = !army && BAND_KEYS.includes(c.key) ? Math.max(0, Math.ceil((s.spyReturnAt?.[c.key] ?? 0) - s.time)) : 0
+            const status = wound > 0 ? `${st.downReason === 'regroup' ? 'Regrouping' : 'Wounded'} · ${clock(wound)}` : regather > 0 ? `Gathering a new band · ${clock(regather)}` : !army && BAND_KEYS.includes(c.key) ? 'No band to lead' : keep ? `In the keep at ${keep.name}` : army ? `In the field · ${army.royal ? 'Royal Guard' : STATUS_TEXT[army.status]}` : depot ? `Quartered at ${depot.name}` : 'Ready to lead'
+            const tone = wound > 0 ? 'text-ember-300' : regather > 0 ? 'text-ink-300' : keep ? 'text-gold-300' : army ? 'text-royal-300' : depot ? 'text-ink-300' : 'text-emerald-400'
             return (
               <button
                 key={c.key}
@@ -598,10 +603,23 @@ function WarTab({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint: (x
         <SectionTitle right={<span className="text-[12px] text-ink-500">rank · castles · soldiers</span>}>Your alliance</SectionTitle>
         <div>{realms.filter((f) => f.team === 'A').sort((a, b) => (a.id === PLAYER ? -1 : b.id === PLAYER ? 1 : 0)).map((f) => row(f.id))}</div>
       </section>
-      <section>
-        <SectionTitle right={<span className="text-[12px] text-ink-500">rank · castles · soldiers</span>}>Enemy realms</SectionTitle>
-        <div>{realms.filter((f) => f.team === 'B').map((f) => row(f.id))}</div>
-      </section>
+      {s.rules.mode === 'grand' ? (
+        <>
+          <section>
+            <SectionTitle right={<span className="text-[12px] text-ink-500">{s.crownsFallen?.B ? 'crown shattered' : 'rank · castles · soldiers'}</span>}>The Usurper's realm</SectionTitle>
+            <div>{realms.filter((f) => f.team === 'B').sort((a, b) => (a.leader ? -1 : b.leader ? 1 : 0)).map((f) => row(f.id))}</div>
+          </section>
+          <section>
+            <SectionTitle right={<span className="text-[12px] text-ink-500">{s.crownsFallen?.C ? 'crown shattered' : 'rank · castles · soldiers'}</span>}>The Sun Emperor's realm</SectionTitle>
+            <div>{realms.filter((f) => f.team === 'C').sort((a, b) => (a.leader ? -1 : b.leader ? 1 : 0)).map((f) => row(f.id))}</div>
+          </section>
+        </>
+      ) : (
+        <section>
+          <SectionTitle right={<span className="text-[12px] text-ink-500">rank · castles · soldiers</span>}>Enemy realms</SectionTitle>
+          <div>{realms.filter((f) => f.team === 'B').map((f) => row(f.id))}</div>
+        </section>
+      )}
     </div>
   )
 }
@@ -656,7 +674,7 @@ function IntrigueTab({ engine, onSelect }: { engine: GameEngine; onSelect: Props
   const infamy = me.infamy ?? 0
   const abbeys = s.castles.filter((c) => c.faction === PLAYER && !c.ruined && engine.holdingOf(c) === 'abbey' && c.village)
   const nextCleanse = abbeys.length ? Math.min(...abbeys.map((c) => c.nextCleanseAt ?? s.time + HOLDING_EFFECTS.abbeyCleanse)) - s.time : null
-  const lords = Object.values(s.factions).filter((f) => f.team === 'B' && f.alive && !f.leader)
+  const lords = Object.values(s.factions).filter((f) => (f.team === 'B' || f.team === 'C') && f.alive && !f.leader)
   const home = engine.castle(me.capitalId)
   const dist = (x: number, z: number) => (home ? Math.hypot(home.x - x, home.z - z) : 0)
   // Only what your scouts have seen: free towns, and villages your envoys can reach.
