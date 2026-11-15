@@ -38,8 +38,8 @@ npm run dev                  # http://localhost:5173 (proxies /api to :8000)
 
 | Mode             | Map                                          | Goal                                                   |
 | ---------------- | -------------------------------------------- | ------------------------------------------------------ |
-| **Conquest**     | Random, in three sizes                       | You against a coalition: take its capitals, keep yours |
-| **Alliance War** | Random, 16 / 24 / 32 realms in two alliances | Your alliance takes the enemy High Seat                |
+| **Conquest**     | Random, small                                | Two realms of a size (a royal seat and two strongholds each): take the enemy seat, keep yours |
+| **Alliance War** | Random, medium, 16 v 16 realms               | Your alliance takes the enemy High Seat                |
 | **Convoy Raid**  | The Greenwood Road (one forest road)         | Escort: bring 3 of 5 gold wagons in. Raid: seize 3     |
 | **The Long Night** | The Royal Vale (the King's walled city)    | Hold the Citadel and keep the King alive until dawn    |
 | **War of the Three Crowns** | The Three Realms (a continent, three royal cities) | Shatter both rival crowns: slay their monarchs or take their Citadels |
@@ -56,14 +56,34 @@ player's (King Aldric, the Royal Guard, the Whisper Blades, the Night Sappers an
 **team C** the Sun Emperor's (Vaelor the Sun-Crowned and his Solar Guard in
 bronze and gold; Vesk, Sabine and Ulric serve him). Between them: three rivers
 running out from the heart along the borders with mountain ranges broken by
-passes, free towns, and the ruined Imperial Crossroads inside the old empire's
-walls at the very centre. The rival crowns fight each other as well as the
+passes, free villages and holdings, and at the very centre the Imperial Crossroads, the old
+empire's own city: laid out like a royal city (the Citadel of the Old Throne
+on its mount, an inner and an outer wall, thousands of houses, farmland),
+rounder and a little smaller, with an outer gate facing each realm, the old
+imperial wall in ruins outside it, and free of every crown at the start. Its
+gates stand open (gatehouses, not holdings): the fight is for the Citadel. The rival crowns fight each other as well as the
 player, and every realm leans on whichever rival grows strongest (and leaves
 the King be for the first quarter hour). A crown is **shattered** when its
 monarch falls or its Citadel is taken (its lords fight on); shatter both to
 win. The war is lost only if the King has fallen *and* his Citadel is taken,
 or nothing of the realm is left. The **Three Crowns** panel shows each
-crown's rank, castles, Citadel walls and whether its monarch rides.
+crown's castles, Citadel walls and whether its monarch rides.
+
+**The Old Throne** (`CORONATION`): from the 15th minute, the crown whose side
+holds the Imperial Crossroads and keeps its monarch there (stationed, or
+within 160m and not fighting) counts down 3 minutes to a coronation: crowned
+High Emperor, that crown wins the war outright (the King's coronation is an
+Imperial Victory; a rival's is a defeat, whether or not the King lives). The
+count halts while the monarch is away or fighting, the Crossroads is besieged,
+or an enemy force of 60 or more stands within 400m; it is lost when the
+Crossroads changes hands. While it runs, gold rings pulse round the
+Crossroads, the panel shows the time left, and every other unbroken crown and
+its lords drop everything for the Crossroads (their Great Hosts turn round on
+the march). The rival monarchs ride for the throne themselves when their side
+holds it and what guards it clearly outweighs the enemy they can see near.
+In headless runs (`scripts/simulate.ts … grand`) the war is usually decided
+this way between the 45th and 90th minute, the Crossroads changing hands
+several times first.
 
 ### The Long Night
 
@@ -154,8 +174,8 @@ all there are.
   the computer against itself, Normal comes out about even.
 - A side with no one left in the field loses.
 
-Every random map comes in three sizes (small / medium / large), each balanced
-separately with headless simulations. Both modes share the same six map types, each
+Conquest is always fought on a small map, Alliance War on a medium one, each
+balanced with headless simulations. Both modes share the same six map types, each
 built round one landmark that decides where the war is fought; the two sides always
 start on either side of it (in Conquest and in Alliance War). The menu shows a live
 preview of the map, and the minimap draws the walls, cliffs and roads.
@@ -181,7 +201,6 @@ backend records each match's result and battle reports.
 | Right-click (army selected) | Move · on enemy army: intercept · on castle: besiege / station |
 | Left-drag, WASD / arrows    | Pan                                                            |
 | Wheel                       | Zoom (closer = lower, more cinematic angle)                    |
-| Q / E, middle-drag          | Rotate                                                         |
 | F · Tab · L · Esc           | Form army · cycle armies · chronicle · deselect                |
 
 - **Formations**: Line (balanced), Wedge (huge charge, takes more losses),
@@ -190,8 +209,9 @@ backend records each match's result and battle reports.
   march in column (+30% speed) but fight badly if caught before re-forming.
 - **Merge and split**: right-click one of your armies to merge into it, or use
   Join / Call / Split in the army panel.
-- **Economy**: gold is the main limit. Capture castles and expand them (more
-  income, manpower and garrison room). Auto-recruit keeps garrisons growing.
+- **Economy**: gold is the main limit. Capture castles (each has its own size:
+  a stronghold, a castle or a royal seat, with the income, manpower and garrison
+  room that go with it; there are no upgrades). Auto-recruit keeps garrisons growing.
 - **Alliances**: AI lords recruit, raid, relieve allied castles (including yours)
   and follow their alliance leader's offensive (gold ring). On an enemy castle,
   _Summon allies_ gathers allied contingents at one of your armies or castles,
@@ -209,8 +229,41 @@ backend records each match's result and battle reports.
   ford or bridge) and Supply Depot. Leave one empty and raiders will burn it.
 - **Supply**: armies far from friendly castles, outposts or camps lose men and
   morale.
+- **Food and granges**: every castle keeps stores of food ((2 + tier) minutes
+  for a full garrison); the garrison and the troops stationed inside eat them.
+  Its own fields feed a quarter of a full garrison while no enemy stands in
+  them (an enemy there also halves the castle's income); the rest comes by
+  wagon from a grange: a manor hall with its tower, a tithe barn, a granary on
+  staddle stones and a dovecote, in fields walled about. Every realm's seat
+  has one (taking the seat brings its grange, if its holders still had it). The barn fills at harvest (food for 3,600 /
+  14,400 / 18,000 / 0 men a second in spring / summer / autumn / winter, about
+  9,000 over the year); while it holds a wagonload, a wagon sets out every 20
+  seconds (food for 1,000 men for three minutes) to the hungriest castle of
+  whoever holds the grange. The holders' armies within 600m are fed from the
+  barn too: supplied, at half the upkeep. No soldiers keep a grange, only its
+  wall (1,800): an enemy band of 60 or more at the wall pulls it down at its
+  siege power plus 0.08 a man (an 800-strong host in about 75 seconds,
+  engineers far faster, horse slowest), unless the holders' troops stand
+  within 300m; it mends at 10 a second once the attack stops. When it falls
+  the grange and its barn are the takers'. Grain wagons can be seized on the
+  road. Empty stores mean hunger: the garrison loses 0.6% a second, fights
+  shaken, raises no levies and mends no walls; wasted to 30% of its strength
+  (or 60 men) with an enemy at the gates, the castle opens them. The Night
+  Sappers' "Fire the Granary" also burns half the stores. Not on the Long
+  Night or the forest road.
 - **Seasons and weather**: winter slows marches and raises upkeep; rain and
   storms blunt archers; spring brings recruits, autumn the harvest.
+- **Day and night**: the light comes round twice a season (every 7½ minutes),
+  the nights longest in winter (40% of the cycle) and shortest in summer (22%),
+  with half a minute of dusk and of dawn. By night everyone sees less far (the
+  Wardens less so), archers shoot 30% worse and marches are 10% slower; bands
+  of up to 1,000 camped in the open without fire slip out of sight after 14
+  seconds, and woods hide sooner. Ambushes strike 25% harder, assassins gain
+  6%, and saboteurs work faster and are found out less often. Columns on the
+  march carry torches (they light the land and give the column away); large
+  camps light campfires. Lady Elowen and Vesk fight better in the dark,
+  Bran, Gorm and Hrolf worse; the Night Raider's opening blow rises to +50%.
+  The Long Night keeps its own rules.
 - **Deep Freeze**: in the depth of each winter (from 2½ minutes in until 1½
   minutes before spring) stretches of the rivers and some lakes freeze solid
   and can be crossed anywhere, at 60% pace; a fight on the ice is treacherous
@@ -222,11 +275,32 @@ backend records each match's result and battle reports.
 - **Ambush**: an army holding still in a forest becomes hidden and strikes
   first when an enemy blunders into it.
 - **Intrigue** (its own sidebar tab): buy truces, in Alliance War bribe enemy
-  lords to change sides, buy free towns, send envoys to villages within reach,
+  lords to change sides, send envoys to villages and holdings within reach,
   and track your infamy and the abbeys praying it away.
-- **Realm rank**: every realm's rank rises with its total strength (top rank
-  5 / 6 / 7 by map size) and is shown under its castles and outposts; all of a
-  realm's castles grow grander with each rank.
+- **Castle sizes**: every castle has a fixed size, set by the map and never
+  built up: 1 a motte and bailey, 2 a stronghold (or a small castle), 3 a
+  lord's seat, 4 an alliance leader's High Seat, 5 a royal seat. The size sets
+  its ground, walls, garrison room, income, manpower and stores
+  (`CASTLE_SIZES` in `game/world.ts`). Villages keep sizes of their own
+  (palisade, then stone walls they raise themselves).
+- **Strongholds**: fortresses built for war rather than lords' seats. Every
+  realm's lesser holdings are strongholds (in Conquest, Alliance War and the
+  Three Crowns); its seat is its only castle. In Alliance War the two nearest
+  the player's court are the player's, and the two nearest the Usurper's High
+  Seat hers. A dry
+  ditch with a palisade and chevaux-de-frise; a curtain whose squat octagonal
+  bastions carry ballistas, mangonels, braziers and watch-cupolas on flat decks;
+  casemates against the back of the walls (vaults below, barracks or a firing
+  deck above); a twin-bastioned gate with a drawbridge (a barbican at tier 3);
+  a great keep standing alone in the bailey (a square tower with corner turrets
+  and a forebuilding, the Sun Emperor's an octagon under a dome); and the four
+  wards packed with the great barracks and drill yard, the foundry and siege
+  works, the warhorse stables, the granaries and the vaulted cistern. Every realm
+  builds them the same way, in its own stone and caps. In Conquest each realm
+  holds its royal seat and two strongholds, the countryside (villages,
+  holdings, mines and lumber camps) shared out evenly between the two sides;
+  the difficulty (Squire / Knight / Warlord) sets the Dominion's income against
+  yours (0.6 / 0.8 / 1.1).
 - **Supply depots**: armies quarter inside (up to 900, out of sight) and new
   armies can be raised there, led only by commanders quartered in that depot.
   Wagon trains from the nearest friendly castle keep its stores full; enemies
@@ -256,7 +330,7 @@ backend records each match's result and battle reports.
   trade wagons, faster wagons nearby), abbeys (volunteers for your castles,
   faster-healing commanders, infamy forgiven), wardens' keeps (riders that
   chase off scouts, wagons and small raids) and siege guildhalls (cheaper
-  engineers, outposts and upgrades; walls mend faster).
+  engineers and outposts; walls mend faster).
 - **Castles** (`render/fortress.ts`, `castletown.ts`, `farmland.ts`; outlines in
   `World.planCastle`): each lord's castle is built to its site, and the
   armies' walls follow the same outline. On a river or lake the wall squares
@@ -266,29 +340,53 @@ backend records each match's result and battle reports.
   the plain it is an irregular polygon with towers at its corners. Four gates
   a quarter turn apart, the main gate towards the heart of the map (or the
   landward side); armies pass the walls only at the gates. Tier 1 is a motte
-  and bailey; tier 2 a stone castle with a great keep; tier 3 adds an inner
-  ward and a barbican; tier 4 and up a lower outer wall on its own levelled
-  terrace, with drum towers where the roads pass. The realm that holds it
+  and bailey. From tier 2 a stone castle round a raised citadel terrace
+  (`render/keeps.ts`): a battered octagonal platform climbed by four great
+  stairs through inner gates, with a square donjon on it joined by bridges and
+  flying buttresses to a war hall and two vaulted arsenals, four corner
+  keep-turrets about them; tier 3 adds a barbican. The realm that holds it
   sets its style: the King's side pale limestone with conical roofs, the
-  Usurper's black basalt with iron thorns, the Sun Emperor's sandstone with
+  Usurper's the same shapes in black basalt under her crimson, the Sun Emperor's sandstone with
   ribbed domes and gilt, free lords grey stone with timber hoardings; roofs
   carry courses and eaves trim in the lord's hue (a castle taken across the
-  lines is rebuilt in its new lord's style). Inside: the four streets lined
+  lines is rebuilt in its new lord's style). Inside, on a floor of cobbles laid in rings from the
+  terrace to the back of the curtain (the lanes between kerbs): the four streets lined
   shoulder to shoulder with tall jettied houses and shops, a ring lane and
-  back lanes, a guildhall with its arcade on the square, a fountain, a smithy
+  back lanes, a guildhall with its arcade, a smithy
   whose forge smokes, an armoury and weapon racks, barracks with archery
-  butts and a quintain, stables, a chapel, walled gardens. Outside, on a broad
+  butts and a quintain, stables, a chapel; in the blocks houses round
+  courtyards, rows turned in an L and walled workshops, wells and carts in the
+  gaps. The nearer the terrace, the taller (up to three storeys) and closer the
+  houses, in the realm's own stone. Every house is finished in full (`house()` in
+  `render/buildings.ts`): framing on every face, quoins, framed doors and
+  windows with sills and shutters, bargeboards and roof courses, a stepped
+  chimney; and takes one of the town forms: gable-fronted (tall, narrow, its
+  framed gable and hoist beam to the street), eaves to the street, or a hall
+  with a gabled cross-wing; town houses often on a stone ground floor under
+  jettied timber, some with an oriel. Outside, the ground before the walls is
+  left clear (the field of fire); the town grows only along the roads out of
+  the gates, inns, shops and workshops near the gate, then houses, then
+  cottages in walled gardens, each house level with the road at its door with
+  a flagged path and steps down to it. From tier 4 the town
+  has an inner and a middle ring and a lane under the curtain, two or three back
+  lanes and cross alleys to each quarter, and a manor, a siege works, a second
+  barracks and a great storehouse. Outside, on a broad
   gentle apron cleared of woods: faubourgs along curving roads out of the
   gates (townhouses near the gate, an inn and a market cross on a plaza,
   cottages with walled yards, farmsteads with barns; side alleys with a
   tannery, a potter's kiln, a carpenter's yard), every building on a stepped
-  footing on a slope; and the farmland: fields of wheat, stubble with stooks,
-  cabbages, vines, ploughed loam and hay behind hurdles or hedgerows with
-  stiles, scarecrows and haystacks; a tower windmill with a gallery, a cap and
-  tailpole and turning lattice sails, and the miller's cottage; an orchard in
-  a stone-walled close with beehives; pastures of sheep, cattle or horses
-  with a trough and a hayrick. Chimneys, forges and kilns smoke. A ruin stands
-  broken among burnt houses and scorched fields.
+  footing on a slope. No fields (the grange feeds the castle); beyond the town
+  instead (`render/environs.ts`): the wagon yard on the main road, where the
+  grain wagons unload (the weigh-house, an open shed, a jib crane over sacks,
+  crates and barrels, covered wagons and their teams, stalls under the lord's
+  colours, a mason's yard with a treadwheel crane, a trough). Chimneys, forges and kilns smoke. A ruin stands
+  broken among burnt houses.
+- **Fire by night** (castles and strongholds): torches in brackets on the
+  wall-walks and either side of the gates, braziers on the citadel terrace,
+  and the bastions' decks, lanterns on
+  posts down the roads and round the wagon yard; windows lit here
+  and there in the houses, barracks and casemates. Each flame flickers, and
+  their light falls in pools on the walls and streets.
 - **Royal cities** (`render/city.ts`, `citadel.ts`, `precinct.ts`,
   `citycountry.ts`): the Citadel stands on the dead-level summit of its
   mount, whose steep face is hidden by a battered stone revetment with a
@@ -359,7 +457,7 @@ backend records each match's result and battle reports.
 - **War honours**: in Alliance War every lord's kills and
   captures are ranked.
 - **The Usurper Queen**: Queen Morwenna leads the enemy alliance (and the
-  Conquest coalition) with her crimson Thorn Guard, 520 knights. She holds
+  Ashen Dominion in Conquest) with her crimson Thorn Guard, 520 knights. She holds
   court in the enemy High Seat and rides out at the rear of some Great Hosts,
   steeling them with her presence. Destroy her guard and the war is won. Her
   last known whereabouts show as a red crown on the map and in the War tab;
@@ -397,7 +495,12 @@ backend records each match's result and battle reports.
   a depot's Stores, Fire the Works. With the Whisper Blades within 320m to
   cover them (`SAPPERS.cover`; set them to Follow the Blades) the work takes 8
   seconds instead of 12 and raises the alarm 15% of the time instead of 35%.
-  Wiped out, they gather again 5 minutes later (40 strong); an abbey fills
+  Saboteurs are sappers too (`SAPPERS.outposts`, `SAPPERS.works`, `crewFor`):
+  each counts as an engineer for an Outrider Pavilion (a hidden camp: raised
+  unseen, it stays a secret) or a Supply Depot (raising it gives them away),
+  and for stakes, pits, barricades, pitch barrels and pulling down a bridge;
+  never for siege engines, the castrum, laager or redoubt, or bridging a river.
+  The Rootcutters have the same skills. Wiped out, they gather again 5 minutes later (40 strong); an abbey fills
   them up. The enemy has the same in Brother Gall's Rootcutters, who lie up
   outside the castle a Great Host is marching on and open its postern, the
   Grey Sisters covering them.
@@ -465,6 +568,25 @@ backend records each match's result and battle reports.
   that always plays hard. From Warlord up, palisade forts and mangonel redoubts
   already stand at the fords and before the frontier castles. In a Last Stand,
   holding out until the relief fleet lands (Spring 1248) also wins the war.
+- **The High King's Blessing** (Alliance War, any difficulty, off unless
+  chosen on the menu): the Sanctuary of the High King, a round temple of white
+  marble with a gilded dome and a blue-white sacred flame, stands on open
+  ground in our own country: about a fifth of the way from your court towards
+  the enemy High Seat (at least 1.4km out), its nearest castle always one of
+  ours and every enemy castle as far off as the map allows (in practice 2.2km
+  or more). Once in the war the King may pray there: his guard within 65m, out
+  of any fight, for 30 seconds (the count pauses if he leaves or is attacked,
+  and picks up where it stopped; only the King can pray). Then, whatever the
+  state of the war:
+  - the Royal Guard is made whole at 800 and his presence reaches 550m (+20%
+    damage, -15% losses, morale loss halved);
+  - the High King's **Paladins** (a unit of their own, stronger than the
+    Household Knights, never raised in a castle) come down at the Sanctuary,
+    two bands of 400 every 40 seconds, at most six bands in the field, each
+    led by one of his five Justices in turn. Each band rides for the nearest
+    enemy castle (never the enemy High Seat); the castles they take are ours.
+    They need no supply, pay no upkeep, never break and always fight blessed.
+    When they have taken 4 castles (or after 10 minutes) they go home.
 - **War report**: when the war ends, a thirty-second timelapse replays it on
   the map (holdings changing hands, battles flaring, the seasons turning),
   with the campaign's honours: the deadliest commander, the breaker of walls
@@ -501,7 +623,8 @@ backend records each match's result and battle reports.
 ## Phones and tablets
 
 Played in landscape (holding the device upright shows a prompt to turn it).
-Tap to select, drag to pan, pinch / twist to zoom and rotate. With one of
+Tap to select, drag to pan, pinch to zoom; the map always stays north-up,
+like the minimap. With one of
 your armies selected, a thumb stick appears at the bottom left: it drives the
 army by hand (push harder to go faster; a large host takes a moment to get
 going and to wheel about; let go and it rolls to a halt). A quick tap on the
@@ -512,6 +635,17 @@ map to look around freely, and touch the stick again to snap back. Double-tap (o
 spot or a target to march there. Details open in a panel down the right side
 (fold it away with ›› to keep both hands on the map); your holdings are
 listed at the top right.
+
+## Music and title screen
+
+- **Music**: "Crown of Morning" (`frontend/public/audio/crown-of-morning.mp3`) plays on a loop
+  while a war is fought, faded in when it begins and out when you leave it. The note button in
+  the header turns it off and on; the choice is remembered in the browser.
+- **Title screen**: a war council table: ebony panels in black iron, ruled with double lines
+  of brass and L-shaped corner fittings; the modes as brass-framed cards with an emblem on a
+  patterned band; the maps as their colours laid out as layers of country under their arms;
+  bevelled iron tabs for the difficulty; a crimson plate in double brass to begin the war; the
+  map (drawn sharp, its corners in shadow) in a frame of black iron and brass. All CSS and SVG.
 
 ## Development
 

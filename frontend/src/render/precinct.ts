@@ -168,7 +168,7 @@ export function royalPrecinct(k: Kit, rnd: () => number, wallR: number, gateHalf
   // The Royal Guard's barracks and drill yard, the armoury, the royal stables.
   site(56, 44, (3 * Math.PI) / 4, (f) => {
     f.put(FL, box(54, 0.4, 42), 0xc8b48a, 0, 0.25, 0, { ao: 0, jitter: 0.06 })
-    for (const s of [-1, 1]) house(k, f.sub(0, s * 16, s < 0 ? 0 : Math.PI), { w: 40, d: 10, storeys: 2, roof: 'slate', style: 'stone', detail: 'mid', banner: true }, rnd)
+    for (const s of [-1, 1]) house(k, f.sub(0, s * 16, s < 0 ? 0 : Math.PI), { w: 40, d: 10, storeys: 2, roof: 'slate', style: 'stone', banner: true }, rnd)
     for (let i = 0; i < 3; i++) {
       const b = f.sub(-18 + i * 6, 0, Math.PI / 2)
       b.put(FL, box(0.25, 2.6, 0.25), PAL.timber, -0.9, 1.3, -0.5, { rx: 0.3 })
@@ -192,7 +192,7 @@ export function royalPrecinct(k: Kit, rnd: () => number, wallR: number, gateHalf
     bannerPole(k, f, -24, 0, 12)
   })
   site(30, 34, (3 * Math.PI) / 4 + 0.7, (f) => {
-    house(k, f.sub(0, -8, 0), { w: 28, d: 9, storeys: 1, roof: 'slate', style: 'stone', detail: 'mid' }, rnd)
+    house(k, f.sub(0, -8, 0), { w: 28, d: 9, storeys: 1, roof: 'slate', style: 'stone' }, rnd)
     for (let i = 0; i < 6; i++) horse(k, f.sub(-11 + i * 4.4, -1.5, Math.PI), [0x5a3a22, 0x2a2420, 0x8a6a48, 0xd8d0c0, 0x3a2a1e, 0x6a4a2a][i])
     f.put(FL, box(26, 0.3, 14), 0x7a9a48, 0, 0.3, 8, { ao: 0 })
     for (const [lx, lz, len, rot] of [[0, 15, 26, 0], [-13, 8, 14, Math.PI / 2], [13, 8, 14, Math.PI / 2]] as const) fence(k, f.sub(lx, lz, rot), len)
@@ -267,7 +267,7 @@ export function royalPrecinct(k: Kit, rnd: () => number, wallR: number, gateHalf
   })
   // The library tower: a tall square tower of books over a reading hall.
   site(16, 24, Math.PI * 0.35, (f) => {
-    house(k, f.sub(0, 4, 0), { w: 14, d: 9, storeys: 2, roof: 'slate', style: 'stone', detail: 'mid' }, rnd)
+    house(k, f.sub(0, 4, 0), { w: 14, d: 9, storeys: 2, roof: 'slate', style: 'stone' }, rnd)
     k.walls.push(mottle(bpart(new THREE.BoxGeometry(10, 36, 10, 2, 8, 2), ST_L, { ...frameAt(f, 0, -8), y: 18, ry: f.ry, order: 'YXZ' }), 0.05))
     for (const y of [10, 17, 24, 31]) for (let s = 0; s < 4; s++) f.sub(0, -8, (s * Math.PI) / 2).put(W, box(1.6, 3, 0.2), PAL.dark, 0, y, 5.05, { ao: 0 })
     for (let u = -4.5; u <= 4.5; u += 2.25) for (const s of [-1, 1]) {

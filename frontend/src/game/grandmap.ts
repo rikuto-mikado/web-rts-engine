@@ -1,10 +1,10 @@
-import { PLAYER } from './engine'
+import { CORONATION, PLAYER } from './engine'
 import type { GeneratedMap } from './mapgen'
 import { PREFIX, REALMS, SUFFIX, TITLES, garrisonFor, hslHex, placeFeatures } from './mapgen'
 import { layRoyalCity } from './nightmap'
 import { mulberry32 } from './noise'
 import type { CastleDef, CityWall, FactionDef, Rampart, Scenario, ScenarioDefinition, Team, TownDef, WarTeam } from './types'
-import { World, distToSegment, holdingRadius } from './world'
+import { CASTLE_SIZES, World, distToSegment, holdingRadius } from './world'
 
 /**
  * The War of the Three Crowns: a continent with three walled royal cities in a great triangle (the
@@ -20,6 +20,10 @@ export const GRAND = {
   /** The royal cities: their walls (smaller than the Long Night's single great city). */
   inner: 500,
   outer: 880,
+  /** The Imperial Crossroads at the heart: its walls, and the old imperial wall outside them. */
+  heartInner: 380,
+  heartOuter: 620,
+  oldWall: 820,
   /** How far from the heart of the map the cities stand (share of the half-size). */
   ring: 0.56,
   /** Vassal lords per realm. */
@@ -116,12 +120,46 @@ function tryGrand(seed: number): GeneratedMap | null {
     }
   }
 
-  // --- The heartland: the old empire's crossroads fortress in its broken walls ----------------
-  castles.push({ id: 'heart', name: 'Imperial Crossroads', subtitle: 'Ruin of the Old Empire', faction: 'neutral', tier: 4, x: 0, z: 0, garrison: { infantry: 520, archers: 260, cavalry: 80, engineers: 0 } })
-  names.add('Imperial Crossroads')
+  // --- The heartland: the old empire's own city, the Imperial Crossroads ----------------------
+  // Laid out like the royal cities (the Citadel of the Old Throne on its mount, an inner and an
+  // outer wall, thousands of houses), only rounder and a little smaller, with an outer gate facing
+  // each realm and the inner gates between them, and no wards. Free of every crown at the start.
+  // Its gates stand open (gatehouses, not holdings: anyone marches through): the fight is for the
+  // Citadel and the throne in it, not for six gatehouses round it.
+  let heartGates: [number, number][] = []
   {
-    // The old imperial wall: a ring round the heart, a gate facing each realm, breaches between.
-    const rr = 720
+    const lay = layRoyalCity({
+      rnd,
+      cx: 0,
+      cz: 0,
+      back: 0,
+      faction: 'neutral',
+      idPrefix: 'h-',
+      city: 'Imperial',
+      keepId: CORONATION.heartId,
+      keepName: 'Imperial Crossroads',
+      keepSubtitle: 'Seat of the Old Throne',
+      keepGarrison: { infantry: 300, archers: 150, cavalry: 40, engineers: 0 },
+      inner: GRAND.heartInner,
+      outer: GRAND.heartOuter,
+      wobble: 0.35,
+      outerGates: (['A', 'B', 'C'] as const).map((t) => CROWNS[t].angle),
+      innerGates: (['A', 'B', 'C'] as const).map((t) => CROWNS[t].angle + Math.PI / 3),
+      outerNames: ['Kings\' Gate', 'Thorn Gate', 'Sun Gate'],
+      innerNames: ['Gate of Ages', 'Gate of Oaths', 'Gate of Crowns'],
+      noWards: true,
+      wallIndex: walls.length,
+      garrison: 0.3,
+    })
+    heartGates = lay.outerGatePts
+    for (const c of lay.castles) if (!c.gate) names.add(c.name)
+    castles.push(...lay.castles.filter((c) => !c.gate))
+    walls.push(...lay.walls)
+    towns.push(lay.town)
+  }
+  {
+    // The old imperial wall, long outgrown: a ring outside the city, a gate facing each realm, breaches between.
+    const rr = GRAND.oldWall
     const pts: [number, number][] = []
     for (let k = 0; k <= 48; k++) {
       const a = (k / 48) * Math.PI * 2
@@ -143,7 +181,7 @@ function tryGrand(seed: number): GeneratedMap | null {
     const pts: [number, number][] = []
     let drift = 0
     for (let k = 0; k <= 16; k++) {
-      const r = 900 + (k / 16) * (half * 1.5 - 900)
+      const r = 960 + (k / 16) * (half * 1.5 - 960)
       drift = drift * 0.8 + R(-0.06, 0.06)
       pts.push(at(r, ba + drift + Math.sin(k * 0.7) * 0.05))
     }
@@ -188,7 +226,7 @@ function tryGrand(seed: number): GeneratedMap | null {
     !mountains.some((m) => Math.hypot(x - m.x, z - m.z) < m.r * 1.1 + r) &&
     !lakes.some((l) => Math.hypot(x - l.x, z - l.z) < l.r + r + 100) &&
     !towns.some((t) => Math.hypot(t.x - x, t.z - z) < t.r + r + 260) &&
-    Math.hypot(x, z) > 720 + r + 80 &&
+    Math.hypot(x, z) > GRAND.oldWall + r + 80 &&
     castles.every((c) => Math.hypot(c.x - x, c.z - z) > holdingRadius(c) + r + 340)
 
   // --- The realms: the crown and its vassal lords ---------------------------------------------
@@ -214,13 +252,13 @@ function tryGrand(seed: number): GeneratedMap | null {
       const vid = `${team}${made + 1}`
       const hue = vassalHue[team][made % 3] + R(-8, 8)
       factions.push({ id: vid, name: realmName(), color: hslHex(hue, R(0.45, 0.62), R(0.34, 0.46)), team: team as Team, personality: personality(), musters: false })
-      castles.push({ id: `${vid}-seat`, name: castleName(), subtitle: 'Seat of the Realm', faction: vid, tier: 3, x: seat[0], z: seat[1], capital: true, garrison: garrisonFor(3, true, 'balanced', false, rnd, false) })
-      // A lesser castle beside the seat, a little further out toward the heart or the flank.
+      castles.push({ id: `${vid}-seat`, name: castleName(), subtitle: 'Seat of the Realm', faction: vid, tier: CASTLE_SIZES.lord, x: seat[0], z: seat[1], capital: true, garrison: garrisonFor(3, true, 'balanced', false, rnd, false) })
+      // A stronghold beside the seat, a little further out toward the heart or the flank.
       for (let tries = 0; tries < 30; tries++) {
         const [x, z] = at(R(520, 760), Math.atan2(seat[1] - cz, seat[0] - cx) + R(-1.2, 1.2), seat[0], seat[1])
         if (!clear(x, z, 60)) continue
-        const tier = rnd() < 0.4 ? 2 : 1
-        castles.push({ id: `${vid}-c`, name: castleName(), subtitle: tier === 2 ? 'Keep' : 'Watchtower', faction: vid, tier, x, z, garrison: garrisonFor(tier, false, 'balanced', false, rnd, false) })
+        const tier = CASTLE_SIZES.stronghold
+        castles.push({ id: `${vid}-c`, name: castleName(), subtitle: 'Stronghold', faction: vid, tier, x, z, stronghold: true, garrison: garrisonFor(tier, false, 'balanced', false, rnd, false) })
         break
       }
       made++
@@ -230,12 +268,14 @@ function tryGrand(seed: number): GeneratedMap | null {
     for (let tries = 0; tries < 30; tries++) {
       const [x, z] = at(R(1150, 1350), front + R(-0.35, 0.35), cx, cz)
       if (!clear(x, z, 70)) continue
-      castles.push({ id: `${cr.id}-march`, name: castleName(), subtitle: 'March Fortress', faction: cr.id, tier: 3, x, z, staging: team !== 'A', garrison: garrisonFor(3, false, 'aggressive', false, rnd, false) })
+      castles.push({ id: `${cr.id}-march`, name: castleName(), subtitle: 'March Fortress', faction: cr.id, tier: CASTLE_SIZES.lord, x, z, stronghold: true, staging: team !== 'A', garrison: garrisonFor(3, false, 'aggressive', false, rnd, false) })
       break
     }
     // Roads: from the city's front to the heart of the map.
     const [gx, gz] = at(GRAND.outer + 60, front, cx, cz)
-    const [hx, hz] = at(760, cr.angle)
+    // (Through the old wall's gate to the Crossroads' own gate facing this realm.)
+    const hg = heartGates[['A', 'B', 'C'].indexOf(team)]
+    const [hx, hz] = hg ? [Math.round(hg[0] + Math.cos(cr.angle) * 60), Math.round(hg[1] + Math.sin(cr.angle) * 60)] : at(760, cr.angle)
     roads.push({ width: 22, points: [[gx, gz], [Math.round((gx + hx) / 2 + R(-80, 80)), Math.round((gz + hz) / 2 + R(-80, 80))], [hx, hz]] })
   }
   factions.push({ id: 'neutral', name: 'Free Towns', color: '#a08a56', team: 'N' })
@@ -246,28 +286,13 @@ function tryGrand(seed: number): GeneratedMap | null {
     const lr = R(110, 170)
     const [x, z] = at(R(1000, half * 0.85), R(0, Math.PI * 2))
     if (!inside(x, z, lr + 200)) continue
-    if (Math.hypot(x, z) < 720 + lr + 160) continue
+    if (Math.hypot(x, z) < GRAND.oldWall + lr + 160) continue
     if (towns.some((t) => Math.hypot(t.x - x, t.z - z) < t.r + lr + 320)) continue
     if (castles.some((c) => Math.hypot(c.x - x, c.z - z) < holdingRadius(c) + lr + 260)) continue
     if (riverDist(x, z) < lr + 160) continue
     if (mountains.some((m) => Math.hypot(m.x - x, m.z - z) < m.r + lr + 60)) continue
     lakes.push({ x, z, r: lr })
     made++
-  }
-
-  // --- Free towns in the heartland and along the borders ----------------------------------------
-  let free = 0
-  for (let tries = 0; tries < 900 && free < 9; tries++) {
-    const a = R(0, Math.PI * 2)
-    const r = R(950, half * 0.95)
-    const [x, z] = at(r, a)
-    if (!clear(x, z, 60)) continue
-    // Toward the borders, between the realms.
-    const nearBorder = borders.some((b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b))) < 0.45)
-    if (!nearBorder && r > 1500) continue
-    const tier = rnd() < 0.35 ? 2 : 1
-    castles.push({ id: `n${free}`, name: castleName(), subtitle: tier === 2 ? 'Free Town' : 'Free Hold', faction: 'neutral', tier, x, z, garrison: garrisonFor(tier, false, 'balanced', true, rnd, false) })
-    free++
   }
 
   // Bridges where the roads cross the rivers.

@@ -1,8 +1,10 @@
-import { Coins, Crown, Ellipsis, Hourglass, Keyboard, LogOut, Menu, Moon, Rotate3d, ScrollText, Square, Sun, Swords, Users } from 'lucide-react'
+import { Coins, Crown, Ellipsis, Hourglass, Keyboard, LogOut, Menu, Moon, Music, Rotate3d, ScrollText, Square, Sun, Swords, Users, VolumeX } from 'lucide-react'
+import { toggleMusic, useMusicOn } from './music'
 import { useState, type ReactNode } from 'react'
 import { PLAYER, type GameEngine } from '../game/engine'
 import { calendar, fmt, total } from '../game/troops'
 import { WEATHER_LABEL, describeClimate } from '../game/weather'
+import { describeNight } from '../game/daylight'
 import { RELATION_COLOR, useEngine } from './common'
 import { Glyph } from './Glyph'
 import { SEASON_GLYPH, SEASON_TONE } from './seasonGlyph'
@@ -25,6 +27,7 @@ const MODE_NAME = { campaign: 'Conquest', alliance: 'Alliance War', survival: 'C
 
 /** One information bar: realm status on the left, chronicle / manual / leave tucked at its end. */
 export function TopBar({ engine, onQuit, onToggleLog, onHelp, onMenu, overhead, onToggleView, night, onToggleNight, campaignName }: Props) {
+  const musicOn = useMusicOn()
   useEngine(engine)
   const vp = useViewport()
   const [more, setMore] = useState(false)
@@ -42,13 +45,24 @@ export function TopBar({ engine, onQuit, onToggleLog, onHelp, onMenu, overhead, 
   // Bad weather shows itself; on a fair day, the season.
   const wxIcon = wx === 'rain' || wx === 'storm' || wx === 'snow' ? wx : SEASON_GLYPH[season]
   const wxTone = wx === 'clear' ? SEASON_TONE[season] : 'text-sky-200'
-  const wxTip = [...describeClimate(season, wx), ...(s.frozen ? ['Deep Freeze: stretches of the rivers are frozen and can be crossed anywhere (slowly); no charges or squares on the ice.'] : [])].join('\n')
+  // Day and night (not on the Long Night, which is night from end to end).
+  const light = s.rules.night ? null : engine.daylight()
+  const after = light ? `${Math.floor(light.next / 60)}:${String(Math.floor(light.next % 60)).padStart(2, '0')}` : ''
+  const dark = !!light && light.phase !== 'day'
+  const lightTip = !light
+    ? []
+    : light.phase === 'day'
+      ? [`Day: night falls in ${after}`]
+      : [light.phase === 'dusk' ? `Dusk: full night in ${after}` : light.phase === 'dawn' ? `Dawn: full day in ${after}` : `Night: dawn in ${after}`, ...describeNight()]
+  const wxTip = [...lightTip, ...describeClimate(season, wx), ...(s.frozen ? ['Deep Freeze: stretches of the rivers are frozen and can be crossed anywhere (slowly); no charges or squares on the ice.'] : [])].join('\n')
   const weatherChip = (
     <div className="flex items-center gap-1.5 text-[13px] text-ink-200" title={wxTip}>
-      <Glyph name={wxIcon} size={18} className={wxTone} />
+      <Glyph name={dark ? (light!.phase === 'night' ? 'moon' : 'dusk') : wxIcon} size={18} className={dark ? (light!.phase === 'night' ? 'text-sky-200' : 'text-orange-300') : wxTone} />
       <span className="leading-tight">
-        <span className="block">{season}</span>
-        <span className={`block text-[11px] ${s.frozen ? 'text-sky-200' : 'text-ink-400'}`}>{s.frozen ? 'Rivers frozen' : WEATHER_LABEL[wx]}</span>
+        <span className="block">{dark ? (light!.phase === 'night' ? 'Night' : light!.phase === 'dusk' ? 'Dusk' : 'Dawn') : season}</span>
+        <span className={`block text-[11px] tabular-nums ${s.frozen && !dark ? 'text-sky-200' : 'text-ink-400'}`}>
+          {dark ? `${light!.phase === 'night' ? 'Dawn' : light!.phase === 'dusk' ? 'Night' : 'Day'} in ${after}` : s.frozen ? 'Rivers frozen' : WEATHER_LABEL[wx]}
+        </span>
       </span>
     </div>
   )
@@ -62,14 +76,16 @@ export function TopBar({ engine, onQuit, onToggleLog, onHelp, onMenu, overhead, 
           </button>
           <Res icon={<Coins size={15} className="text-gold-400" />} value={fmt(s.factions[PLAYER].gold)} sub={`${net >= 0 ? '+' : ''}${net.toFixed(0)}/s`} subClass={net >= 0 ? 'text-emerald-400' : 'text-ember-300'} />
           <Res icon={<Users size={15} className="text-ink-300" />} value={fmt(total(t.all))} sub={`${t.castles} castles`} />
-          <Res icon={<Crown size={15} className="text-gold-300" />} value={`R${engine.rankOf(PLAYER)}`} sub={`of ${engine.maxRank}`} title="Realm rank" />
           {vp.w >= 560 && weatherChip}
           {clockText ? (
             <div className={`ml-auto font-display text-[14px] font-bold tabular-nums ${left! < 120 ? 'animate-pulse text-ember-300' : 'text-gold-200'}`}>{clockText}</div>
           ) : (
             <div className="ml-auto hidden text-[12px] leading-tight text-ink-300 min-[460px]:block">{calendar(s.time).split(' · ')[0]}</div>
           )}
-          <button className="btn ml-auto h-9 px-2.5 min-[460px]:ml-0" onClick={onToggleNight} title={night ? 'Day mode' : 'Night mode'}>
+          <button className={`btn ml-auto h-9 px-2.5 min-[460px]:ml-0 ${musicOn ? '' : 'opacity-60'}`} onClick={toggleMusic} title={musicOn ? 'Music on' : 'Music off'} aria-pressed={musicOn}>
+            {musicOn ? <Music size={16} /> : <VolumeX size={16} />}
+          </button>
+          <button className="btn h-9 px-2.5" onClick={onToggleNight} title={night ? 'Day mode' : 'Night mode'}>
             {night ? <Sun size={16} /> : <Moon size={16} />}
           </button>
           <button className="btn h-9 px-2.5" onClick={() => setMore((v) => !v)} title="More">
@@ -102,7 +118,7 @@ export function TopBar({ engine, onQuit, onToggleLog, onHelp, onMenu, overhead, 
       <div className="panel pointer-events-auto flex h-12 min-w-0 items-center gap-4 rounded-md pr-2 pl-4" title={`${campaignName} · ${MODE_NAME[s.rules.mode]} · ${s.difficulty}`}>
         <Res icon={<Coins size={15} className="text-gold-400" />} value={fmt(s.factions[PLAYER].gold)} sub={`${net >= 0 ? '+' : ''}${net.toFixed(1)}/s`} subClass={net >= 0 ? 'text-emerald-400' : 'text-ember-300'} title={`Income +${t.income.toFixed(1)}/s · Army upkeep −${t.upkeep.toFixed(1)}/s`} />
         <Res icon={<Users size={15} className="text-ink-300" />} value={fmt(total(t.all))} sub={`${fmt(t.manpower)} manpower`} title="Soldiers (field + garrisons) and recruitable manpower" />
-        <Res icon={<Crown size={15} className="text-gold-300" />} value={`Rank ${engine.rankOf(PLAYER)}`} sub={`of ${engine.maxRank} · ${t.castles} castles`} title="Realm rank: grows with your total strength" />
+        <Res icon={<Crown size={15} className="text-gold-300" />} value={`${t.castles}`} sub={t.castles === 1 ? 'castle' : 'castles'} title="Castles you hold" />
         <div className="hidden 2xl:contents">
           <Res icon={<Swords size={15} className="text-ink-300" />} value={`${s.stats.battlesWon} / ${s.stats.battlesLost}`} sub="won / lost" />
         </div>
@@ -153,6 +169,9 @@ export function TopBar({ engine, onQuit, onToggleLog, onHelp, onMenu, overhead, 
           </button>
           <button className="btn h-9 px-2.5" onClick={onHelp} title="Field manual (H)">
             <Keyboard size={15} />
+          </button>
+          <button className={`btn h-9 px-2.5 ${musicOn ? '' : 'opacity-60'}`} onClick={toggleMusic} title={musicOn ? 'Music on: turn it off' : 'Music off: turn it on'} aria-pressed={musicOn}>
+            {musicOn ? <Music size={15} /> : <VolumeX size={15} />}
           </button>
           <button className="btn h-9 px-2.5" onClick={onToggleNight} title={night ? 'Day mode: a bright map' : 'Night mode: a darker map, easier on the eyes'}>
             {night ? <Sun size={15} /> : <Moon size={15} />}

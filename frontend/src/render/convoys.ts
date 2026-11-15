@@ -9,7 +9,7 @@ import { applyVision } from './vision'
 
 const wagonMat = applyVision(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.85 }))
 
-type WagonKind = 'supply' | 'gold' | 'hospital'
+type WagonKind = 'supply' | 'gold' | 'hospital' | 'grain'
 const OAK = 0x6b4a2a
 const OAK_D = 0x4e3520
 const IRON = 0x3a3d42
@@ -79,6 +79,15 @@ function wagonGeometry(kind: WagonKind) {
         p.push(part(cyl(0.8, 0.8, 0.15, 8), IRON, { x: -4.4, y: 3.9, z, rz: Math.PI / 2, ao: 0 }))
       }
     }
+  } else if (kind === 'grain') {
+    // A grange's wain: sacks of grain heaped high and roped down, sheaves tucked in at the tail.
+    for (let layer = 0; layer < 3; layer++) {
+      const n = 4 - layer
+      for (let i = 0; i < n; i++)
+        for (const z of layer === 2 ? [0] : [-1, 1]) p.push(part(sphere(0.95, 0), layer % 2 ? 0xd6c49c : 0xcbb88e, { x: -3 + i * 1.9 + layer * 0.95, y: 3.9 + layer * 0.95, z: z * 0.95, sy: 0.72, sx: 1.15, ry: i + layer }))
+    }
+    for (const x of [-2.4, 0.4, 2.6]) p.push(part(box(0.12, 0.12, 4.3), 0x8a7a5a, { x, y: 5.3, ao: 0 }))
+    for (const z of [-1.3, 0, 1.3]) p.push(part(cyl(0.5, 0.65, 2.6, 6), 0xd4b866, { x: -4.6, y: 3.7, z, rz: Math.PI / 2 - 0.2 }))
   } else {
     // The gold: iron-bound chests, a pile of ingots, a timber guard rail round the bed.
     for (const [x, z] of [[-2.4, -0.9], [-2.4, 0.9], [0.4, 0]] as [number, number][]) {
@@ -116,7 +125,7 @@ interface Wagon {
  */
 export class ConvoyRenderer {
   readonly group = new THREE.Group()
-  private geos: Record<WagonKind, THREE.BufferGeometry> = { supply: wagonGeometry('supply'), gold: wagonGeometry('gold'), hospital: wagonGeometry('hospital') }
+  private geos: Record<WagonKind, THREE.BufferGeometry> = { supply: wagonGeometry('supply'), gold: wagonGeometry('gold'), hospital: wagonGeometry('hospital'), grain: wagonGeometry('grain') }
   private wagons = new Map<string, Wagon>()
   private lines = new Map<string, THREE.Mesh>()
   private engine: GameEngine
@@ -138,8 +147,9 @@ export class ConvoyRenderer {
       let w = this.wagons.get(c.id)
       if (!w) {
         const group = new THREE.Group()
-        const kind: WagonKind = c.manpower ? 'hospital' : c.kind === 'gold' || c.race ? 'gold' : 'supply'
-        for (let i = 0; i < 3; i++) {
+        const kind: WagonKind = c.grain ? 'grain' : c.manpower ? 'hospital' : c.kind === 'gold' || c.race ? 'gold' : 'supply'
+        // (A grange sends two wains at a time; the others go three to a train.)
+        for (let i = 0; i < (kind === 'grain' ? 2 : 3); i++) {
           const m = new THREE.Mesh(this.geos[kind], wagonMat)
           m.castShadow = true
           m.position.set(-i * 15, 0, 0)

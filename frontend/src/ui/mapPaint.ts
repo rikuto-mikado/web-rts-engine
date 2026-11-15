@@ -134,3 +134,87 @@ export function drawStructures(ctx: CanvasRenderingContext2D, world: World, size
   }
   ctx.restore()
 }
+
+/**
+ * The granges on a small map: a thin dashed line back to the castle each one belongs to (so a free
+ * castle and its farm read as one), and a sheaf-gold square edged in its holder's colour.
+ */
+export function drawGranges(
+  ctx: CanvasRenderingContext2D,
+  world: World,
+  size: number,
+  granges: { x: number; z: number; castleId: string; faction?: string }[],
+  castleAt: (id: string) => { x: number; z: number } | undefined,
+  colorOf: (g: { castleId: string; faction?: string }) => string,
+) {
+  const px = (v: number) => ((v + world.half) / world.size) * size
+  const s = Math.max(2.4, size / 110)
+  ctx.save()
+  for (const g of granges) {
+    const c = castleAt(g.castleId)
+    if (!c) continue
+    ctx.strokeStyle = 'rgba(232,206,140,0.55)'
+    ctx.lineWidth = 1
+    ctx.setLineDash([2, 2])
+    ctx.beginPath()
+    ctx.moveTo(px(g.x), px(g.z))
+    ctx.lineTo(px(c.x), px(c.z))
+    ctx.stroke()
+  }
+  ctx.setLineDash([])
+  for (const g of granges) {
+    const x = px(g.x)
+    const y = px(g.z)
+    ctx.fillStyle = '#d8b65a'
+    ctx.strokeStyle = colorOf(g)
+    ctx.lineWidth = 1.4
+    ctx.fillRect(x - s, y - s, s * 2, s * 2)
+    ctx.strokeRect(x - s, y - s, s * 2, s * 2)
+  }
+  ctx.restore()
+}
+
+/**
+ * The Sanctuary of the High King on a map: a white marble disc in a gilded ring with the sun's rays
+ * about it; `lit` once the doors are open (a blue-white glow), brighter once the High King answered.
+ */
+export function drawTemple(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, lit: 0 | 1 | 2 = 0) {
+  ctx.save()
+  if (lit) {
+    const g = ctx.createRadialGradient(x, y, 0, x, y, s * (lit === 2 ? 2.4 : 1.9))
+    g.addColorStop(0, 'rgba(190,220,255,0.55)')
+    g.addColorStop(1, 'rgba(190,220,255,0)')
+    ctx.fillStyle = g
+    ctx.beginPath()
+    ctx.arc(x, y, s * (lit === 2 ? 2.4 : 1.9), 0, Math.PI * 2)
+    ctx.fill()
+  }
+  ctx.strokeStyle = '#f0c460'
+  ctx.lineWidth = Math.max(1, s * 0.16)
+  ctx.lineCap = 'round'
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2 + Math.PI / 8
+    ctx.beginPath()
+    ctx.moveTo(x + Math.cos(a) * s * 0.95, y + Math.sin(a) * s * 0.95)
+    ctx.lineTo(x + Math.cos(a) * s * 1.35, y + Math.sin(a) * s * 1.35)
+    ctx.stroke()
+  }
+  ctx.fillStyle = '#f4efe2'
+  ctx.strokeStyle = '#1a140a'
+  ctx.lineWidth = Math.max(1, s * 0.14)
+  ctx.beginPath()
+  ctx.arc(x, y, s * 0.78, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.stroke()
+  ctx.strokeStyle = '#d8a83e'
+  ctx.lineWidth = Math.max(1, s * 0.18)
+  ctx.beginPath()
+  ctx.arc(x, y, s * 0.55, 0, Math.PI * 2)
+  ctx.stroke()
+  // The dome.
+  ctx.fillStyle = '#e2b850'
+  ctx.beginPath()
+  ctx.arc(x, y, s * 0.3, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
+}

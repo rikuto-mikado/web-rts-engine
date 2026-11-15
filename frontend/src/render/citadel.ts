@@ -120,7 +120,7 @@ function wardLife(k: Kit, rnd: () => number, smoke: [number, number, number][], 
       if (free(x, z, w / 2 + 0.1, d / 2 + 0.1, ry)) {
         const f = new Frame(x, z, ry, 0)
         const shop = kind === 'market' || rnd() < 0.3
-        house(k, f, { w, d, storeys: rnd() < 0.85 ? 2 : 1, roof: roofs[Math.floor(rnd() * roofs.length)], style: rnd() < 0.25 ? 'plaster' : style, detail: 'high', banner: rnd() < 0.1 }, rnd)
+        house(k, f, { w, d, storeys: rnd() < 0.85 ? 2 : 1, roof: roofs[Math.floor(rnd() * roofs.length)], style: rnd() < 0.25 ? 'plaster' : style, banner: rnd() < 0.1 }, rnd)
         if (shop) {
           f.put(k.accents, box(w * 0.8, 0.14, 2.2), 0xffffff, 0, 3.1, d / 2 + 1, { rx: 0.32 })
           f.put(k.flat!, box(w * 0.6, 0.9, 1), PAL.timberL, 0, 1.3, d / 2 + 1.4)
@@ -175,7 +175,7 @@ function wardLife(k: Kit, rnd: () => number, smoke: [number, number, number][], 
 function gateSquare(k: Kit, rnd: () => number, smoke: [number, number, number][]) {
   // (Local +x is out through the gate; the city lies towards -x.)
   for (let i = 0; i < 6; i++) ROOT.put(k.flat!, box(10, 0.25, 34 - i * 2), i % 2 ? 0xa89c86 : 0x9a8f7a, -32 - i * 9, 0.3, 0, { ao: 0 })
-  house(k, ROOT.sub(-36, -26, 0), { w: 10, d: 7, storeys: 2, roof: 'slate', style: 'stone', detail: 'high', banner: true }, rnd)
+  house(k, ROOT.sub(-36, -26, 0), { w: 10, d: 7, storeys: 2, roof: 'slate', style: 'stone', banner: true }, rnd)
   smoke.push([-36, 12, -26])
   // The toll booth: a little timber hut with a barrier pole across the way in.
   const tb = ROOT.sub(-24, 15, Math.PI)
@@ -284,7 +284,7 @@ function cathedral(k: Kit, rnd: () => number): [number, number, number] {
   f.put(k.walls, cyl(4.5, 4.5, 0.4, 16), 0x6a3a5a, -L / 2 - 13.1, 22, 0, { rz: Math.PI / 2, ao: 0 })
   f.put(k.accents, box(0.3, 9, 4), 0xffffff, -L / 2 - 13.4, 33, 0)
   // The close: canons' houses round the precinct.
-  for (const [x, z, ry] of CANONS) house(k, ROOT.sub(x, z, ry), { w: 9, d: 7, storeys: 2, roof: 'slate', style: 'stone', detail: 'mid' }, rnd)
+  for (const [x, z, ry] of CANONS) house(k, ROOT.sub(x, z, ry), { w: 9, d: 7, storeys: 2, roof: 'slate', style: 'stone' }, rnd)
   for (const [x, z] of [[-56, 26], [-56, -26]]) brazier(k, ROOT, x, 0, z)
   return [-L / 2 - 6, 88, -12]
 }
@@ -346,7 +346,7 @@ function market(k: Kit, rnd: () => number): [number, number, number] {
   g.put(k.walls, box(9, 34, 9), PAL.stoneL, 0, 17, 0)
   g.put(k.walls, cyl(3, 3, 0.3, 16), 0xe8dcc0, 0, 26, 4.6, { rx: Math.PI / 2, ao: 0 })
   g.put(k.roofs, cone(7, 12, 4), PAL.slate[0], 0, 40, 0, { ry: Math.PI / 4 })
-  for (let i = 0; i < 6; i++) house(k, ROOT.sub(-40 + i * 16, 46, 0), { w: 10, d: 8, storeys: 2, roof: 'tile', style: 'plaster', detail: 'mid', banner: true }, rnd)
+  for (let i = 0; i < 6; i++) house(k, ROOT.sub(-40 + i * 16, 46, 0), { w: 10, d: 8, storeys: 2, roof: 'tile', style: 'plaster', banner: true }, rnd)
   return [0, 52, -44]
 }
 
@@ -357,7 +357,7 @@ function smiths(k: Kit, rnd: () => number): [number, number, number] {
   for (let i = 0; i < 9; i++) {
     const a = (i / 9) * Math.PI * 2
     const hf = ROOT.sub(Math.cos(a) * 32, Math.sin(a) * 32, -a + Math.PI / 2)
-    house(k, hf, { w: 12, d: 9, storeys: 1, roof: 'slate', style: 'stone', detail: 'mid' }, rnd)
+    house(k, hf, { w: 12, d: 9, storeys: 1, roof: 'slate', style: 'stone' }, rnd)
     hf.put(k.walls, box(2.4, 14, 2.4), PAL.soot, 4, 7, 0)
     hf.put(k.glow, box(3, 2, 0.4), 0xff6a2a, 0, 1.6, 4.7)
   }

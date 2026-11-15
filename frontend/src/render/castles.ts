@@ -6,11 +6,18 @@ import { bmerge, cyl, groundShade, merge, part } from './geo'
 import { applyVision } from './vision'
 import { buildVillage } from './villages'
 import { buildRoyalCitadel, buildWard } from './citadel'
-import { buildFortress, sailsGeometry, type FortStyle } from './fortress'
+import { buildFortress, sailsGeometry, type FortStyle, type Lamp } from './fortress'
+import { buildStronghold } from './stronghold'
 
 
 const stoneMat = applyVision(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.92 }), '', false, false, true)
 const glowMat = applyVision(new THREE.MeshBasicMaterial({ vertexColors: true }))
+/** Window panes and lanterns: dark by day, glowing warm after dusk (see setLampsLit). */
+const lampMat = applyVision(new THREE.MeshBasicMaterial({ vertexColors: true, color: 0x000000 }))
+/** How much the castles' windows and lanterns are lit (0 by day, 1 at night). */
+export function setLampsLit(on: number) {
+  lampMat.color.setScalar(on)
+}
 const goldMat = applyVision(new THREE.MeshStandardMaterial({ color: 0xd9b24a, metalness: 0.75, roughness: 0.32, flatShading: true, vertexColors: true }))
 
 
@@ -23,7 +30,6 @@ export class CastleView {
   color: string
   readonly tier: number
   /** Splendour level from the garrison size (0-5). */
-  readonly grand: number
   readonly radius: number
   readonly wallRing: [number, number][] = [] // world-space points along the walls, for fire effects
   /** Village state when built (a change rebuilds the view). */
@@ -36,9 +42,11 @@ export class CastleView {
   private sails: THREE.Mesh[] = []
   /** Chimneys and forges that smoke (world positions). */
   readonly smoke: [number, number, number][] = []
+  /** Fire by night (world positions): flames standing alone (x, y, z, size), and pools of light. */
+  readonly flames: [number, number, number, number][] = []
+  readonly lights: Lamp[] = []
 
-  constructor(c: Castle, world: World, color: string, grand = 0, style: FortStyle = 'crown') {
-    this.grand = grand
+  constructor(c: Castle, world: World, color: string, style: FortStyle = 'crown') {
     this.style = style
     this.id = c.id
     this.color = color
@@ -118,9 +126,9 @@ export class CastleView {
       this.wallHeight = 6
       return
     }
-    // A lord's castle: built to its site, its size and the realm that holds it (see fortress.ts).
+    // A lord's castle, or a stronghold: built to its site, its size and the realm that holds it (see fortress.ts, stronghold.ts).
     const shape = world.walls.get(c.id)!
-    const f = buildFortress(c, world, shape, style, grand, rnd)
+    const f = c.stronghold ? buildStronghold(c, world, shape, style, rnd) : buildFortress(c, world, shape, style, rnd)
     const stoneMesh = new THREE.Mesh(groundShade(bmerge(f.stone), 4, 0.22), stoneMat)
     stoneMesh.castShadow = true
     stoneMesh.receiveShadow = true
@@ -145,6 +153,7 @@ export class CastleView {
       inner.add(goldMesh)
     }
     if (f.glow.length) inner.add(new THREE.Mesh(bmerge(f.glow), glowMat))
+    if (f.lamps.length) inner.add(new THREE.Mesh(bmerge(f.lamps), lampMat))
     // The great banner above the keep.
     const [kx, kz] = f.keepAt
     const poleTop = f.keepTop + 14
@@ -175,6 +184,10 @@ export class CastleView {
     this.group.position.set(c.x, this.height, c.z)
     for (const [x, z] of f.ring) this.wallRing.push([c.x + x, c.z + z])
     if (!c.ruined) for (const [x, y, z] of f.smoke) this.smoke.push([c.x + x, this.height + y, c.z + z])
+    if (!c.ruined) {
+      for (const [x, y, z, s] of f.flames) this.flames.push([c.x + x, this.height + y, c.z + z, s])
+      for (const l of f.lights) this.lights.push({ ...l, x: c.x + l.x, y: this.height + l.y, z: c.z + l.z })
+    }
     this.wallHeight = f.wallH
   }
 

@@ -91,6 +91,8 @@ export interface CastleDef {
   x: number
   z: number
   capital?: boolean
+  /** A stronghold: a military fortress rather than a lord's castle (no town, no fields). */
+  stronghold?: boolean
   staging?: boolean
   /** Siege mode: a gatehouse in a wall ring; enemies cannot march past it. */
   gate?: boolean
@@ -116,10 +118,14 @@ export interface FactionDef {
   personality?: 'aggressive' | 'balanced' | 'defensive'
   /** The Endless Night: pays no upkeep, needs no supply, holds nothing and is never wiped out; its broken bands crumble to dust. */
   undying?: boolean
+  /** The Order of the High King (see sanctuary.ts): holds nothing, pays nothing, moves on its own. */
+  sacred?: boolean
 }
 
 export interface ScenarioDefinition {
   start: { gold: number; enemy_gold: number }
+  /** Alliance War: where the Sanctuary of the High King stands (used if `rules.blessing`). */
+  sanctuary?: { x: number; z: number }
   victory: { capture: string }
   defeat: { lose: string }
   factions?: FactionDef[]
@@ -241,8 +247,6 @@ export interface FactionState extends FactionDef {
     retakeQueue: { castleId: string; at: number }[]
   }
   host: GreatHostState | null
-  /** Realm rank (1 = lowest), driven by total military strength. */
-  rank?: number
   /** Villages plundered: other villages distrust the realm. */
   infamy?: number
 }
@@ -252,12 +256,14 @@ export interface Castle {
   name: string
   subtitle: string
   faction: Faction
+  /** Its size (see CASTLE_SIZES in world.ts); a village's: 1 palisade, 2 stone wall. */
   tier: number
-  baseTier: number
   x: number
   z: number
   capital: boolean
   staging: boolean
+  /** A stronghold: a military fortress rather than a lord's castle (see CastleDef). */
+  stronghold?: boolean
   gate: boolean
   tower: boolean
   garrison: Troops
@@ -293,6 +299,43 @@ export interface Castle {
   reliefArmyId?: string | null
   /** Negotiations broke down: no new envoys until this time. */
   talksCooldown?: number
+  /**
+   * The castle's stores of food, in soldier-seconds (one man fed for one second). Its own fields
+   * keep a little coming in; its grange's wagons bring the rest. Empty, the garrison starves.
+   */
+  stores?: number
+  /** Starving since this time (stores empty); the garrison it had then. */
+  hungerSince?: number | null
+  hungerFrom?: number
+  /** The low-stores warning has been given (cleared once the stores are back up). */
+  lowWarned?: boolean
+}
+
+/**
+ * A grange: the home farm that feeds a castle, its fields walled about. Its barn fills at harvest
+ * and sends grain by wagon to whoever holds it: a free grange feeds its own castle; a realm's
+ * grange feeds all the realm's castles in turn (the hungriest first), and the realm's armies camped
+ * near it. No soldiers keep it: an army that pulls down its wall takes it.
+ */
+export interface GrangeDef {
+  id: string
+  name: string
+  castleId: string
+  x: number
+  z: number
+  /** The compound faces this way (towards its castle). */
+  heading: number
+}
+export interface Grange extends GrangeDef {
+  /** Who holds it (and so whom its grain feeds). */
+  faction: Faction
+  nextWagonAt: number
+  /** The wall round its fields; pulled down to nothing, the grange is taken. */
+  walls: number
+  /** When the wall was last attacked (it mends a little after). */
+  assaultAt?: number
+  /** Grain in the barn (soldier-seconds of food). */
+  barn: number
 }
 
 /** A forest to fell or a mine to dig. Engineers working it earn gold, sent home by wagon. */
@@ -345,6 +388,8 @@ export interface Army {
   id: string
   name: string
   faction: Faction
+  /** Sent to take this grange: it stays at the wall until the grange is ours. */
+  takeGrangeId?: string | null
   commanderKey: string | null
   captainName: string | null
   x: number
@@ -405,6 +450,10 @@ export interface Army {
   aidFor?: string | null
   /** The Royal Guard: the Sovereign's household knights. Never reinforced; if they fall, the war is lost. */
   royal?: boolean
+  /** The King has prayed at the Sanctuary of the High King: his guard and his presence are greater. */
+  blessed?: boolean
+  /** A band of the High King's paladins (the High King's Blessing). */
+  sacred?: boolean
   /** The Whisper Blades: Corvin Ashe's own knife-men. Never reinforced (bar an abbey's sanctuary); they strike at commanders, not walls. */
   blades?: boolean
   /** The Wardens of the March (or the enemy's Thorn Hunt): mounted bowmen who see far and find hidden bands. Fixed like the Blades. */
@@ -563,6 +612,10 @@ export interface Convoy {
   /** Supply wagons: the castle they left. Gold wagons: the castle they head for. */
   fromCastleId: string
   gold?: number
+  /** A grange's wagon: grain for the castle it reaches (soldier-seconds of food). */
+  grain?: number
+  /** The grange it came from. */
+  grangeId?: string
   x: number
   z: number
   /** Remaining waypoints. */
@@ -630,6 +683,8 @@ export interface AllianceMuster {
 
 export interface GameRules {
   mode: GameMode
+  /** Alliance War: the High King's Blessing (the Sanctuary of the High King is in this war). */
+  blessing?: boolean
   /** Win when the team holds every listed castle. */
   victoryCastles: string[]
   /** Lose when any of these castles is lost to the enemy team. */
@@ -719,8 +774,6 @@ export interface TrainState {
 
 export interface GameState {
   version: 2
-  /** Realm ranks: strength needed for rank 2, growth per rank, and the top rank in this war. */
-  ranks?: { base: number; growth: number; max: number }
   scenario: Scenario
   rules: GameRules
   difficulty: Difficulty
@@ -734,6 +787,10 @@ export interface GameState {
   convoys?: Convoy[]
   obstacles?: Obstacle[]
   sites?: ResourceSite[]
+  /** The granges that feed the castles (not on the Long Night or the forest road). */
+  granges?: Grange[]
+  /** The Sanctuary of the High King (Alliance War, when the High King's Blessing is chosen). */
+  sanctuary?: SanctuaryState
   /** The player's scouting reports, by castle or army id. */
   intel?: Record<string, Intel>
   /** Bridges engineers have built (in order: index = position in the world's bridge list). */
@@ -779,6 +836,16 @@ export interface GameState {
   sunRoyalId?: string | null
   /** War of the Three Crowns: the rival crowns shattered (their monarch slain or their Citadel taken). */
   crownsFallen?: Partial<Record<WarTeam, boolean>>
+  /**
+   * War of the Three Crowns: the coronation on the Old Throne at the Imperial Crossroads. The crown
+   * whose side holds the Crossroads, with its monarch there, is crowned once `progress` reaches
+   * CORONATION.seconds (paused while not; lost when the Crossroads changes hands).
+   */
+  coronation?: { team: WarTeam; progress: number; active: boolean; why: string | null; warned: number; haltedAt?: number; haltTold?: boolean } | null
+  /** The Old Throne is open (CORONATION.opensAt has passed and the realm was told). */
+  throneOpen?: boolean
+  /** The crown crowned High Emperor: the war is decided. */
+  crowned?: WarTeam | null
   /** Where the player's side last knew the Usurper to be. */
   foeSighting?: { x: number; z: number; t: number; castleId: string | null; how: 'seen' | 'scouts' | 'court' } | null
   armyCounter: number
@@ -842,6 +909,7 @@ export type GameEvent =
   | { type: 'chronicle'; entry: ChronicleEntry }
   | { type: 'game_over'; status: 'victory' | 'defeat' }
   | { type: 'blast'; x: number; z: number }
+  | { type: 'grange_taken'; grangeId: string; faction: Faction }
 
 export interface BattleReportPayload {
   game_time: number
@@ -853,4 +921,22 @@ export interface BattleReportPayload {
   player_losses: number
   enemy_losses: number
   details: Record<string, unknown>
+}
+
+/** The Sanctuary of the High King: where the King prays, and what came of it. */
+export interface SanctuaryState {
+  x: number
+  z: number
+  /** Seconds of prayer done (of TEMPLE.prayer). */
+  progress: number
+  /** The King is praying now. */
+  praying: boolean
+  blessed: boolean
+  blessedAt?: number
+  /** The paladins: bands sent so far, when the next comes, castles they have taken. */
+  bands: number
+  nextBandAt: number
+  captures: number
+  /** They have gone home. */
+  over?: boolean
 }

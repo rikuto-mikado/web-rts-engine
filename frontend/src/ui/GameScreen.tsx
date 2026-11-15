@@ -21,6 +21,15 @@ import { compactPanelWidth, useViewport } from './viewport'
 import { Joystick } from './Joystick'
 import { panelFold, usePanelFolded } from './panelState'
 import { loadNight, loadOverhead, saveNight, saveOverhead } from './viewPref'
+import { LoadingScreen, type LoadStage } from './LoadingScreen'
+import { startMusic, stopMusic } from './music'
+
+/** The loading screen stays at least this long, even when the map is raised in a blink. */
+const MIN_LOADING_MS = 1400
+
+/** Resolves once the browser has drawn a frame (so the loading screen shows the latest stage). */
+// (Two frames: by the second, the first is surely on screen, in every browser.)
+const nextPaint = () => new Promise<void>((res) => requestAnimationFrame(() => requestAnimationFrame(() => window.setTimeout(res, 0))))
 
 export interface Match {
   /** Server-side record of this match (results and battle reports); null if it could not be created. */
@@ -50,6 +59,9 @@ export function GameScreen({ match, onExit }: Props) {
   const [flash, setFlash] = useState<string | null>(null)
   const [gfxError, setGfxError] = useState<string | null>(null)
   const [gfxLost, setGfxLost] = useState(false)
+  /** The loading screen: how far the map is raised (null once it has faded away). */
+  const [load, setLoad] = useState<LoadStage | null>({ done: 0, label: 'Unrolling the map' })
+  const [leaving, setLeaving] = useState(false)
   const lostRef = useRef(false)
   const [overhead, setOverhead] = useState(loadOverhead)
   // Night mode: a dimmer map and darker paper for playing late. The UI follows a data attribute on <html>.
@@ -62,6 +74,11 @@ export function GameScreen({ match, onExit }: Props) {
     document.documentElement.toggleAttribute('data-night', night)
     return () => document.documentElement.removeAttribute('data-night')
   }, [renderer, night, longNight])
+  // The music of the war: in while the war is fought, out when it is left.
+  useEffect(() => {
+    startMusic()
+    return () => stopMusic()
+  }, [])
   const overheadRef = useRef(overhead)
   const toggleView = useCallback(() => {
     setOverhead((v) => {
@@ -161,9 +178,9 @@ export function GameScreen({ match, onExit }: Props) {
       setGfxLost(lost)
     }
     r.setOverhead(overheadRef.current)
-    setRenderer(r)
     let raf = 0
     let last = performance.now()
+    let cancelled = false
     let acc = 0
     let lastNotify = 0
     const frame = (now: number) => {
@@ -213,8 +230,44 @@ export function GameScreen({ match, onExit }: Props) {
       } else if (r.cam.chasing) r.cam.endChase()
       r.render(dt)
     }
-    raf = requestAnimationFrame(frame)
+    // Raise the map stage by stage, letting the loading screen draw between stages; then lift the
+    // curtain (the war starts the moment the map is up).
+    const raise = async () => {
+      setLeaving(false)
+      const stages = r.buildStages()
+      const total = stages.reduce((n, st) => n + st.weight, 0)
+      let done = 0
+      const started = performance.now()
+      for (let i = 0; i < stages.length; i++) {
+        setLoad({ done: done / total, label: stages[i].label })
+        await nextPaint()
+        if (cancelled) return
+        try {
+          stages[i].run()
+          done += stages[i].weight
+        } catch (e) {
+          setGfxError((e as Error).message || 'The map could not be drawn.')
+          return
+        }
+      }
+      setLoad({ done: 1, label: '' })
+      await nextPaint()
+      // (A quick build still leaves a moment to read the orders.)
+      const rest = MIN_LOADING_MS - (performance.now() - started)
+      if (rest > 0) await new Promise((res) => window.setTimeout(res, rest))
+      if (cancelled) return
+      r.reveal()
+      setRenderer(r)
+      setLeaving(true)
+      last = performance.now()
+      raf = requestAnimationFrame(frame)
+      window.setTimeout(() => {
+        if (!cancelled) setLoad(null)
+      }, 750)
+    }
+    void raise()
     return () => {
+      cancelled = true
       cancelAnimationFrame(raf)
       r.dispose()
     }
@@ -227,7 +280,7 @@ export function GameScreen({ match, onExit }: Props) {
     type Down = { x: number; y: number; button: number; grab: { x: number; z: number; y: number } | null; dragging: boolean; touch: boolean; consumed: boolean }
     let down: Down | null = null
     const pointers = new Map<number, { x: number; y: number }>()
-    let pinch: { dist: number; angle: number; mx: number; my: number } | null = null
+    let pinch: { dist: number; mx: number; my: number } | null = null
     let pinchY = 0
     let longPress = 0
     // Touch: with one of your armies selected, a tap waits a moment in case a second tap follows (a double tap marches the army there).
@@ -268,6 +321,18 @@ export function GameScreen({ match, onExit }: Props) {
           toast(`${army.name} will merge into ${t.name}.`)
           return true
         }
+      }
+      if (target?.kind === 'grange') {
+        const gr = engine.grange(target.id)!
+        if (engine.isHostile(engine.grangeOwner(gr), PLAYER)) {
+          const err = engine.orderTake(army.id, gr.id)
+          toast(err ?? `${army.name} marches to take ${gr.name}.`)
+          renderer.spawnClickMarker(gr.x, gr.z, err ? 0x9cc0ff : 0xff5a3c)
+          if (!err) return true
+        }
+        engine.orderArmy(army.id, { type: 'move', x: gr.x + Math.sin(gr.heading) * 76, z: gr.z + Math.cos(gr.heading) * 76 })
+        renderer.spawnClickMarker(gr.x, gr.z, 0x9cc0ff)
+        return true
       }
       if (target?.kind === 'site') {
         const site = engine.site(target.id)!
@@ -338,7 +403,7 @@ export function GameScreen({ match, onExit }: Props) {
 
     const pinchState = () => {
       const [a, b] = [...pointers.values()]
-      return { dist: Math.hypot(b.x - a.x, b.y - a.y), angle: Math.atan2(b.y - a.y, b.x - a.x), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 }
+      return { dist: Math.hypot(b.x - a.x, b.y - a.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 }
     }
     const cancelLongPress = () => {
       if (longPress) window.clearTimeout(longPress)
@@ -349,7 +414,8 @@ export function GameScreen({ match, onExit }: Props) {
       host.setPointerCapture(e.pointerId)
       pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
       if (pointers.size === 2) {
-        // Two fingers: pinch to zoom, twist to rotate, move together to pan.
+        // Two fingers: pinch to zoom, move together to pan. (No twist: on a touch screen the map
+        // stays north-up, like the minimap; a pinch always twists a little and the map would wander.)
         cancelLongPress()
         down = null
         pinch = pinchState()
@@ -389,10 +455,6 @@ export function GameScreen({ match, onExit }: Props) {
       if (pinch && pointers.size >= 2) {
         const now = pinchState()
         if (now.dist > 10) renderer.cam.zoomBy(pinch.dist / now.dist)
-        let da = now.angle - pinch.angle
-        if (da > Math.PI) da -= Math.PI * 2
-        if (da < -Math.PI) da += Math.PI * 2
-        renderer.cam.rotateBy(-da)
         const g0 = renderer.planeAt(pinch.mx, pinch.my, pinchY)
         const g1 = renderer.planeAt(now.mx, now.my, pinchY)
         if (g0 && g1) renderer.cam.panBy(g0.x - g1.x, g0.z - g1.z)
@@ -410,10 +472,14 @@ export function GameScreen({ match, onExit }: Props) {
           followRef.current = null
           // Held on a level plane at the height grabbed: the map follows the finger evenly, even over ridges.
           const g = renderer.planeAt(e.clientX, e.clientY, down.grab.y)
-          if (g) renderer.cam.panBy(down.grab.x - g.x, down.grab.z - g.z)
+          if (g) {
+            renderer.cam.panBy(down.grab.x - g.x, down.grab.z - g.z)
+            // Held against the edge of the map: take hold again where the finger is, so the map
+            // answers at once when it turns back instead of waiting for it to return all the way.
+            const now = renderer.planeAt(e.clientX, e.clientY, down.grab.y)
+            if (now && Math.hypot(now.x - down.grab.x, now.z - down.grab.z) > 1) down.grab = { ...down.grab, x: now.x, z: now.z }
+          }
           host.style.cursor = 'grabbing'
-        } else if (down.dragging && down.button === 1) {
-          renderer.cam.rotateBy(e.movementX * 0.006)
         }
         return
       }
@@ -695,6 +761,7 @@ export function GameScreen({ match, onExit }: Props) {
       )}
 
 
+      {load && !gfxError && <LoadingScreen engine={engine} title={match.name} stage={load} leaving={leaving} />}
       {gfxLost && !gfxError && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70">
           <div className="panel w-[420px] max-w-[92vw] rounded-md p-6 text-center">

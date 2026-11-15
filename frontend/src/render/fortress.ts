@@ -1,10 +1,10 @@
 import * as THREE from 'three'
 import type { Castle } from '../game/types'
-import { GATE_HALF, WATER_LEVEL, castleRadius, profAt, wallRAt, type CastleShape, type World } from '../game/world'
+import { GATE_HALF, WATER_LEVEL, castleRadius, wallRAt, type CastleShape, type World } from '../game/world'
 import { Frame, PAL, newKit, tent, type Kit, type RoofKind } from './buildings'
-import { bpart, box, cone, cyl, merge, part, sphere } from './geo'
+import { bpart, box, cone, cyl, merge, part } from './geo'
 import { buildCastleTown } from './castletown'
-import { buildFarmland } from './farmland'
+import { citadelHeart } from './keeps'
 
 /**
  * A lord's castle, built to its site, its size and the realm that holds it.
@@ -16,12 +16,11 @@ import { buildFarmland } from './farmland'
  *
  *   tier 1   a motte and bailey: an earth mound with a timber tower on it, a palisade of sharpened
  *            logs round the bailey, timber gate towers and wooden fighting platforms;
- *   tier 2   a stone curtain with towers, a great keep and a little walled town;
- *   tier 3   the same, with an inner ward round the keep and a barbican before the main gate;
- *   tier 4+  concentric: a lower outer wall on its own levelled terrace before the curtain.
+ *   tier 2+  a stone curtain with towers and a walled town round a raised citadel terrace, the
+ *            fortress's heart on it (keeps.ts); tier 3 adds a barbican before the main gate;
  *
  * And its style on who holds it: the King's realm builds pale limestone with tall conical roofs in
- * the lord's colours; the Usurper's black basalt, flat-topped and bristling with iron thorns; the
+ * the lord's colours; the Usurper's the same shapes in black basalt under roofs of her crimson; the
  * Sun Emperor's warm sandstone with domes and gilded finials; free lords weathered grey stone with
  * timber hoardings and shingle. Roofs carry courses of tile, slate or lead in the lord's hue.
  *
@@ -36,14 +35,14 @@ export interface StyleDef {
   keep: number
   dark: number
   /** How towers are capped. */
-  cap: 'cone' | 'spike' | 'dome' | 'hoard'
+  cap: 'cone' | 'dome' | 'hoard'
   /** Town roofs and house walls. */
   roofs: RoofKind[]
   houses: 'timber' | 'stone' | 'plaster'
 }
 export const STYLES: Record<FortStyle, StyleDef> = {
   crown: { stone: 0xcdc5b2, stoneD: 0x9d9686, stoneL: 0xddd6c4, keep: 0xd6cfbc, dark: 0x2a241e, cap: 'cone', roofs: ['tile', 'slate', 'tile', 'slate'], houses: 'timber' },
-  thorn: { stone: 0x5f5954, stoneD: 0x45403c, stoneL: 0x726b64, keep: 0x6a635c, dark: 0x16120f, cap: 'spike', roofs: ['slate', 'slate', 'shingle'], houses: 'stone' },
+  thorn: { stone: 0x5f5954, stoneD: 0x45403c, stoneL: 0x726b64, keep: 0x6a635c, dark: 0x16120f, cap: 'cone', roofs: ['slate', 'slate', 'shingle'], houses: 'stone' },
   sun: { stone: 0xd8bd8c, stoneD: 0xb19566, stoneL: 0xe6d0a4, keep: 0xe2c998, dark: 0x3a2a1a, cap: 'dome', roofs: ['tile', 'tile', 'tile'], houses: 'plaster' },
   free: { stone: 0xa59d8d, stoneD: 0x807a6d, stoneL: 0xb6ae9e, keep: 0xb2aa98, dark: 0x2a241e, cap: 'hoard', roofs: ['thatch', 'shingle', 'thatch', 'tile'], houses: 'timber' },
 }
@@ -73,6 +72,21 @@ export interface Fortress {
   smoke: [number, number, number][]
   /** Ground and small parts that cast no shadow (paving, fields, fences, props, fine details). */
   flat: THREE.BufferGeometry[]
+  /** Lit by night only: window panes, lanterns. */
+  lamps: THREE.BufferGeometry[]
+  /** Flames standing alone, burning by night (local x, y, z and size: a torch's is 4). */
+  flames: [number, number, number, number][]
+  /** Pools of firelight by night (local), besides the one over the whole castle. */
+  lights: Lamp[]
+}
+
+/** A pool of firelight (local to its holding): where, how far, how bright. */
+export interface Lamp {
+  x: number
+  y: number
+  z: number
+  r: number
+  i: number
 }
 
 /** Everything the builders of a castle, its town and its country share. */
@@ -83,7 +97,6 @@ export interface Ctx {
   style: FortStyle
   S0: StyleDef
   tier: number
-  grand: number
   ruined: boolean
   timber: boolean
   rnd: () => number
@@ -93,6 +106,11 @@ export interface Ctx {
   gold: THREE.BufferGeometry[]
   /** Ground and small parts: cast no shadow. */
   flat: THREE.BufferGeometry[]
+  /** Fire by night: flames standing alone, and pools of light (local). */
+  flames: Fortress['flames']
+  lights: Lamp[]
+  /** The roads out of the gates (laid by the faubourgs), for what stands along them. */
+  roads: { g: number; path: [number, number][]; main: boolean }[]
   smoke: [number, number, number][]
   mills: Fortress['mills']
   /** Ground height relative to the castle's heart. */
@@ -109,8 +127,7 @@ export interface Ctx {
   main: number
   /** The gate onto the water, if any (no road leaves it). */
   waterGate: number | null
-  /** Radius of the keep's square, and of the inner ward (0: none). */
-  sq: number
+  /** How far the citadel terrace reaches from the heart (0: none); the town keeps beyond it. */
   innerR: number
   keepAt: [number, number]
   wallH: number
@@ -135,14 +152,8 @@ export interface Ctx {
   lanes: { pts: [number, number][]; half: number }[]
   /** Clear of every lane but `except` by r? */
   laneClear: (x: number, z: number, r: number, except?: [number, number][]) => boolean
-  /** On the ring of the outer wall (tier 4 up)? */
-  nearOuterWall: (x: number, z: number, r: number) => boolean
   /** A barbican before the main gate (the gate town starts beyond it)? Defaults by tier. */
   barbican?: boolean
-  /** How far outside the walls the lane round them runs (defaults by tier). */
-  ringOff?: number
-  /** No lane round the walls (a great city's walls are too long for it). */
-  noRing?: boolean
   /** A great city's country: how much farmland round it. */
   country?: { fields: number; mills: number; orchards: number; pastures: number; farms: number }
 }
@@ -211,7 +222,24 @@ export function mottle(g: THREE.BufferGeometry, amount: number) {
   return g
 }
 
-export function buildFortress(c: Castle, world: World, shape: CastleShape, style: FortStyle, grand: number, rnd: () => number): Fortress {
+/** A conical or pyramid roof: the lord's hue mottled like tile, darker courses, a timber eaves trim (into `trim`). */
+export function lordCone(roof: THREE.BufferGeometry[], trim: THREE.BufferGeometry[], x: number, y0: number, z: number, r: number, h: number, seg = 12, ry = 0) {
+  roof.push(mottle(bpart(new THREE.ConeGeometry(r, h, seg, 4), 0xffffff, { x, y: y0 + h / 2, z, ry, ao: 0.32 }), 0.06))
+  for (const t of [0.22, 0.46, 0.7]) {
+    const rb = r * (1 - t + 0.025) * 1.03
+    const rt = r * (1 - t - 0.025) * 1.03
+    roof.push(bpart(new THREE.CylinderGeometry(rt, rb, h * 0.05, seg, 1, true), 0xb4b4b4, { x, y: y0 + h * t, z, ry, ao: 0 }))
+  }
+  trim.push(bpart(new THREE.CylinderGeometry(r * 1.0, r * 1.05, 0.5, seg, 1, true), WOOD_D, { x, y: y0 + 0.2, z, ry, ao: 0 }))
+}
+
+/** A dome in the lord's hue, ribbed in gold, on a drum: the Sun Emperor's way. */
+export function lordDome(roof: THREE.BufferGeometry[], gold: THREE.BufferGeometry[], x: number, y0: number, z: number, r: number, stretch: number) {
+  roof.push(mottle(bpart(new THREE.SphereGeometry(r, 14, 7, 0, Math.PI * 2, 0, Math.PI / 2), 0xffffff, { x, y: y0, z, sy: stretch, ao: 0.3 }), 0.05))
+  for (let k = 0; k < 4; k++) gold.push(bpart(new THREE.TorusGeometry(r * 1.01, Math.max(0.08, r * 0.025), 3, 12, Math.PI), 0xffffff, { x, y: y0, z, ry: (k * Math.PI) / 4, sy: stretch, ao: 0 }))
+}
+
+export function buildFortress(c: Castle, world: World, shape: CastleShape, style: FortStyle, rnd: () => number): Fortress {
   const S0 = STYLES[style]
   const tier = c.tier
   const ruined = !!c.ruined
@@ -220,6 +248,10 @@ export function buildFortress(c: Castle, world: World, shape: CastleShape, style
   const stone = kit.walls
   const flat: THREE.BufferGeometry[] = []
   kit.flat = flat
+  const lamps: THREE.BufferGeometry[] = []
+  kit.lamps = lamps
+  const flames: Fortress['flames'] = []
+  const lights: Lamp[] = []
   const roof: THREE.BufferGeometry[] = []
   const gold: THREE.BufferGeometry[] = []
   const ring: [number, number][] = []
@@ -284,32 +316,24 @@ export function buildFortress(c: Castle, world: World, shape: CastleShape, style
     if (hi - lo > 0.35) S(box(w + 0.9, hi - lo + 1.4, d + 0.9), col, { x, y: (hi + lo) / 2 - 0.4, z, ry, ao: 0.2, jitter: 0.1 })
     return hi
   }
-  /** A conical or pyramid roof: the lord's hue mottled like tile, darker courses, a timber eaves trim. */
-  const roofCone = (x: number, y0: number, z: number, r: number, h: number, seg = 12, ry = 0) => {
-    const g = bpart(new THREE.ConeGeometry(r, h, seg, 4), 0xffffff, { x, y: y0 + h / 2, z, ry, ao: 0.32 })
-    roof.push(mottle(g, 0.06))
-    for (const t of [0.22, 0.46, 0.7]) {
-      const rb = r * (1 - t + 0.025) * 1.03
-      const rt = r * (1 - t - 0.025) * 1.03
-      roof.push(bpart(new THREE.CylinderGeometry(rt, rb, h * 0.05, seg, 1, true), 0xb4b4b4, { x, y: y0 + h * t, z, ry, ao: 0 }))
-    }
-    S(new THREE.CylinderGeometry(r * 1.0, r * 1.05, 0.5, seg, 1, true), WOOD_D, { x, y: y0 + 0.2, z, ry, ao: 0 })
-  }
-  /** A dome in the lord's hue, ribbed, on a drum: the Sun Emperor's way. */
-  const roofDome = (x: number, y0: number, z: number, r: number, stretch: number) => {
-    const g = bpart(new THREE.SphereGeometry(r, 14, 7, 0, Math.PI * 2, 0, Math.PI / 2), 0xffffff, { x, y: y0, z, sy: stretch, ao: 0.3 })
-    roof.push(mottle(g, 0.05))
-    for (let k = 0; k < 4; k++) gold.push(bpart(new THREE.TorusGeometry(r * 1.01, Math.max(0.08, r * 0.025), 3, 12, Math.PI), 0xffffff, { x, y: y0, z, ry: (k * Math.PI) / 4, sy: stretch, ao: 0 }))
-  }
+  const roofCone = (x: number, y0: number, z: number, r: number, h: number, seg = 12, ry = 0) => lordCone(roof, stone, x, y0, z, r, h, seg, ry)
+  const roofDome = (x: number, y0: number, z: number, r: number, stretch: number) => lordDome(roof, gold, x, y0, z, r, stretch)
 
-  const sq = 22 + tier * 4
-  const innerR = tier >= 3 && !timber ? sq + 8 : 0
+  // The heart of a stone castle: the citadel terrace and the fortress on it (keeps.ts). The town
+  // keeps clear of the terrace.
+  let heart = { keepTop: 0, radius: 0 }
+  if (!timber) {
+    let minWall = Infinity
+    for (let i = 0; i < 64; i++) minWall = Math.min(minWall, rAt((i / 64) * Math.PI * 2))
+    heart = citadelHeart({ style, tier, ruined, rnd, stone, roof, gold, flat, glow: kit.glow, flames }, main, gates, minWall)
+  }
+  const innerR = heart.radius
   const keepAt: [number, number] = timber ? [-Math.cos(main) * rAt(main + Math.PI) * 0.4, -Math.sin(main) * rAt(main + Math.PI) * 0.4] : [0, 0]
   const cr = castleRadius(tier)
   const outer = cr * (timber ? 1.75 : 2.05)
 
   // ---------------------------------------------------------------------------------------------
-  // Ground: the bailey levelled inside the walls, cobbled streets, the square before the keep.
+  // Ground: the bailey levelled inside the walls, cobbled streets.
   // ---------------------------------------------------------------------------------------------
   const outline = (extra: number, n = 96) => Array.from({ length: n }, (_, i) => pt((i / n) * Math.PI * 2, extra))
   {
@@ -319,17 +343,33 @@ export function buildFortress(c: Castle, world: World, shape: CastleShape, style
     F(g, ruined ? 0x5a5040 : timber ? 0x8a7a58 : 0x8f7c5c, { y: -5.2, ao: 0 })
   }
   if (!timber) {
+    // The whole town within the walls is cobbled, from the foot of the citadel terrace to the back
+    // of the curtain: setts in three tones laid in rings, the buildings standing on them.
+    const tones = [0xa89a80, 0x9c8e74, 0xb3a68c]
+    const cells: number[][][] = [[], [], []]
+    const cell = 3.4
+    let maxR = 0
+    for (let i = 0; i < 64; i++) maxR = Math.max(maxR, rAt((i / 64) * Math.PI * 2))
+    const n = Math.max(48, Math.round((Math.PI * 2 * maxR) / cell))
+    for (let i = 0; i < n; i++) {
+      const a0 = (i / n) * Math.PI * 2
+      const a1 = ((i + 1) / n) * Math.PI * 2
+      const r1max = Math.min(rAt(a0), rAt(a1)) - 2.5
+      for (let r0 = Math.max(4, innerR - 2), j = 0; r0 < r1max; r0 += cell, j++) {
+        const r1 = Math.min(r1max, r0 + cell)
+        const q = (a: number, r: number) => [Math.cos(a) * r, 0.84, Math.sin(a) * r]
+        const t = Math.abs(Math.round(Math.sin(i * 12.9898 + j * 78.233) * 43758.5453)) % 3
+        cells[t].push([...q(a0, r0), ...q(a0, r1), ...q(a1, r1), ...q(a1, r0)])
+      }
+    }
+    cells.forEach((c, t) => c.length && flat.push(drape(c, ruined ? 0x5a5448 : tones[t], 0.05)))
     for (const g of gates) {
       const len = rAt(g) + 10
       F(box(len, 0.5, 14), ruined ? 0x6a6050 : 0xa8987a, { x: (Math.cos(g) * len) / 2, y: 0.85, z: (Math.sin(g) * len) / 2, ry: -g, ao: 0 })
       // Setts: a grain of paler and darker stones down the street, kerbs to the sides.
-      for (let d = sq; d < len - 4; d += 3.2) for (const u of [-4.5, 0, 4.5]) F(box(2.6, 0.12, 2.6), (Math.round(d + u) % 3) ? 0xb4a486 : 0x9c8e72, { x: Math.cos(g) * d - Math.sin(g) * u, y: 1.13, z: Math.sin(g) * d + Math.cos(g) * u, ry: -g + 0.05 * Math.sin(d), ao: 0 })
+      for (let d = innerR; d < len - 4; d += 3.2) for (const u of [-4.5, 0, 4.5]) F(box(2.6, 0.12, 2.6), (Math.round(d + u) % 3) ? 0xb4a486 : 0x9c8e72, { x: Math.cos(g) * d - Math.sin(g) * u, y: 1.13, z: Math.sin(g) * d + Math.cos(g) * u, ry: -g + 0.05 * Math.sin(d), ao: 0 })
       for (const s of [-1, 1]) F(box(len, 0.35, 0.9), 0x8a7c62, { x: (Math.cos(g) * len) / 2 - Math.sin(g) * s * 7, y: 1.05, z: (Math.sin(g) * len) / 2 + Math.cos(g) * s * 7, ry: -g, ao: 0 })
     }
-    F(cyl(sq, sq, 0.6, 32), ruined ? 0x6a6050 : 0xb3a588, { y: 0.9, ao: 0 })
-    F(cyl(sq + 1, sq + 1, 0.35, 32), 0x8f7f62, { y: 0.7, ao: 0 })
-    // Rings of setts round the square.
-    for (const rr of [sq * 0.55, sq * 0.8]) F(new THREE.TorusGeometry(rr, 0.35, 3, 40), 0x968a70, { y: 1.22, rx: Math.PI / 2, ao: 0 })
   } else {
     for (const g of [main, gates[2]]) {
       const len = rAt(g) + 8
@@ -345,7 +385,6 @@ export function buildFortress(c: Castle, world: World, shape: CastleShape, style
   const flank = GH + (timber ? 4 : 6)
   type Station = { x: number; z: number; tower: boolean; corner: boolean }
   const runs: Station[][] = []
-  const angDiff = (a: number, b: number) => Math.atan2(Math.sin(a - b), Math.cos(a - b))
   for (let i = 0; i < 4; i++) {
     const g0 = gates[i]
     const g1 = gates[(i + 1) % 4] + (i === 3 ? Math.PI * 2 : 0)
@@ -418,13 +457,19 @@ export function buildFortress(c: Castle, world: World, shape: CastleShape, style
     S(box(len, 1.2, 7.2), S0.stoneD, { x: cx - nx * 0.6, y: h + 0.6, z: cz - nz * 0.6, ry: ang })
     S(box(len, 1.4, 1.4), S0.stoneD, { x: cx + nx * 3.4, y: h - 0.6, z: cz + nz * 3.4, ry: ang, ao: 0.3 })
     S(box(len, 2.2, 1.4), S0.stone, { x: cx + nx * 3.4, y: h + 1.1, z: cz + nz * 3.4, ry: ang })
+    // A torch in its bracket on the inside of the parapet, for the watch on the wall-walk.
+    if (len > 18) {
+      const tx = cx - nx * 0.4
+      const tz = cz - nz * 0.4
+      F(box(0.25, 0.25, 1.2), IRON, { x: tx, y: h + 2.4, z: tz, ry: ang + Math.PI / 2, ao: 0 })
+      F(cyl(0.12, 0.1, 1.6, 5), WOOD_D, { x: tx - nx * 0.6, y: h + 3, z: tz - nz * 0.6, rz: 0.2, ao: 0 })
+      kit.glow.push(bpart(cyl(0.22, 0.16, 0.4, 6), 0xff8a3a, { x: tx - nx * 0.7, y: h + 3.9, z: tz - nz * 0.7 }))
+      flames.push([tx - nx * 0.7, h + 4.4, tz - nz * 0.7, 3.4])
+    }
     for (let t = -len / 2 + 1.8; t < len / 2 - 1.2; t += 3.6) {
       const ox = cx + tx * t + nx * 3.4
       const oz = cz + tz * t + nz * 3.4
-      if (style === 'thorn') {
-        S(cone(1.2, 3.2, 4), S0.stone, { x: ox, y: h + 3.6, z: oz, ry: ang + Math.PI / 4 })
-        if (Math.round(t / 3.6) % 2 === 0) S(cone(0.18, 2.2, 4), IRON, { x: ox, y: h + 6, z: oz, ao: 0 })
-      } else if (style === 'sun') {
+      if (style === 'sun') {
         S(box(2.1, 1.6, 1.4), S0.stone, { x: ox, y: h + 2.9, z: oz, ry: ang })
         S(box(1.2, 1.0, 1.4), S0.stone, { x: ox, y: h + 4.2, z: oz, ry: ang })
       } else S(box(2, 2.2, 1.4), S0.stone, { x: ox, y: h + 3.2, z: oz, ry: ang })
@@ -471,7 +516,7 @@ export function buildFortress(c: Castle, world: World, shape: CastleShape, style
   // Towers, in the style of the realm.
   const tr = timber ? 4 : 5 + tier
   const th = wallH + 8 + tier
-  const tower = (x: number, z: number, r: number, h: number, capH: number, crown = 0) => {
+  const tower = (x: number, z: number, r: number, h: number, capH: number) => {
     if (timber) {
       const hh = ruined ? h * 0.4 : h
       for (const [px, pz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) S(box(0.8, hh, 0.8), WOOD_D, { x: x + px * r * 0.7, y: hh / 2 + 1, z: z + pz * r * 0.7 })
@@ -482,8 +527,8 @@ export function buildFortress(c: Castle, world: World, shape: CastleShape, style
       roofCone(x, hh + 0.6, z, r * 1.75, capH * 0.6, 4, Math.PI / 4)
       return
     }
-    const n = style === 'thorn' ? 4 : 12
-    const rot = style === 'thorn' ? Math.atan2(z, x) + Math.PI / 4 : 0
+    const n = 12
+    const rot = 0
     const hh = crumble(h)
     S(cyl(r + 1.4, r + 2.4, 5, n), S0.stoneD, { x, y: 1.5, z, ry: rot, ao: 0.1 })
     stone.push(mottle(bpart(new THREE.CylinderGeometry(r, r + 0.4, hh, n, 4), S0.stone, { x, y: hh / 2, z, ry: rot }), 0.05))
@@ -497,23 +542,13 @@ export function buildFortress(c: Castle, world: World, shape: CastleShape, style
     S(cyl(r + 1.1, r + 1.1, 1.4, n), S0.stone, { x, y: h + 1.9, z, ry: rot })
     for (let i = 0; i < 8; i++) {
       const a = (i / 8) * Math.PI * 2 + rot
-      if (style === 'thorn') S(cone(0.9, 2.6, 4), S0.stone, { x: x + Math.cos(a) * (r + 0.6), y: h + 3.8, z: z + Math.sin(a) * (r + 0.6) })
-      else S(box(1.6, 1.6, 0.9), S0.stone, { x: x + Math.cos(a) * (r + 0.7), y: h + 3.3, z: z + Math.sin(a) * (r + 0.7), ry: -a + Math.PI / 2 })
+      S(box(1.6, 1.6, 0.9), S0.stone, { x: x + Math.cos(a) * (r + 0.7), y: h + 3.3, z: z + Math.sin(a) * (r + 0.7), ry: -a + Math.PI / 2 })
     }
     if (S0.cap === 'cone') {
       S(cyl(r * 0.8, r * 0.8, 2.6, n), S0.stone, { x, y: h + 3.4, z })
       roofCone(x, h + 4.6, z, r + 0.6, capH, n)
-      if (crown >= 1) gold.push(bpart(cone(0.6, 2.6, 6), 0xffffff, { x, y: h + 4.6 + capH + 1.2, z, ao: 0 }))
-      if (crown >= 2) gold.push(bpart(cyl(r + 0.85, r + 0.85, 0.6, n), 0xffffff, { x, y: h + 4.8, z, ao: 0 }))
       // A weathervane on every tower, a pennant on the grander ones.
       S(cyl(0.08, 0.08, 2.2, 4), IRON, { x, y: h + 4.6 + capH + 1, z, ao: 0 })
-    } else if (S0.cap === 'spike') {
-      roofCone(x, h + 3.2, z, r * 0.9, capH * 0.35, 4, rot)
-      S(cone(0.45, capH * 0.9, 4), IRON, { x, y: h + 3.2 + capH * 0.35 + capH * 0.45, z, ao: 0 })
-      for (let i = 0; i < 4; i++) {
-        const a = rot + (i / 4) * Math.PI * 2
-        S(cone(0.25, 2.6, 4), IRON, { x: x + Math.cos(a) * (r + 1.3), y: h + 1.4, z: z + Math.sin(a) * (r + 1.3), rz: Math.cos(a) * -1.1, rx: Math.sin(a) * 1.1, ao: 0 })
-      }
     } else if (S0.cap === 'dome') {
       S(cyl(r * 0.85, r * 0.85, 2.8, 12), S0.stoneL, { x, y: h + 3.4, z })
       const st = capH / (r * 1.4)
@@ -528,7 +563,6 @@ export function buildFortress(c: Castle, world: World, shape: CastleShape, style
         S(box(0.3, 2.2, 0.3), WOOD_D, { x: x + Math.cos(a) * (r + 1.9), y: h + 1.2, z: z + Math.sin(a) * (r + 1.9), ao: 0 })
       }
       stone.push(mottle(bpart(new THREE.ConeGeometry(r + 2.4, capH * 0.9, n, 3), 0x6f5a42, { x, y: h + 4.6 + capH * 0.45, z, ao: 0.3 }), 0.08))
-      if (crown >= 1) Rf(box(0.2, 2.6, 4.4), 0xffffff, { x, y: h + 4.6 + capH * 0.9 + 1.4, z: z + 2.3, ao: 0 })
     }
   }
 
@@ -540,7 +574,7 @@ export function buildFortress(c: Castle, world: World, shape: CastleShape, style
       else stoneWall(a.x, a.z, b.x, b.z)
       for (let t = 0.15; t < 1; t += 0.25) ring.push([a.x + (b.x - a.x) * t, a.z + (b.z - a.z) * t])
     }
-    for (const st of run) if (st.tower) tower(st.x, st.z, st.corner ? tr + 1.5 : tr, st.corner ? th + 3 : th, 8 + tier, grand)
+    for (const st of run) if (st.tower) tower(st.x, st.z, st.corner ? tr + 1.5 : tr, st.corner ? th + 3 : th, 8 + tier)
   }
   // A quay along the bank walls: a stone landing at the water, mooring posts, a boat or two.
   if (quay.length && !timber) {
@@ -621,16 +655,25 @@ export function buildFortress(c: Castle, world: World, shape: CastleShape, style
     }
     for (const s of [-1, 1]) {
       const [x, z] = lat(s * (GH + 6))
-      tower(x, z, 7, crumble(gh + 6), 9, gi === 0 ? grand : 0)
+      tower(x, z, 7, crumble(gh + 6), 9)
       if (!ruined) Rf(box(0.3, 9, 4), 0xffffff, { x: x + cx * 7.3, y: gh - 2, z: z + cz * 7.3, ry: -g, ao: 0 })
     }
     if (ruined) return
+    // Torches in iron brackets either side of the gateway, and the light they throw on the road.
+    for (const s of [-1, 1]) {
+      const [x, z] = lat(s * (GH + 0.6), 5.6)
+      F(box(0.3, 0.3, 1.4), IRON, { x, y: gh - 9, z, ry: -g, ao: 0 })
+      const [fx, fz] = lat(s * (GH + 0.6), 6.4)
+      F(cyl(0.13, 0.1, 1.7, 5), WOOD_D, { x: fx, y: gh - 8.4, z: fz, ao: 0 })
+      kit.glow.push(bpart(cyl(0.24, 0.17, 0.42, 6), 0xff8a3a, { x: fx, y: gh - 7.4, z: fz }))
+      flames.push([fx, gh - 6.9, fz, 3.8])
+    }
+    lights.push({ x: ox + cx * 12, y: 5, z: oz + cz * 12, r: 34, i: 0.5 })
     S(box(10, 6, GH * 2 + 4), S0.stone, { x: ox, y: gh - 2, z: oz, ry: -g })
     S(box(11, 1.4, GH * 2 + 6), S0.stoneD, { x: ox, y: gh + 1.6, z: oz, ry: -g })
     for (let u = -GH - 2; u <= GH + 2; u += 3.4) {
       const [x, z] = lat(u, 4.6)
-      if (style === 'thorn') S(cone(1.0, 2.8, 4), S0.stone, { x, y: gh + 3.6, z })
-      else S(box(1.4, 1.8, 1.8), S0.stone, { x, y: gh + 3.2, z, ry: -g })
+      S(box(1.4, 1.8, 1.8), S0.stone, { x, y: gh + 3.2, z, ry: -g })
     }
     if (style === 'sun') {
       S(new THREE.TorusGeometry(GH - 0.5, 1.3, 4, 18, Math.PI * 1.25), S0.stoneL, { x: ox + cx * 5.2, y: gh - 6.2, z: oz + cz * 5.2, ry: -g + Math.PI / 2, rz: -Math.PI * 0.125, sy: 4 / (GH - 0.5), ao: 0 })
@@ -655,11 +698,6 @@ export function buildFortress(c: Castle, world: World, shape: CastleShape, style
       }
       S(box(6, 4, GH * 2 + 6), S0.stone, { x: ox + cx * 28, y: wallH * 0.75 - 1, z: oz + cz * 28, ry: -g })
     }
-    if (grand >= 4)
-      for (const s of [-1, 1]) {
-        const [x, z] = lat(s * (GH + 2), 4.2)
-        Rf(box(0.3, 8, 4.4), 0xffffff, { x, y: gh - 4, z, ry: -g, ao: 0 })
-      }
   })
 
   // ---------------------------------------------------------------------------------------------
@@ -690,208 +728,9 @@ export function buildFortress(c: Castle, world: World, shape: CastleShape, style
       for (let i = 1; i <= 3; i++) S(box(0.6, (mh * 0.55 * i) / 3, 0.6), WOOD_D, { x: bx + (kx - bx) * (i / 4.5), y: (mh * 0.55 * i) / 6, z: bz + (kz - bz) * (i / 4.5) })
     }
     keepTop = mh + kh + 2
-  } else if (style === 'sun') {
-    const k = 13 + tier * 3
-    const kh = crumble((22 + tier * 7) * (grand >= 2 ? 1.12 : 1))
-    S(cyl(k + 3, k + 4, 5, 8), S0.stoneD, { y: 1.5, ry: Math.PI / 8, ao: 0.1 })
-    stone.push(mottle(bpart(new THREE.CylinderGeometry(k, k, kh, 8, 5), S0.keep, { y: kh / 2, ry: Math.PI / 8 }), 0.04))
-    for (let i = 0; i < 8; i++) {
-      const a = (i / 8) * Math.PI * 2
-      S(box(4, 6, 0.6), S0.dark, { x: Math.cos(a) * (k - 0.1), y: 4.2, z: Math.sin(a) * (k - 0.1), ry: -a + Math.PI / 2, ao: 0 })
-      S(new THREE.TorusGeometry(2, 0.5, 4, 10, Math.PI), S0.stoneL, { x: Math.cos(a) * (k + 0.2), y: 7.2, z: Math.sin(a) * (k + 0.2), ry: -a + Math.PI / 2, ao: 0 })
-      for (const y of [kh * 0.5, kh * 0.75]) S(box(1.4, 3.2, 0.3), S0.dark, { x: Math.cos(a) * (k + 0.05), y, z: Math.sin(a) * (k + 0.05), ry: -a + Math.PI / 2, ao: 0 })
-    }
-    if (!ruined) {
-      S(cyl(k + 1.4, k + 1.4, 1.4, 8), S0.stoneD, { y: kh + 0.7, ry: Math.PI / 8 })
-      S(cyl(k * 0.72, k * 0.72, 5, 16), S0.stoneL, { y: kh + 3.5 })
-      roofDome(0, kh + 6, 0, k * 0.74, 1.15)
-      gold.push(bpart(cyl(k * 0.75, k * 0.75, 0.8, 16), 0xffffff, { y: kh + 6.2, ao: 0 }))
-      gold.push(bpart(cone(0.9, 6, 8), 0xffffff, { y: kh + 6 + k * 0.85 + 3, ao: 0 }))
-      gold.push(bpart(sphere(1.2, 1), 0xffffff, { y: kh + 6 + k * 0.85 + 0.6, ao: 0 }))
-      for (let i = 0; i < 4; i++) {
-        const a = (i / 4) * Math.PI * 2 + Math.PI / 4
-        const x = Math.cos(a) * (k + 2.5)
-        const z = Math.sin(a) * (k + 2.5)
-        S(cyl(1.8, 2.1, kh + 12, 10), S0.stoneL, { x, y: (kh + 12) / 2, z })
-        S(cyl(2.6, 1.8, 1.4, 10), S0.stoneD, { x, y: kh + 12.2, z })
-        roofDome(x, kh + 12.9, z, 2.2, 1.5)
-        gold.push(bpart(cone(0.3, 2.4, 5), 0xffffff, { x, y: kh + 17.3, z, ao: 0 }))
-      }
-    }
-    keepTop = kh + 6 + k * 0.85 + 6
-  } else {
-    const k = 16 + tier * 4
-    const kh = crumble((20 + tier * 7) * (grand >= 2 ? 1.18 : 1) * (grand >= 5 ? 1.12 : 1) * (style === 'thorn' ? 1.15 : 1))
-    const kf = new Frame(0, 0, Math.PI / 4 + main)
-    kf.put(stone, box(k + 5, 5, k + 5), S0.stoneD, 0, 1.5, 0, { ao: 0.1 })
-    stone.push(mottle(bpart(new THREE.BoxGeometry(k, kh, k, 3, 5, 3), S0.keep, { y: kh / 2, ry: Math.PI / 4 + main, order: 'YXZ' }), 0.045))
-    for (let side = 0; side < 4; side++) {
-      const f = kf.sub(0, 0, (side * Math.PI) / 2)
-      for (const u of [-k * 0.25, k * 0.25]) f.put(stone, box(1.6, kh - 2, 1.2), S0.keep, u, kh / 2, k / 2 + 0.5)
-      for (const y of [kh * 0.33, kh * 0.66]) f.put(stone, box(k + 0.4, 0.5, 0.5), S0.stoneD, 0, y, k / 2 + 0.2, { ao: 0 })
-      for (let i = 0; i < 2; i++) for (const u of [-k * 0.38, 0, k * 0.38]) f.put(stone, box(1.4, 2.8, 0.3), S0.dark, u, kh * (0.5 + i * 0.22), k / 2 + 0.05, { ao: 0 })
-      if (ruined) continue
-      f.put(stone, box(k, 1.4, 1.6), S0.stoneD, 0, kh - 0.4, k / 2 + 0.6, { ao: 0.3 })
-      f.put(stone, box(k + 2.4, 1.6, 1.2), S0.keep, 0, kh + 0.8, k / 2 + 0.7)
-      for (let u = -k / 2 + 0.6; u <= k / 2; u += 2.4) {
-        if (style === 'thorn') f.put(stone, cone(0.9, 2.8, 4), S0.keep, u, kh + 3, k / 2 + 0.8)
-        else f.put(stone, box(1.3, 1.6, 1.0), S0.keep, u, kh + 2.4, k / 2 + 0.8)
-      }
-      if (style === 'free') {
-        f.put(stone, box(k + 3, 2.8, 2.4), WOOD, 0, kh + 2.6, k / 2 + 2)
-        for (let u = -k / 2; u <= k / 2; u += 3) f.put(stone, box(0.3, 2.4, 0.3), WOOD_D, u, kh + 0.4, k / 2 + 3, { ao: 0 })
-      }
-    }
-    if (!ruined) {
-      for (let i = 0; i < 4; i++) {
-        const a = (i / 4) * Math.PI * 2 + main
-        const x = Math.cos(a) * k * 0.72
-        const z = Math.sin(a) * k * 0.72
-        const n = style === 'thorn' ? 4 : 12
-        S(cyl(3, 3.2, kh + 7, n), S0.keep, { x, y: (kh + 7) / 2, z, ry: main })
-        S(cyl(3.6, 3, 1.2, n), S0.stoneD, { x, y: kh + 7.4, z, ry: main, ao: 0.1 })
-        if (style === 'thorn') {
-          S(cone(0.5, 9, 4), IRON, { x, y: kh + 12.5, z, ao: 0 })
-          for (let j = 0; j < 4; j++) S(cone(0.7, 2.4, 4), S0.keep, { x: x + Math.cos(j * 1.57 + main) * 2.8, y: kh + 9.2, z: z + Math.sin(j * 1.57 + main) * 2.8 })
-        } else {
-          for (let j = 0; j < 6; j++) {
-            const b = (j / 6) * Math.PI * 2
-            S(box(1, 1.2, 0.8), S0.keep, { x: x + Math.cos(b) * 3.3, y: kh + 8.6, z: z + Math.sin(b) * 3.3, ry: -b + Math.PI / 2 })
-          }
-          if (style === 'free') stone.push(mottle(bpart(new THREE.ConeGeometry(4.2, 7, 8, 3), 0x6f5a42, { x, y: kh + 12.2, z, ao: 0.3 }), 0.08))
-          else roofCone(x, kh + 8.7, z, 3.6, 7, 12)
-        }
-      }
-      const fb = kf.sub(0, k / 2 + 3, 0)
-      fb.put(stone, box(7, kh * 0.38, 6), S0.keep, 0, kh * 0.19, 0)
-      fb.put(stone, box(2.4, 3.6, 0.3), S0.dark, 0, kh * 0.38 - 2.4, 3.05, { ao: 0 })
-      for (let i = 0; i < 7; i++) fb.put(stone, box(3.4, 0.6, 1.6), S0.stoneD, 4.8, 0.4 + (i * (kh * 0.33)) / 7, 2.6 - i * 0.8, { ao: 0.05 })
-      if (style === 'thorn') {
-        roofCone(0, kh, 0, k * 0.55, 8, 4, Math.PI / 4 + main)
-        S(cone(1.1, 16, 4), IRON, { y: kh + 16, ao: 0 })
-        keepTop = kh + 12
-      } else if (style === 'free') {
-        stone.push(mottle(bpart(new THREE.ConeGeometry(k * 0.78, 13 + tier, 4, 4), 0x6f5a42, { y: kh + 3 + (13 + tier) / 2, ry: Math.PI / 4 + main, ao: 0.3 }), 0.08))
-        keepTop = kh + 14 + tier
-      } else {
-        roofCone(0, kh + 1.8, 0, k * 0.72, 13 + tier, 4, Math.PI / 4 + main)
-        keepTop = kh + 14 + tier
-      }
-      if (grand >= 3) {
-        for (let i = 0; i < 4; i++) {
-          const a = (i / 4) * Math.PI * 2 + Math.PI / 4 + main
-          const x = Math.cos(a) * (k * 0.95)
-          const z = Math.sin(a) * (k * 0.95)
-          S(cyl(2.2, 2.4, kh * 0.6, 10), S0.keep, { x, y: kh * 0.3, z })
-          roofCone(x, kh * 0.6, z, 3, 6, 10)
-        }
-        gold.push(bpart(box(k + 2.5, 0.9, k + 2.5), 0xffffff, { y: kh + 2, ry: Math.PI / 4 + main, ao: 0 }))
-      }
-      if (grand >= 5) {
-        gold.push(bpart(cone(2.6, 18, 8), 0xffffff, { y: kh + 1.8 + (13 + tier) + 9, ao: 0 }))
-        gold.push(bpart(sphere(1.6, 1), 0xffffff, { y: kh + 1.8 + (13 + tier) + 19, ao: 0 }))
-      }
-    } else {
-      keepTop = kh
-      for (let i = 0; i < 8; i++) S(new THREE.DodecahedronGeometry(2 + rnd() * 2.5, 0), S0.stoneD, { x: (rnd() - 0.5) * k * 1.6, y: 1.2, z: (rnd() - 0.5) * k * 1.6, ry: rnd() * 3 })
-    }
-  }
-  taken.push({ x: kx, z: kz, r: timber ? 28 : sq })
-
-  // ---------------------------------------------------------------------------------------------
-  // An inner ward round the keep (tier 3 up).
-  // ---------------------------------------------------------------------------------------------
-  if (innerR) {
-    const ih = wallH * 0.62
-    const n = 28
-    const at = (a: number): [number, number] => {
-      const k = 0.92 + (profAt(shape, a) - 1) * 0.6
-      return [Math.cos(a) * innerR * k, Math.sin(a) * innerR * k]
-    }
-    for (let i = 0; i < n; i++) {
-      const a0 = (i / n) * Math.PI * 2
-      const a1 = ((i + 1) / n) * Math.PI * 2
-      const [ax, az] = at(a0)
-      const [bx, bz] = at(a1)
-      const mx = (ax + bx) / 2
-      const mz = (az + bz) / 2
-      if (onStreet(mx, mz, 12)) continue
-      if (ruined && rnd() < 0.3) continue
-      const len = Math.hypot(bx - ax, bz - az) + 0.6
-      const ang = -Math.atan2(bz - az, bx - ax)
-      const h = crumble(ih)
-      S(box(len, h, 4), S0.stone, { x: mx, y: h / 2, z: mz, ry: ang })
-      if (!ruined) {
-        S(box(len, 1, 5), S0.stoneD, { x: mx, y: h + 0.5, z: mz, ry: ang, ao: 0 })
-        const mm = Math.hypot(mx, mz) || 1
-        S(box(1.6, 1.6, 1.2), S0.stone, { x: mx + (mx / mm) * 1.8, y: h + 1.6, z: mz + (mz / mm) * 1.8, ry: ang })
-        if (i % 3 === 0) Rf(box(0.3, h * 0.7, 3.4), 0xffffff, { x: mx + (mx / mm) * 2.2, y: h * 0.55, z: mz + (mz / mm) * 2.2, ry: ang + Math.PI / 2, ao: 0 })
-      }
-    }
-    for (let i = 0; i < 4; i++) tower(...at(main + Math.PI / 4 + (i * Math.PI) / 2), 4.6, ih + 6, 7, grand)
-    for (const g of gates) for (const s of [-1, 1]) tower(...(at(g).map((v, j) => v + (j === 0 ? -Math.sin(g) : Math.cos(g)) * s * 12) as [number, number]), 3.6, ih + 4, 5.5)
-  }
-
-  // ---------------------------------------------------------------------------------------------
-  // A lower outer wall (tier 4 up) on its own levelled terrace, with gate turrets at the roads.
-  // ---------------------------------------------------------------------------------------------
-  const outerWall = !timber && (tier >= 4 || grand >= 4)
-  if (outerWall) {
-    const out = 24
-    const n2 = 72
-    const pts = Array.from({ length: n2 }, (_, i) => pt((i / n2) * Math.PI * 2, out))
-    // The terrace: the ground under the wall, smoothed round the ring so the wall runs level.
-    const raw = pts.map(([x, z]) => G(x, z))
-    const lvl = raw.map((_, i) => {
-      let s = 0
-      for (let k = -5; k <= 5; k++) s += raw[(i + k + n2) % n2]
-      return s / 11
-    })
-    const gap = (a: number) => gates.some((g) => g !== waterGate && Math.abs(angDiff(a, g)) * (rAt(a) + out) < GH + 12)
-    for (let i = 0; i < n2; i++) {
-      const j = (i + 1) % n2
-      const mid = ((i + 0.5) / n2) * Math.PI * 2
-      if (gap(mid)) continue
-      if (onBank(...pts[i])) continue
-      if (ruined && rnd() < 0.4) continue
-      const [ax, az] = pts[i]
-      const [bx, bz] = pts[j]
-      const mx = (ax + bx) / 2
-      const mz = (az + bz) / 2
-      const len = Math.hypot(bx - ax, bz - az) + 0.5
-      const ang = -Math.atan2(bz - az, bx - ax)
-      const y0 = (lvl[i] + lvl[j]) / 2
-      const lo = Math.min(raw[i], raw[j], y0) - 1.2
-      const h = crumble(7)
-      // The plinth down to the ground, then the wall on the level terrace.
-      S(box(len, y0 - lo + 0.8, 5.5), S0.stoneD, { x: mx, y: (y0 + lo) / 2, z: mz, ry: ang, ao: 0.2 })
-      S(box(len, h, 3.5), S0.stone, { x: mx, y: y0 + h / 2, z: mz, ry: ang })
-      if (!ruined) for (let t = -len / 2 + 1; t < len / 2; t += 2.6) S(box(1.4, 1.3, 3.5), S0.stone, { x: mx + Math.cos(-ang) * t, y: y0 + h + 0.6, z: mz + Math.sin(-ang) * t, ry: ang })
-      if (i % 5 === 0 && !ruined && !gap((i / n2) * Math.PI * 2)) {
-        S(cyl(3, 3.4, 10 + (y0 - lo), 12), S0.stone, { x: ax, y: (y0 + lo + 10) / 2, z: az })
-        roofCone(ax, y0 + 10, az, 4, 5, 12)
-      }
-    }
-    // Gate turrets where the roads pass the outer wall: two drum towers and a low arch between.
-    for (const g of gates) {
-      if (g === waterGate) continue
-      const r = rAt(g) + out
-      const cx = Math.cos(g)
-      const cz = Math.sin(g)
-      const y0 = G(cx * r, cz * r)
-      for (const s of [-1, 1]) {
-        const x = cx * r - cz * s * (GH + 9)
-        const z = cz * r + cx * s * (GH + 9)
-        const yb = G(x, z)
-        S(cyl(4, 4.6, 13 + Math.max(0, y0 - yb), 12), S0.stone, { x, y: yb + (13 + Math.max(0, y0 - yb)) / 2 - 1, z })
-        if (!ruined) {
-          S(cyl(4.8, 4.8, 1.2, 12), S0.stoneD, { x, y: yb + 12.6, z })
-          roofCone(x, yb + 13.2, z, 5, 6, 12)
-        }
-      }
-      if (!ruined) S(box(6, 3, GH * 2 + 14), S0.stone, { x: cx * r, y: y0 + 11, z: cz * r, ry: -g })
-    }
-  }
+  } else keepTop = heart.keepTop
+  // The ground the keep stands on: the motte, or the citadel terrace.
+  taken.push(timber ? { x: kx, z: kz, r: 28 } : { x: 0, z: 0, r: innerR + 0.5 })
 
   const lanes: Ctx['lanes'] = []
   const laneClear = (x: number, z: number, r: number, except?: [number, number][]) => {
@@ -909,12 +748,10 @@ export function buildFortress(c: Castle, world: World, shape: CastleShape, style
     }
     return true
   }
-  const nearOuterWall = (x: number, z: number, r: number) => outerWall && Math.abs(Math.hypot(x, z) - (rAt(Math.atan2(z, x)) + 24)) < r + 5
   const ctx: Ctx = {
-    c, world, shape, style, S0, tier, grand, ruined, timber, rnd, kit, stone, roof, gold, flat, smoke, mills, G, S, F, Rf, rAt, pt, gates, main, waterGate, sq, innerR, keepAt, wallH, taken, free, freeRect, onStreet, inWalls, firm, foot, roofCone, outer, lanes, laneClear, nearOuterWall,
+    c, world, shape, style, S0, tier, ruined, timber, rnd, kit, stone, roof, gold, flat, smoke, mills, G, S, F, Rf, rAt, pt, gates, main, waterGate, innerR, keepAt, wallH, taken, free, freeRect, onStreet, inWalls, firm, foot, roofCone, outer, lanes, laneClear, flames, lights, roads: [],
   }
   buildCastleTown(ctx)
-  buildFarmland(ctx)
 
   // Staging grounds: a tent city outside the walls.
   if (c.staging) {
@@ -928,7 +765,7 @@ export function buildFortress(c: Castle, world: World, shape: CastleShape, style
   }
   roof.push(...kit.accents)
   stone.push(...kit.roofs)
-  return { stone, roof, gold, glow: kit.glow, ring, wallH, keepTop, keepAt, mills, smoke, flat }
+  return { stone, roof, gold, glow: kit.glow, ring, wallH, keepTop, keepAt, mills, smoke, flat, lamps, flames, lights }
 }
 
 /**

@@ -251,7 +251,7 @@ function depotGeometry() {
     O.put(k.roofs, cone(3.6, 3.5, 4), ROOFW, H, 14, s * 8, { ry: Math.PI / 4 })
   }
   // Storehouse: stone footing, timber frame, a loading door in the gable with a hoist beam and pulley.
-  house(k, new Frame(-8, -9, 0), { w: 22, d: 11, storeys: 2, roof: 'shingle', style: 'timber', detail: 'high' }, () => 0.42)
+  house(k, new Frame(-8, -9, 0), { w: 22, d: 11, storeys: 2, roof: 'shingle', style: 'timber' }, () => 0.42)
   O.put(k.walls, box(0.6, 0.6, 3.4), LOG, -19.6, 10.4, -9, { ao: 0 })
   O.put(k.walls, cyl(0.5, 0.5, 0.4, 8), PAL.iron, -21, 10, -9, { rz: Math.PI / 2, ao: 0 })
   O.put(k.walls, box(0.06, 6, 0.06), 0xb8ab8a, -21.2, 6.8, -9, { ao: 0 })

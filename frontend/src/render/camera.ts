@@ -135,6 +135,16 @@ export class RTSCamera {
     this.apply()
   }
 
+  /** Seconds left of a slow opening glide (see descend); any input of the player's ends it. */
+  private glide = 0
+
+  /** The opening shot: start high over a point and settle slowly down to the usual height. */
+  descend(x: number, z: number, from: number, to: number, seconds: number) {
+    this.jumpTo(x, z, clamp(from, MIN_DIST, this.maxDist))
+    this.goal.distance = clamp(to, MIN_DIST, this.maxDist)
+    this.glide = seconds
+  }
+
   focus(x: number, z: number, distance?: number) {
     this.goal.x = x
     this.goal.z = z
@@ -142,6 +152,7 @@ export class RTSCamera {
   }
 
   zoomBy(factor: number, toward?: { x: number; z: number }) {
+    this.glide = 0
     const prev = this.goal.distance
     this.goal.distance = clamp(prev * factor, MIN_DIST, this.maxDist)
     if (toward && factor < 1) {
@@ -152,16 +163,22 @@ export class RTSCamera {
   }
 
   panBy(dx: number, dz: number) {
+    this.glide = 0
     // Stop at the edge of the map; never overshoot and spring back.
     const lim = this.world.half - 80
+    const ox = this.target.x
+    const oz = this.target.y
     this.goal.x = clamp(this.goal.x + dx, -lim, lim)
     this.goal.z = clamp(this.goal.z + dz, -lim, lim)
     this.target.x = clamp(this.target.x + dx, -lim, lim)
     this.target.y = clamp(this.target.y + dz, -lim, lim)
-  }
-
-  rotateBy(a: number) {
-    this.goal.yaw += a
+    // Carry the camera along at once. A touch screen can send several moves between two frames
+    // (iOS does); each is measured against the camera as it stands, so a camera left where the last
+    // frame put it would count the same stretch of the drag again and again: the map overshoots,
+    // then snaps back the next frame (jitter, and a kick at the edge of the map).
+    this.camera.position.x += this.target.x - ox
+    this.camera.position.z += this.target.y - oz
+    this.camera.updateMatrixWorld()
   }
 
   keyDown(code: string) {
@@ -182,9 +199,8 @@ export class RTSCamera {
     if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) mz += 1
     if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) mx -= 1
     if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) mx += 1
-    if (this.keys.has('KeyQ')) this.goal.yaw -= dt * 1.4
-    if (this.keys.has('KeyE')) this.goal.yaw += dt * 1.4
     if (mx || mz) {
+      this.glide = 0
       const c = Math.cos(this.yaw)
       const s = Math.sin(this.yaw)
       // Screen-relative: forward is away from the camera.
@@ -201,7 +217,10 @@ export class RTSCamera {
     this.target.y += (this.goal.z - this.target.y) * kt
     // The commander's view swings round and settles more gently than a pan or a zoom.
     const kc = this.chaseOn ? 1 - Math.exp(-dt * 4) : k
-    this.distance += (this.goal.distance - this.distance) * (this.chaseOn ? 1 - Math.exp(-dt * 3) : k)
+    // (The opening glide comes down gently, then hands over to the usual easing.)
+    const kd = this.glide > 0 ? 1 - Math.exp(-dt * 1.9) : this.chaseOn ? 1 - Math.exp(-dt * 3) : k
+    if (this.glide > 0) this.glide -= dt
+    this.distance += (this.goal.distance - this.distance) * kd
     this.yaw += (this.goal.yaw - this.yaw) * kc
     this.chaseBlend += ((this.chaseOn ? 1 : 0) - this.chaseBlend) * (1 - Math.exp(-dt * 2.5))
     this.lastDt = dt

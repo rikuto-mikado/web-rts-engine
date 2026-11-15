@@ -1,6 +1,7 @@
 import { mulberry32 } from './noise'
 import { PREFIX, SUFFIX } from './mapgen'
-import type { CastleDef, ResourceSite, Troops, HoldingKind } from './types'
+import type { CastleDef, GrangeDef, ResourceSite, Troops, HoldingKind } from './types'
+import { GRANGE, placeGranges } from './granary'
 import { holdingRadius, type World } from './world'
 
 /**
@@ -17,16 +18,30 @@ const HOLDINGS_MIX: Record<HoldingKind, { infantry: number; cavalry: number; arc
   guildhall: { infantry: 0.6, cavalry: 0, archers: 0.4 },
 }
 
-export function generateCountryside(world: World, castles: CastleDef[], seed: number): { villages: CastleDef[]; sites: ResourceSite[] } {
+export function generateCountryside(world: World, castles: CastleDef[], seed: number, opts: { granges?: boolean } = {}): { villages: CastleDef[]; sites: ResourceSite[]; granges: GrangeDef[] } {
   const rnd = mulberry32((seed * 2654435761) >>> 0)
   const half = world.half
   const area = (world.size * world.size) / (3920 * 3920)
-  const villageCount = Math.max(4, Math.round(10 * area))
-  const siteCount = Math.max(4, Math.round(12 * area))
+  // Two realms face to face (Conquest): the countryside is shared out fairly, each thing placed in
+  // turn on one realm's side of the map and then the other's (nearer its seat), in even numbers.
+  const seats = castles.filter((c) => c.capital && !c.village)
+  const duel = seats.length === 2
+  const even = (n: number) => (duel ? Math.ceil(n / 2) * 2 : n)
+  const onSide = (x: number, z: number, turn: number) => {
+    if (!duel) return true
+    const [a, b] = turn % 2 === 0 ? seats : [seats[1], seats[0]]
+    return Math.hypot(a.x - x, a.z - z) < Math.hypot(b.x - x, b.z - z)
+  }
+  const villageCount = even(Math.max(4, Math.round(10 * area)))
+  // (Sites go in pairs, a mine and a lumber camp, so in fours for two realms.)
+  const siteCount = duel ? Math.ceil(Math.round(12 * area) / 4) * 4 : Math.max(4, Math.round(12 * area))
   const taken: { x: number; z: number; r: number }[] = castles.map((c) => ({ x: c.x, z: c.z, r: holdingRadius(c) + 260 }))
   // A walled city keeps the countryside outside its walls.
   for (const town of world.towns) taken.push({ x: town.x, z: town.z, r: town.r + 220 })
   const free = (x: number, z: number, r: number) => taken.every((t) => Math.hypot(t.x - x, t.z - z) > t.r + r)
+  // The granges first (each belongs near its castle); the villages and sites keep clear of them.
+  const granges = opts.granges === false ? [] : placeGranges(world, castles, seed, [])
+  for (const g of granges) taken.push({ x: g.x, z: g.z, r: GRANGE.clear + 80 })
   // Terrain features (standing stones, windfall, crags, the great woods) keep their ground to themselves.
   const features = world.def.features ?? []
   const clearOfFeatures = (x: number, z: number, r: number) => features.every((f) => Math.hypot(f.x - x, f.z - z) > f.r + r)
@@ -58,6 +73,7 @@ export function generateCountryside(world: World, castles: CastleDef[], seed: nu
   for (let tries = 0; tries < 900 && villages.length < villageCount; tries++) {
     const x = (rnd() * 2 - 1) * (half - 260)
     const z = (rnd() * 2 - 1) * (half - 260)
+    if (!onSide(x, z, villages.length)) continue
     if (!world.isPassable(x, z) || world.forestAt(x, z) > 0.45 || world.slopeAt(x, z) > 0.35 || world.bridgeAt(x, z, 150)) continue
     if (!free(x, z, 120) || !clearOfFeatures(x, z, 110) || !dryRing(x, z, 70, 0.32) || !dryRing(x, z, 40, 0.3)) continue
     // Rich climates (coast, river jungle, golden plains) are thick with villages; deserts and mesas are not.
@@ -88,10 +104,11 @@ export function generateCountryside(world: World, castles: CastleDef[], seed: nu
   ]
   let hid = 0
   for (const sp of special) {
-    const want = Math.max(1, Math.round(sp.count * Math.sqrt(area)))
+    const want = even(Math.max(1, Math.round(sp.count * Math.sqrt(area))))
     for (let placed = 0, tries = 0; placed < want && tries < 1200; tries++) {
       const x = (rnd() * 2 - 1) * (half - 280)
       const z = (rnd() * 2 - 1) * (half - 280)
+      if (!onSide(x, z, placed)) continue
       if (!world.isPassable(x, z) || world.forestAt(x, z) > 0.4 || world.slopeAt(x, z) > 0.3 || world.bridgeAt(x, z, 160)) continue
       if (sp.likes.length && !sp.likes.includes(world.climateAt(x, z).key)) continue
       if (!free(x, z, 140) || !clearOfFeatures(x, z, 120) || !dryRing(x, z, 72, 0.3) || !dryRing(x, z, 40, 0.28)) continue
@@ -118,6 +135,8 @@ export function generateCountryside(world: World, castles: CastleDef[], seed: nu
   for (let tries = 0; tries < 1900 && sites.length < siteCount; tries++) {
     const x = (rnd() * 2 - 1) * (half - 220)
     const z = (rnd() * 2 - 1) * (half - 220)
+    // (Mines and lumber camps alternate, so each pair goes to one side, the next pair to the other.)
+    if (!onSide(x, z, Math.floor(sites.length / 2))) continue
     if (!world.isPassable(x, z) || world.bridgeAt(x, z, 110) || !clearOfFeatures(x, z, 80) || !dryRing(x, z, 26, 1.5)) continue
     const forest = world.forestAt(x, z)
     const high = world.heightAt(x, z) > 38 || world.slopeAt(x, z) > 0.3
@@ -131,7 +150,7 @@ export function generateCountryside(world: World, castles: CastleDef[], seed: nu
     sites.push({ id: `r${sites.length}`, kind: want, x: Math.round(x), z: Math.round(z), stock: RESOURCE_STOCK, workerId: null, carry: 0, nextWagonAt: 0 })
     taken.push({ x, z, r: 160 })
   }
-  return { villages, sites }
+  return { villages, sites, granges }
 }
 
 /** Gold a site holds before it is worked out (it slowly recovers while idle). */

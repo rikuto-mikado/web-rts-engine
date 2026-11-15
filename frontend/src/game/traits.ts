@@ -21,7 +21,7 @@ export interface TraitDef {
 }
 
 export const TRAITS: TraitDef[] = [
-  { key: 'night_raider', name: 'Night Raider', description: '+30% damage in the opening clash of every battle.', opening: 1.3 },
+  { key: 'night_raider', name: 'Night Raider', description: '+30% damage in the opening clash of every battle (+50% at the dead of night).', opening: 1.3 },
   { key: 'siege_breaker', name: 'Siege Breaker', description: '+35% siege power against walls.', siege: 1.35 },
   { key: 'ironclad', name: 'Ironclad', description: '-12% casualties taken.', taken: 0.88 },
   { key: 'swift', name: 'Swift Marcher', description: '+12% march speed.', speed: 1.12 },

@@ -7,9 +7,10 @@ attribute vec3 aColor;
 varying float vAlpha;
 varying vec3 vColor;
 uniform float uScale;
+uniform vec3 uLight;
 void main() {
   vAlpha = aAlpha;
-  vColor = aColor;
+  vColor = aColor * uLight;
   vec4 mv = modelViewMatrix * vec4(position, 1.0);
   gl_PointSize = aSize * uScale / -mv.z;
   gl_Position = projectionMatrix * mv;
@@ -82,7 +83,8 @@ export class ParticleSystem {
     this.material = new THREE.ShaderMaterial({
       vertexShader: VERT,
       fragmentShader: FRAG,
-      uniforms: { uScale: { value: 600 } },
+      // uLight: the light the dust and the rain stand in (dimmer and bluer by night); 1 for glows.
+      uniforms: { uScale: { value: 600 }, uLight: { value: new THREE.Color(1, 1, 1) } },
       transparent: true,
       depthWrite: false,
       blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,

@@ -4,9 +4,11 @@ import { mulberry32 } from '../game/noise'
 import type { Army, FormationKey } from '../game/types'
 import { SOLDIERS_PER_FIGURE, figureGeometries, figuresFor, leaderGeometry, type FigureKind } from './figures'
 import { total } from '../game/troops'
+import { TEMPLE } from '../game/sanctuary'
 import { bmerge, bpart, box, cone, cyl } from './geo'
 import { applyVision } from './vision'
 import { finialFor, makeFlag, patternFor, poleGeometry, waveFlag, type StandardFlag } from './standards'
+import type { Fires } from './torches'
 
 const KINDS: FigureKind[] = ['spearmen', 'spearmen_lv', 'men_at_arms', 'archers', 'light_cavalry', 'knights', 'siege', 'engineer', 'royal_guard', 'thorn_guard', 'solar_guard', 'assassin', 'saboteur', 'outrider', 'pilgrim', 'mule', 'cart', 'thrall', 'bone', 'wraith', 'fiend', 'giant']
 /** What a band in disguise looks like: soldiers as pilgrims, riders as pedlars' mules, siege gear as covered carts. */
@@ -21,12 +23,18 @@ const MOUNTED = new Set<FigureKind>(['light_cavalry', 'knights', 'royal_guard', 
 const NEAR = 850
 const CAPACITY = 16000
 const MAX_FIGURES = 300
+/** Who carries a torch by night (about one figure in five on foot, one rider in six), and how many at most per band. */
+const TORCH_FOOT = new Set<FigureKind>(['spearmen', 'men_at_arms', 'archers', 'engineer'])
+const TORCH_RIDER = new Set<FigureKind>(['light_cavalry', 'knights', 'royal_guard', 'thorn_guard', 'solar_guard', 'outrider'])
+const TORCHES_PER_BAND = 48
 
 interface Slot {
   kind: FigureKind
   lx: number // lateral offset (right +)
   lz: number // forward offset
   phase: number
+  /** Carries a torch by night. */
+  torch: boolean
 }
 
 /** Per-army render state: smoothed position and cached formation. */
@@ -77,6 +85,9 @@ export class ArmyRenderer {
   readonly visuals = new Map<string, ArmyVisual>()
   /** Level of detail: 1 = full ranks, lower values thin them out when the camera is far away. */
   density = 1
+  /** Fire by night (torches, campfires and their light); `fireOn` is how much it shows (0 by day). */
+  fires: Fires | null = null
+  fireOn = 0
   private engine: GameEngine
   private bannerMat: THREE.Material
   private flagMat: THREE.Material
@@ -89,6 +100,12 @@ export class ArmyRenderer {
   private auraMat: THREE.ShaderMaterial
   /** Our Wardens' watch: where they find hidden bands, a faint green aura. */
   private wardenMat: THREE.ShaderMaterial
+  /** The blessed King's presence: the blue-white light of the Sanctuary. */
+  private blessMat: THREE.ShaderMaterial
+  private auraFor(army: Army): [number, THREE.ShaderMaterial] {
+    if (army.blessed) return [TEMPLE.aura + AURA_PAD, this.blessMat]
+    return [ROYAL.aura + AURA_PAD, this.auraMat]
+  }
   private tints = new Map<string, THREE.Color>()
   private tint(faction: string): THREE.Color {
     let c = this.tints.get(faction)
@@ -129,6 +146,7 @@ export class ArmyRenderer {
     this.leaderMat = applyVision(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.7, metalness: 0.05 }))
     this.auraMat = auraMaterial(0xe0a92e, 0xffdc73)
     this.wardenMat = auraMaterial(0x6fa848, 0xb8e08a, WARDENS.reveal, 0.55, false)
+    this.blessMat = auraMaterial(0x8fbcff, 0xf6ecc8, TEMPLE.aura)
     // An arrow: a shaft, a steel head and pale fletching, laid along +Z.
     const arrow = bmerge([
       bpart(cyl(0.07, 0.07, 3.2, 4), 0x8a6a40, { rx: Math.PI / 2, ao: 0 }),
@@ -164,10 +182,12 @@ export class ArmyRenderer {
     const royal = !!army.royal
     const realm = new THREE.Color(engine.factionColor(army.faction))
     const crown = engine.crownOf(army)
-    const field = royal ? (crown === 'queen' ? 0x5a0f1a : crown === 'emperor' ? 0xb8801a : 0x7a1f2b) : cmd ? new THREE.Color(cmd.banner_color).getHex() : realm.getHex()
+    // (The High King's and the Justices': white, charged and trimmed in gold.)
+    const holy = army.sacred !== undefined
+    const field = holy ? 0xf2ecdc : royal ? (crown === 'queen' ? 0x5a0f1a : crown === 'emperor' ? 0xb8801a : 0x7a1f2b) : cmd ? new THREE.Color(cmd.banner_color).getHex() : realm.getHex()
     // The charge: gold for the crowned heads and named commanders, the realm's colour (lightened) for captains' bands.
-    const charge = royal || cmd ? (crown === 'queen' ? 0xb08a3a : crown === 'emperor' ? 0xf4ecd8 : 0xe6c45a) : realm.clone().lerp(new THREE.Color(0xffffff), 0.55).getHex()
-    const trim = royal ? 0xe6c45a : cmd ? realm.getHex() : new THREE.Color(0x2a2018).getHex()
+    const charge = holy ? 0xd8a83e : royal || cmd ? (crown === 'queen' ? 0xb08a3a : crown === 'emperor' ? 0xf4ecd8 : 0xe6c45a) : realm.clone().lerp(new THREE.Color(0xffffff), 0.55).getHex()
+    const trim = royal || holy ? 0xe6c45a : cmd ? realm.getHex() : new THREE.Color(0x2a2018).getHex()
     const seed = army.commanderKey ?? army.name
     let h = 0
     for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0
@@ -239,7 +259,9 @@ export class ArmyRenderer {
       // The King's Royal Guard and the Usurper's Thorn Guard ride in their own harness, whatever the unit list says.
       const crown = this.engine.crownOf(army)
       const guard: FigureKind = crown === 'queen' ? 'thorn_guard' : crown === 'emperor' ? 'solar_guard' : 'royal_guard'
-      for (const [kind, c] of army.royal ? ([[guard, f]] as [FigureKind, number][]) : figuresFor(u.key, u.category, f)) {
+      // (The High King's paladins ride in white and gold.)
+      const own: FigureKind | null = army.royal ? guard : army.sacred ? 'solar_guard' : null
+      for (const [kind, c] of own ? ([[own, f]] as [FigureKind, number][]) : figuresFor(u.key, u.category, f)) {
         counts.set(kind, (counts.get(kind) ?? 0) + c)
         figures += c
       }
@@ -282,7 +304,7 @@ export class ArmyRenderer {
     const siegeKind: FigureKind = (counts.get('cart') ?? 0) > 0 ? 'cart' : 'siege'
     const siege = (counts.get('siege') ?? 0) + (counts.get('cart') ?? 0)
     const jitter = shape === 'loose' ? 1.8 : 0.8
-    const push = (kind: FigureKind, lx: number, lz: number) => slots.push({ kind, lx: lx + (rnd() - 0.5) * jitter, lz: lz + (rnd() - 0.5) * jitter, phase: rnd() * 6.28 })
+    const push = (kind: FigureKind, lx: number, lz: number) => slots.push({ kind, lx: lx + (rnd() - 0.5) * jitter, lz: lz + (rnd() - 0.5) * jitter, phase: rnd() * 6.28, torch: false })
 
     // The Endless Night keeps no ranks: a swarming mass, densest at its heart, spilling forward,
     // its giants striding at the head.
@@ -373,6 +395,18 @@ export class ArmyRenderer {
       s.lz -= mid
       maxR = Math.max(maxR, Math.hypot(s.lx, s.lz))
     }
+    // Torch-bearers: spread through the ranks (a steady share, the outer files a little more often).
+    let lit = 0
+    for (const s of slots) {
+      if (lit >= TORCHES_PER_BAND) break
+      const foot = TORCH_FOOT.has(s.kind)
+      if (!foot && !TORCH_RIDER.has(s.kind)) continue
+      const outer = Math.abs(s.lx) > maxR * 0.45 ? 0.08 : 0
+      if (rnd() < (foot ? 0.18 : 0.15) + outer) {
+        s.torch = true
+        lit++
+      }
+    }
     return { slots, radius: maxR + 6 }
   }
 
@@ -441,9 +475,9 @@ export class ArmyRenderer {
       let aura: THREE.Mesh | null = null
       if (army.royal) {
         // The crowned head's presence, 350m out, drawn over the ground: a soft edge and a slow
-        // pulse going out from the centre.
-        const R = ROYAL.aura + AURA_PAD
-        aura = new THREE.Mesh(new THREE.PlaneGeometry(R * 2, R * 2), this.auraMat)
+        // pulse going out from the centre (once blessed, in blue-white and further).
+        const [R, mat] = this.auraFor(army)
+        aura = new THREE.Mesh(new THREE.PlaneGeometry(R * 2, R * 2), mat)
         aura.rotation.x = -Math.PI / 2
         aura.renderOrder = 5
         this.group.add(aura)
@@ -461,6 +495,39 @@ export class ArmyRenderer {
     return v
   }
 
+  /**
+   * The light a band throws by night: its torches (one pool, or two along a long column), or, camped
+   * in the open and not lying hidden, its campfires among the tents.
+   */
+  private fireLight(fires: Fires, army: Army, v: ArmyVisual, lit: number, shape: string, fx: number, fz: number) {
+    const engine = this.engine
+    const world = engine.world
+    const seed = (v.radius * 7.13 + army.id.length * 3.7) % 1
+    if (lit > 0) {
+      const i = 0.6 + Math.min(0.5, lit * 0.03)
+      if (shape === 'column' && v.radius > 45) {
+        for (const side of [1, -1]) {
+          const x = v.x + fx * v.radius * 0.5 * side
+          const z = v.z + fz * v.radius * 0.5 * side
+          fires.light({ x, y: world.surfaceAt(x, z) + 9, z, r: Math.min(130, v.radius * 0.8 + 30), i, weight: 1, seed: seed + side * 0.21 })
+        }
+      } else fires.light({ x: v.x, y: world.surfaceAt(v.x, v.z) + 9, z: v.z, r: Math.min(150, v.radius * 1.25 + 30), i, weight: 1, seed })
+      return
+    }
+    // A camp in the open: fires among the tents (none for a band that lies hidden in the dark).
+    if (army.status !== 'idle' || this.fireOn < 0.3 || engine.insideWalls(army) || engine.isHidden(army) || army.veil) return
+    if (engine.state.factions[army.faction]?.undying) return
+    const n = Math.max(1, Math.min(5, Math.round(total(army.troops) / 300)))
+    const ring = Math.max(12, v.radius + 4)
+    for (let k = 0; k < n; k++) {
+      const a = (k / n) * Math.PI * 2 + seed * 6.28
+      const x = v.x + Math.cos(a) * (n === 1 ? 0 : ring) - fx * (n === 1 ? v.radius * 0.6 + 6 : 0)
+      const z = v.z + Math.sin(a) * (n === 1 ? 0 : ring) - fz * (n === 1 ? v.radius * 0.6 + 6 : 0)
+      fires.campfire(x, world.surfaceAt(x, z), z, seed + k * 0.13)
+    }
+    fires.light({ x: v.x, y: world.surfaceAt(v.x, v.z) + 6, z: v.z, r: v.radius + 45, i: 0.8, weight: 1, seed })
+  }
+
   update(dt: number, time: number) {
     const engine = this.engine
     const world = engine.world
@@ -471,6 +538,7 @@ export class ArmyRenderer {
     for (const v of this.visuals.values()) v.alive = false
     this.auraMat.uniforms.uTime.value = time
     this.wardenMat.uniforms.uTime.value = time
+    this.blessMat.uniforms.uTime.value = time
     const smooth = 1 - Math.exp(-dt * 10)
     let arrowN = 0
 
@@ -509,12 +577,17 @@ export class ArmyRenderer {
       }
       const fx = Math.cos(v.heading)
       const fz = Math.sin(v.heading)
+      const shape = this.shapeOf(army)
       const rx = -fz
       const rz = fx
       const moving = army.status === 'marching' || army.status === 'retreating'
       const fighting = army.status === 'battle' || army.status === 'sieging'
       const routing = army.status === 'retreating'
       const tint = this.tint(army.faction)
+      // By night a column on the march (or a band in a fight) carries torches.
+      const fires = this.fireOn > 0.02 ? this.fires : null
+      const torches = !!fires && engine.torchlit(army) && !disguised
+      let lit = 0
       // Model faces +Z; rotate so +Z aligns with heading.
       tmpQ.setFromAxisAngle(UP, Math.PI / 2 - v.heading)
 
@@ -560,7 +633,9 @@ export class ArmyRenderer {
         this.tinted.get(kind)![lod].setMatrixAt(idx, tmpM)
         this.tinted.get(kind)![lod].setColorAt(idx, tint)
         this.plain.get(kind)![lod].setMatrixAt(idx, tmpM)
+        if (torches && s.torch && fires!.torch(tmpM, mounted, s.phase)) lit++
       }
+      if (fires) this.fireLight(fires, army, v, lit, shape, fx, fz)
 
       // The commander rides at the head of the army.
       if (v.leader) {
@@ -571,6 +646,13 @@ export class ArmyRenderer {
         v.leader.rotation.y = Math.PI / 2 - v.heading
       }
       this.updateMist(v, army, visible, time)
+      if (v.aura && army.blessed && v.aura.material !== this.blessMat) {
+        // The High King has heard the King: his presence grows.
+        const [R, mat] = this.auraFor(army)
+        v.aura.geometry.dispose()
+        v.aura.geometry = new THREE.PlaneGeometry(R * 2, R * 2)
+        v.aura.material = mat
+      }
       if (v.aura) {
         // Centred on the Guard, and only while the King is in the field.
         v.aura.position.set(v.x, world.surfaceAt(v.x, v.z) + 4, v.z)

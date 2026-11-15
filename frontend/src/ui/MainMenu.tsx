@@ -1,4 +1,4 @@
-import { Crown, Dices, Handshake, LoaderCircle, Moon, RotateCcw, ScrollText, Swords } from 'lucide-react'
+import { Crown, Dices, Handshake, LoaderCircle, Moon, RotateCcw, ScrollText } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { api } from '../api/client'
 import { GameEngine } from '../game/engine'
@@ -10,11 +10,11 @@ import { NIGHT, generateNightMap } from '../game/nightmap'
 import { generateGrandMap } from '../game/grandmap'
 import { Glyph } from './Glyph'
 import { PixelPortrait } from './PixelPortrait'
-import { drawStructures } from './mapPaint'
+import { drawGranges, drawStructures, drawTemple } from './mapPaint'
 import { World } from '../game/world'
-import type { CastleDef, Difficulty, FactionDef, GameContent, GameMode, MapSize, ScenarioDefinition } from '../game/types'
+import type { CastleDef, Difficulty, FactionDef, GameContent, GameMode, ScenarioDefinition } from '../game/types'
 import type { Match } from './GameScreen'
-import { drawShield, shieldMarkup } from '../render/heraldry'
+import { chargeForTeam, drawShield, shieldMarkup, shieldSvg, type ShieldCharge } from '../render/heraldry'
 import { ROYAL_SEAT_TIER } from '../game/world'
 
 interface Props {
@@ -71,17 +71,10 @@ type Side = 'escort' | 'raid'
 /** Who may lead the escort (the spymaster leads the raiders; the King stays at court). */
 const ESCORT_COMMANDERS = ['godfrey', 'elowen', 'varian', 'isolde', 'bran']
 
-const SIZE_HINT: Record<'survival' | 'alliance', Record<MapSize, string>> = {
-  survival: {
-    small: '10 castles, a quick war (about 20 min).',
-    medium: '15 castles, the standard war.',
-    large: '24 castles, a long campaign. You start with 3.',
-  },
-  alliance: {
-    small: '8 v 8 on a compact map.',
-    medium: '16 v 16, the standard war.',
-    large: '24 v 24 on a vast map.',
-  },
+/** What each map-kind war is like (each has one size of map). */
+const WAR_HINT: Record<'survival' | 'alliance', string> = {
+  survival: "Two realms of a size: your seat and two strongholds against the Ashen Dominion's. A close, quick war.",
+  alliance: 'Sixteen realms against sixteen on a wide map. Take the enemy High Seat.',
 }
 
 const MODES: {
@@ -95,14 +88,14 @@ const MODES: {
     key: 'conquest',
     name: 'Conquest',
     icon: <ScrollText size={22} />,
-    tagline: 'You against a coalition',
-    text: 'Break an enemy coalition and take its capitals. Every war is fought on a freshly generated map.',
+    tagline: 'Two realms of a size',
+    text: 'Your royal seat and two strongholds against the Ashen Dominion\'s. Take the enemy seat. Every war is fought on a freshly generated map.',
   },
   {
     key: 'alliance',
     name: 'Alliance War',
     icon: <Handshake size={22} />,
-    tagline: '16 to 48 realms, two alliances',
+    tagline: '16 realms against 16',
     text: 'Fight beside a coalition of AI lords on a huge random map. Call your allies to arms and take the enemy High Seat.',
   },
   {
@@ -139,12 +132,13 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
   const [side, setSide] = useState<Side>('escort')
   const [escortCmd, setEscortCmd] = useState('godfrey')
   const [difficulty, setDifficulty] = useState<Difficulty>('normal')
+  /** Alliance War: the High King's Blessing (the Sanctuary of the High King). Off unless chosen. */
+  const [blessing, setBlessing] = useState(false)
   // Last Stand belongs to Alliance War (the relief fleet); the other modes offer three levels.
   const diffs = mode === 'alliance' ? DIFFS : DIFFS.filter((d) => d.key !== 'brutal')
   const curDiff = DIFFS.find((d) => d.key === difficulty)!
   const diffText = nightfall ? curDiff.night : convoy ? curDiff.convoy : mode === 'alliance' ? curDiff.alliance : curDiff.text
   const [seed, setSeed] = useState(() => Math.floor(Math.random() * 99999))
-  const [mapSize, setMapSize] = useState<MapSize>('medium')
   const [busy, setBusy] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [preview, setPreview] = useState<{
@@ -155,7 +149,7 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
   const scenario = content?.scenarios[0]
   // In Alliance War the difficulty shapes the map (how much of it your alliance holds).
   const mapDiff = mode === 'alliance' ? difficulty : undefined
-  const previewKey = grand ? `grand|${seed}` : nightfall ? `nightfall|${seed}|${difficulty}` : convoy ? `convoy|${side}|${seed}` : `${mode}|${mapType}|${seed}|${mapSize}|${mapDiff ?? ''}`
+  const previewKey = grand ? `grand|${seed}` : nightfall ? `nightfall|${seed}|${difficulty}` : convoy ? `convoy|${side}|${seed}` : `${mode}|${mapType}|${seed}|${mapDiff ?? ''}`
   const makeMap = () =>
     grand
       ? generateGrandMap(seed)
@@ -169,7 +163,6 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
         })
       : generateMap(mode as 'survival' | 'alliance', seed, {
           mapType,
-          size: mapSize,
           difficulty: mapDiff,
         })
 
@@ -197,7 +190,9 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
       const cached = preview?.key === previewKey && preview.map ? preview.map : null
       // (Convoy Raid's commander is chosen after the map: always rebuild it with the current choice.)
       const map = cached && !convoy ? cached : makeMap()
-      const engine = GameEngine.create(content, map.scenario, map.rules, difficulty, map.world)
+      // (Alliance War: the High King's Blessing, if chosen.)
+      const rules = menuMode === 'alliance' ? { ...map.rules, blessing } : map.rules
+      const engine = GameEngine.create(content, map.scenario, rules, difficulty, map.world)
       const defaultName = nightfall || grand ? map.scenario.name : convoy ? `Convoy Raid · ${side === 'escort' ? 'Escort' : 'Raid'}` : `${mode === 'alliance' ? 'Alliance War' : 'Conquest'} · ${MAPS[mapType].name}`
       const matchName = defaultName
       const record = await api
@@ -221,48 +216,60 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
   const def = preview?.key === previewKey ? (preview.map?.scenario.definition ?? scenario?.definition) : undefined
 
   return (
-    <div className="relative h-dvh overflow-hidden bg-ink-950 text-ink-100">
-      <MenuBackdrop />
-      <div className="menu-root relative z-10 mx-auto flex h-full max-w-[1320px] flex-col px-[clamp(10px,2.2vw,30px)] py-[clamp(6px,1.8vh,22px)] max-[640px]:overflow-y-auto short:overflow-y-auto">
-        <header className="flex shrink-0 items-end justify-between gap-4 pb-[clamp(4px,1.4vh,16px)] tiny:hidden">
+    <div className="wc-root relative h-dvh overflow-hidden text-ink-100">
+      <div className="menu-root relative z-10 mx-auto flex h-full max-w-[1560px] flex-col px-[clamp(10px,2vw,32px)] py-[clamp(6px,1.6vh,20px)] max-[640px]:overflow-y-auto short:overflow-y-auto">
+        <header className="flex shrink-0 justify-center pb-[clamp(4px,1.4vh,16px)] tiny:hidden">
           <Wordmark />
         </header>
 
         {!content && !error && (
-          <div className="panel flex items-center gap-2 rounded-md p-5 text-ink-300">
+          <div className="wc-panel flex items-center gap-2 p-6 text-[#d8b866]">
             <LoaderCircle size={16} className="animate-spin" /> Contacting the royal archives…
           </div>
         )}
         {error && (
-          <div className="panel space-y-3 rounded-md p-5">
-            <p className="well rounded-sm p-3 text-ember-300">{error}</p>
-            <p className="text-[13px] text-ink-400">
-              Start the backend with <code className="text-ink-200">cd backend &amp;&amp; .venv/bin/python manage.py runserver</code>
+          <div className="wc-panel space-y-3 p-7">
+            <p className="font-bold text-ember-300">{error}</p>
+            <p className="text-[13px] text-ink-300">
+              Start the backend with <code className="text-ink-100">cd backend &amp;&amp; .venv/bin/python manage.py runserver</code>
             </p>
-            <button className="btn" onClick={onRetry}>
+            <button className="wc-btn" onClick={onRetry}>
               <RotateCcw size={14} /> Retry
             </button>
           </div>
         )}
 
         {content && scenario && (
-          <div className="grid min-h-0 flex-1 grid-cols-[1.3fr_1fr] gap-[clamp(8px,1.6vw,22px)] max-[640px]:grid-cols-1">
+          <div className="grid min-h-0 flex-1 grid-cols-[1.3fr_1fr] gap-[clamp(10px,1.6vw,26px)] max-[640px]:flex-none max-[640px]:grid-cols-1 max-[640px]:grid-rows-none short:flex-none">
             {/* Left: how the war is to be fought. */}
-            <section className="panel iron-frame flex min-h-0 flex-col rounded-md p-[clamp(10px,1.7vw,22px)]">
-              <h2 className="panel-title mb-[clamp(4px,1.2vh,14px)] short:hidden">Prepare for War</h2>
+            <section className="wc-panel flex min-h-0 min-w-0 flex-col px-[clamp(16px,2vw,32px)] py-[clamp(12px,2.2vh,28px)] max-[640px]:min-h-max short:min-h-max">
+              <Corners />
+              <h2 className="wc-title wc-brass-text mb-[clamp(4px,1.1vh,14px)] text-[clamp(15px,2.3vh,22px)] short:hidden">Prepare for War</h2>
               <Label>Game mode</Label>
-              <div className="grid grid-cols-5 gap-[clamp(5px,0.7vw,10px)] max-[900px]:grid-cols-3">
+              <div className="grid grid-cols-5 gap-[clamp(6px,0.8vw,12px)] max-[900px]:grid-cols-3">
                 {MODES.map((m) => {
                   const active = menuMode === m.key
                   return (
-                    <button key={m.key} onClick={() => {
+                    <button
+                      key={m.key}
+                      onClick={() => {
                         setMenuMode(m.key)
                         if (m.key !== 'alliance' && difficulty === 'brutal') setDifficulty('hard')
-                      }} className={`menu-card flex min-w-0 flex-col text-left ${active ? 'is-active' : ''}`}>
-                      <span className="menu-card-icon mb-1 short:hidden">{m.icon}</span>
-                      <span className="block min-h-[2.3em] font-display text-[clamp(12px,1.65vh,15px)] leading-[1.15] font-bold text-balance break-words short:min-h-0 short:text-[11.5px]">{m.name}</span>
-                      <div className="menu-card-tag mt-1 line-clamp-2 text-[clamp(11px,1.5vh,12.5px)] leading-snug font-bold short:hidden">{m.tagline}</div>
-                      <div className="menu-card-text mt-1 line-clamp-2 text-[12px] leading-snug tall:line-clamp-3 short:hidden">{m.text}</div>
+                      }}
+                      className={`wc-mode flex min-w-0 flex-col text-left ${active ? 'is-active' : ''}`}
+                    >
+                      <svg className="wc-crown" viewBox="0 0 24 14" aria-hidden>
+                        <path d="M2 13 L1 4 L6.5 8 L12 1 L17.5 8 L23 4 L22 13 Z" fill="#f0c460" stroke="#3a2406" strokeWidth="1.2" strokeLinejoin="round" />
+                        <circle cx="12" cy="10" r="1.6" fill="#a8222c" />
+                      </svg>
+                      <div className="wc-mode-band grid h-[clamp(30px,6.4vh,64px)] shrink-0 place-items-center short:hidden" style={{ ['--band' as string]: MODE_BAND[m.key] }}>
+                        <span className="wc-medallion size-[clamp(24px,4.2vh,40px)] [&>svg]:size-[55%]">{m.icon}</span>
+                      </div>
+                      <div className="flex min-h-0 flex-1 flex-col px-[clamp(6px,0.7vw,11px)] pt-[clamp(4px,0.9vh,9px)] pb-[clamp(6px,1vh,10px)]">
+                        <span className="min-h-[2.3em] text-center font-display text-[clamp(11px,1.55vh,14px)] leading-[1.15] font-bold text-balance break-words text-[#f0dfb6] short:min-h-0 short:text-left short:text-[11.5px]">{m.name}</span>
+                        <div className="wc-tag mt-1 line-clamp-2 text-center text-[clamp(11px,1.45vh,12.5px)] leading-snug font-bold short:hidden">{m.tagline}</div>
+                        <div className="wc-text mt-1 line-clamp-2 text-[12px] leading-snug tall:line-clamp-3 short:hidden">{m.text}</div>
+                      </div>
                     </button>
                   )
                 })}
@@ -275,21 +282,24 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
               ) : convoy ? (
                 <ConvoySetup side={side} setSide={setSide} commander={escortCmd} setCommander={setEscortCmd} content={content} />
               ) : (
-                <div className="mt-[clamp(6px,1.8vh,20px)] flex min-h-0 flex-1 flex-col">
+                <div className="mt-[clamp(6px,1.6vh,18px)] flex min-h-0 flex-1 flex-col">
                   <Label>Map</Label>
-                  <div className="grid min-h-[44px] flex-1 auto-rows-fr grid-cols-3 gap-[clamp(5px,0.8vw,10px)]">
+                  <div className="grid min-h-[44px] flex-1 auto-rows-fr grid-cols-3 gap-[clamp(6px,0.8vw,12px)] max-[640px]:grid-cols-2">
                     {MAP_TYPES.map((k) => {
                       const b = MAPS[k]
+                      const crest = MAP_CREST[k] ?? { color: '#2f4f9a', charge: 'fleur' as const }
                       return (
-                        <button key={k} onClick={() => setMapChoice(k)} className={`map-card flex flex-col text-left ${mapType === k ? 'is-active' : ''}`}>
-                          <div className="flex min-h-[clamp(6px,1.5vh,18px)] flex-1">
-                            {b.swatch.map((c, i) => (
-                              <span key={i} className="flex-1" style={{ background: c }} />
-                            ))}
+                        <button key={k} onClick={() => setMapChoice(k)} className={`wc-map flex min-h-0 flex-col text-left ${mapType === k ? 'is-active' : ''}`}>
+                          <div className="wc-scape relative min-h-[clamp(10px,2.4vh,26px)] flex-1">
+                            <MapScape colors={b.swatch} seed={k.length * 7 + k.charCodeAt(0)} />
+                            <span
+                              className="absolute top-1/2 left-[clamp(5px,0.6vw,9px)] h-[78%] max-h-[44px] -translate-y-1/2 drop-shadow-[0_2px_3px_rgb(0_0_0/0.7)] short:hidden [&>svg]:h-full [&>svg]:w-auto"
+                              dangerouslySetInnerHTML={{ __html: shieldSvg('lord', crest.color, 20, crest.charge, '') }}
+                            />
                           </div>
-                          <div className="px-2 py-[clamp(2px,0.7vh,7px)]">
-                            <div className="truncate text-[clamp(11.5px,1.65vh,14px)] leading-tight font-bold">{b.name}</div>
-                            <div className="map-card-tag truncate text-[12px] short:hidden">{b.tagline}</div>
+                          <div className="px-2 pt-[clamp(3px,0.6vh,6px)] pb-[clamp(3px,0.7vh,7px)]">
+                            <div className="truncate font-display text-[clamp(11.5px,1.55vh,14px)] leading-tight font-bold text-[#f0dfb6]">{b.name}</div>
+                            <div className="truncate text-[12px] text-[#b8a07a] short:hidden">{b.tagline}</div>
                           </div>
                         </button>
                       )
@@ -298,85 +308,79 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
                 </div>
               )}
 
-              <div className="mt-[clamp(6px,1.8vh,20px)] grid grid-cols-[3fr_4fr] gap-[clamp(8px,1.4vw,18px)]">
-                {grand ? (
-                  <div className="min-w-0 short:hidden">
-                    <Label>The war</Label>
-                    <p className="text-[12.5px] leading-snug text-ink-300">No time limit. A long campaign across a vast continent.</p>
-                  </div>
-                ) : nightfall ? (
-                  <div className="min-w-0 short:hidden">
-                    <Label>Until dawn</Label>
-                    <p className="text-[12.5px] leading-snug text-ink-300">{NIGHT.minutes[difficulty]} minutes. Waves grow with every one.</p>
-                  </div>
-                ) : convoy ? (
-                  <div className="min-w-0 short:hidden">
-                    <Label>The train</Label>
-                    <p className="text-[12.5px] leading-snug text-ink-300">
-                      {CONVOY.wagons} wagons, one every {CONVOY.every}s. {side === 'escort' ? `Bring ${CONVOY.needed} in.` : `Seize ${CONVOY.wagons - CONVOY.needed + 1}.`}
-                    </p>
-                  </div>
-                ) : (
-                  <div className="min-w-0">
-                    <Label>Map size</Label>
-                    <div className="grid grid-cols-3 gap-1">
-                      {(['small', 'medium', 'large'] as const).map((z) => (
-                        <button key={z} onClick={() => setMapSize(z)} className={`btn menu-btn capitalize ${mapSize === z ? 'btn-gold' : ''}`}>
-                          {z}
-                        </button>
-                      ))}
-                    </div>
-                    <p className="mt-1 line-clamp-2 text-[12.5px] leading-snug text-ink-400 short:hidden">{SIZE_HINT[mode as 'survival' | 'alliance'][mapSize]}</p>
-                  </div>
-                )}
-                <div className={`min-w-0 ${convoy || nightfall || grand ? 'short:col-span-2' : ''}`}>
+              <div className="mt-[clamp(6px,1.6vh,18px)] grid grid-cols-[3fr_4fr] gap-[clamp(8px,1.4vw,20px)] max-[640px]:grid-cols-1">
+                <div className={`min-w-0 ${menuMode === 'alliance' ? '' : 'short:hidden'}`}>
+                  <Label>{grand ? 'The war' : nightfall ? 'Until dawn' : convoy ? 'The train' : 'The war'}</Label>
+                  <p className="text-[12.5px] leading-snug text-[#c9b892] short:hidden">
+                    {grand
+                      ? 'No time limit. A long campaign across a vast continent.'
+                      : nightfall
+                        ? `${NIGHT.minutes[difficulty]} minutes. Waves grow with every one.`
+                        : convoy
+                          ? `${CONVOY.wagons} wagons, one every ${CONVOY.every}s. ${side === 'escort' ? `Bring ${CONVOY.needed} in.` : `Seize ${CONVOY.wagons - CONVOY.needed + 1}.`}`
+                          : WAR_HINT[mode as 'survival' | 'alliance']}
+                  </p>
+                  {menuMode === 'alliance' && (
+                    <button
+                      className={`wc-tab wc-bless mt-[clamp(4px,0.9vh,8px)] flex w-full items-center justify-center gap-1.5 px-2 py-[clamp(4px,0.8vh,7px)] ${blessing ? 'is-active' : ''}`}
+                      onClick={() => setBlessing((b) => !b)}
+                      aria-pressed={blessing}
+                      title="The Sanctuary of the High King stands on the map. Once in the war the King may pray there for 30 seconds: his guard grows to 800, his presence widens, and the High King's paladins ride out until four enemy castles are ours."
+                    >
+                      <Glyph name="sun" size={14} />
+                      <span className="truncate">High King&apos;s Blessing · {blessing ? 'On' : 'Off'}</span>
+                    </button>
+                  )}
+                </div>
+                <div className="min-w-0 short:col-span-2">
                   <Label>Difficulty</Label>
-                  <div className={`grid gap-1 ${diffs.length === 4 ? 'grid-cols-4' : 'grid-cols-3'}`}>
+                  <div className={`grid gap-[clamp(5px,0.5vw,8px)] ${diffs.length === 4 ? 'grid-cols-4' : 'grid-cols-3'}`}>
                     {diffs.map((d) => (
                       <button
                         key={d.key}
                         onClick={() => setDifficulty(d.key)}
                         title={convoy ? d.convoy : mode === 'alliance' ? d.alliance : d.text}
-                        className={`btn menu-btn diff-btn px-0.5 font-display whitespace-nowrap ${difficulty === d.key ? 'btn-gold' : ''}`}
+                        className={`wc-tab diff-btn px-1 py-[clamp(5px,1vh,9px)] whitespace-nowrap ${diffs.length === 4 ? 'wc-tab-4' : 'text-[clamp(11px,1.5vh,13px)]'} short:text-[10.5px] short:tracking-[0.04em] max-[640px]:text-[11px] max-[640px]:tracking-[0.04em] ${difficulty === d.key ? 'is-active' : ''}`}
                       >
                         {d.name}
                       </button>
                     ))}
                   </div>
                   {/* One line only (the full text is on hover), so the panel never shifts. */}
-                  <p className={`mt-1 truncate text-[12.5px] leading-snug text-ink-400 ${convoy || nightfall ? 'short:hidden' : ''}`} title={diffText}>
+                  <p className={`mt-1 truncate text-[12.5px] leading-snug text-[#b8a07a] italic ${convoy || nightfall ? 'short:hidden' : ''}`} title={diffText}>
                     {diffText}
                   </p>
                 </div>
               </div>
 
-              <div className="h-[clamp(8px,2.2vh,26px)] shrink-0" />
-              <BeginBanner busy={busy === 'new'} onClick={start} />
-              {err && <p className="well mt-2 rounded-sm p-2 text-[13px] text-ember-300">{err}</p>}
+              <div className="h-[clamp(8px,2vh,24px)] shrink-0" />
+              <BeginPlate busy={busy === 'new'} onClick={start} />
+              {err && <p className="mt-2 rounded-sm bg-ember-900/40 p-2 text-[13px] text-ember-300">{err}</p>}
             </section>
 
             {/* Right: the land itself. */}
-            <section className="panel iron-frame flex min-h-0 flex-col items-center rounded-md p-[clamp(10px,1.7vw,22px)] max-[640px]:min-h-[520px]">
-              <h2 className="panel-title mb-[clamp(4px,1vh,12px)] w-full truncate short:hidden">{biome.name}</h2>
+            <section className="wc-panel flex min-h-0 min-w-0 flex-col items-center px-[clamp(16px,1.8vw,28px)] pt-[clamp(12px,2vh,24px)] pb-[clamp(10px,1.8vh,22px)] max-[640px]:min-h-[540px]">
+              <Corners />
+              <h2 className="wc-plaque mb-[clamp(8px,1.4vh,16px)] max-w-full truncate px-4 py-1 text-[clamp(13px,1.9vh,17px)] short:hidden">{biome.name}</h2>
               {/* The map is always square: as large as fits both the width and the height of the panel. */}
               <div className="relative flex min-h-0 w-full flex-1 items-center justify-center [container-type:size]">
-                <div className="map-frame relative size-[min(100cqw,100cqh)]">
-                  {preview?.key === previewKey ? (
-                    <MapPreview world={preview.world} castles={def?.castles ?? []} factions={def?.factions} seed={preview.map?.scenario.seed ?? seed} plain={convoy} bridge={preview.map?.rules.convoy?.bridge} rifts={preview.map?.rules.night?.rifts} />
-                  ) : (
-                    <div className="well grid h-full place-items-center rounded-sm text-ink-400">
-                      <LoaderCircle size={20} className="animate-spin" />
-                    </div>
-                  )}
-                  {(['tl', 'tr', 'bl', 'br'] as const).map((k) => (
-                    <IronCorner key={k} at={k} />
-                  ))}
-                  <button className="scroll-btn absolute -bottom-3 left-1/2 -translate-x-1/2" onClick={() => setSeed(Math.floor(Math.random() * 99999))}>
+                <div className="wc-frame wc-tight relative size-[min(100cqw,100cqh)]">
+                  <div className="wc-frame-in h-full w-full">
+                    {preview?.key === previewKey ? (
+                      <MapPreview world={preview.world} castles={def?.castles ?? []} factions={def?.factions} seed={preview.map?.scenario.seed ?? seed} plain={convoy} bridge={preview.map?.rules.convoy?.bridge} rifts={preview.map?.rules.night?.rifts} temple={menuMode === 'alliance' && blessing ? def?.sanctuary : undefined} />
+                    ) : (
+                      <div className="grid h-full place-items-center bg-[#0f0b08] text-[#d8b866]">
+                        <LoaderCircle size={20} className="animate-spin" />
+                      </div>
+                    )}
+                  </div>
+                  <Corners />
+                  <button className="wc-btn absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2" onClick={() => setSeed(Math.floor(Math.random() * 99999))}>
                     <Dices size={14} /> A different map
                   </button>
                 </div>
               </div>
-              <div className="parchment-card mt-[clamp(10px,2vh,22px)] w-full rounded-sm px-3 py-[clamp(4px,1vh,10px)]">
+              <div className="wc-parch mt-[clamp(22px,3.4vh,34px)] w-full px-3 py-[clamp(4px,1vh,10px)]">
                 <p className="line-clamp-2 text-[13px] leading-snug short:hidden">
                   <b className="font-display">{biome.name}.</b> {biome.description}
                 </p>
@@ -389,28 +393,30 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
                   ))}
                 </div>
                 {!convoy && !nightfall && <HoldingsLegend />}
-                {def && nightfall && (
-                  <div className="mt-[clamp(4px,1vh,10px)] grid grid-cols-3 gap-1.5 text-center">
-                    <Plaque label="Gates" value={def.castles.filter((c) => c.gate).length} />
-                    <Plaque label="Wards" value={def.castles.filter((c) => c.district).length} />
-                    <Plaque label="Rifts" value={preview?.map?.rules.night?.rifts.length ?? 0} />
-                  </div>
-                )}
-                {def && convoy && (
-                  <div className="mt-[clamp(4px,1vh,10px)] grid grid-cols-3 gap-1.5 text-center">
-                    <Plaque label="Wagons" value={CONVOY.wagons} />
-                    <Plaque label={side === 'escort' ? 'To bring in' : 'To seize'} value={side === 'escort' ? CONVOY.needed : CONVOY.wagons - CONVOY.needed + 1} />
-                    <Plaque label="Crossings" value={def.bridges.length + 1} />
-                  </div>
-                )}
-                {def && !convoy && !nightfall && (
-                  <div className="mt-[clamp(4px,1vh,10px)] grid grid-cols-3 gap-1.5 text-center">
-                    <Plaque label="Castles" value={def.castles.length} />
-                    <Plaque label="Realms" value={(def.factions ?? []).filter((f) => f.team !== 'N').length || 2} />
-                    <Plaque label="Crossings" value={def.bridges.length} />
-                  </div>
-                )}
               </div>
+              {def && (
+                <div className="mt-[clamp(6px,1.2vh,12px)] grid w-full grid-cols-3 gap-[clamp(6px,0.8vw,12px)] text-center">
+                  {nightfall ? (
+                    <>
+                      <Plaque label="Gates" value={def.castles.filter((c) => c.gate).length} />
+                      <Plaque label="Wards" value={def.castles.filter((c) => c.district).length} />
+                      <Plaque label="Rifts" value={preview?.map?.rules.night?.rifts.length ?? 0} />
+                    </>
+                  ) : convoy ? (
+                    <>
+                      <Plaque label="Wagons" value={CONVOY.wagons} />
+                      <Plaque label={side === 'escort' ? 'To bring in' : 'To seize'} value={side === 'escort' ? CONVOY.needed : CONVOY.wagons - CONVOY.needed + 1} />
+                      <Plaque label="Crossings" value={def.bridges.length + 1} />
+                    </>
+                  ) : (
+                    <>
+                      <Plaque label="Castles" value={def.castles.length} />
+                      <Plaque label="Realms" value={(def.factions ?? []).filter((f) => f.team !== 'N').length || 2} />
+                      <Plaque label="Crossings" value={def.bridges.length} />
+                    </>
+                  )}
+                </div>
+              )}
             </section>
           </div>
         )}
@@ -419,14 +425,68 @@ export function MainMenu({ content, error, onRetry, onStart }: Props) {
   )
 }
 
+/** Brass L-fittings at the four corners of whatever holds them. */
+function Corners() {
+  return (
+    <>
+      {(['tl', 'tr', 'bl', 'br'] as const).map((k) => (
+        <span key={k} className={`wc-corner ${k}`} aria-hidden />
+      ))}
+    </>
+  )
+}
+
+/** The band at the head of each mode's card: a deep ground under the pattern. */
+const MODE_BAND: Record<MenuMode, string> = {
+  conquest: 'linear-gradient(180deg, #4a2a14, #24140a)',
+  alliance: 'linear-gradient(180deg, #5a1418, #2a080a)',
+  convoy: 'linear-gradient(180deg, #1e3a26, #0c1a10)',
+  nightfall: 'linear-gradient(180deg, #1c2448, #0a0e20)',
+  grand: 'linear-gradient(180deg, #3e2448, #1a0e20)',
+}
+
+/** Each map's arms on its card. */
+const MAP_CREST: Partial<Record<MapType, { color: string; charge: ShieldCharge }>> = {
+  crown: { color: '#a8282a', charge: 'fleur' },
+  delta: { color: '#2f63c4', charge: 'sun' },
+  frostfire: { color: '#2a2a32', charge: 'iron' },
+  coast: { color: '#8f1d1d', charge: 'thorn' },
+  basin: { color: '#1f5a8a', charge: 'fleur' },
+  divide: { color: '#3f5a2a', charge: 'iron' },
+}
+
+/** A map's three colours as layers of country (far, middle, near) under a dusk sky. */
+function MapScape({ colors, seed }: { colors: [string, string, string]; seed: number }) {
+  const id = `wc-sky-${seed}`
+  const w = (k: number, a: number, b: number) => Array.from({ length: 9 }, (_, i) => `${i * 12.5},${(a + Math.sin(i * 1.7 + seed * 0.37 + k) * b).toFixed(1)}`).join(' L')
+  return (
+    <svg className="absolute inset-0 h-full w-full" viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden>
+      <defs>
+        <linearGradient id={id} x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0" stopColor="#1a1622" />
+          <stop offset="1" stopColor="#4a3a32" />
+        </linearGradient>
+        <linearGradient id={`${id}-s`} x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0" stopColor="#fff" stopOpacity="0.12" />
+          <stop offset="1" stopColor="#000" stopOpacity="0.35" />
+        </linearGradient>
+      </defs>
+      <rect width="100" height="40" fill={`url(#${id})`} />
+      <path d={`M0,40 L${w(0, 16, 6)} L100,40 Z`} fill={colors[0]} />
+      <path d={`M0,40 L${w(2, 25, 3.5)} L100,40 Z`} fill={colors[1]} />
+      <path d={`M0,40 L${w(4, 32, 2)} L100,40 Z`} fill={colors[2]} />
+      <rect width="100" height="40" fill={`url(#${id}-s)`} />
+    </svg>
+  )
+}
+
 /**
- * The WARBOX wordmark: carved gold capitals with the O struck as the realm's
- * crowned shield (the emblem every royal seat flies), and a single line of the
- * story beneath instead of a slogan.
+ * The WARBOX wordmark: carved gold capitals with the O struck as the realm's crowned shield, and
+ * the story's line beneath between brass rules ending in diamond rivets.
  */
 function Wordmark() {
   return (
-    <div className="select-none">
+    <div className="flex select-none flex-col items-center">
       <h1 className="wordmark flex items-center font-display leading-none font-extrabold" aria-label="WARBOX">
         <span>WARB</span>
         <svg
@@ -439,65 +499,85 @@ function Wordmark() {
         />
         <span>X</span>
       </h1>
-      <div className="mt-[clamp(2px,0.6vh,6px)] flex items-center gap-2 text-gold-400/85 short:hidden">
-        <span className="h-px w-8 bg-gradient-to-r from-transparent to-gold-400/70" />
-        <span className="font-display text-[clamp(10.5px,1.45vh,13px)] font-bold tracking-[0.28em]">THE WAR FOR THE THORN THRONE · MCCXLVII</span>
-        <span className="h-px w-8 bg-gradient-to-l from-transparent to-gold-400/70" />
+      <div className="wc-subtitle mt-[clamp(3px,0.8vh,8px)] w-[min(100%,46em)] text-[clamp(9.5px,1.35vh,12.5px)] short:hidden max-[640px]:text-[8.5px] max-[640px]:tracking-[0.12em]">
+        <span className="wc-rule" />
+        <span className="wc-rivet" />
+        <span>THE WAR FOR THE THORN THRONE · MCCXLVII</span>
+        <span className="wc-rivet" />
+        <span className="wc-rule r" />
       </div>
     </div>
   )
 }
 
-/** Wrought-iron corner brackets for the map frame. */
-function IronCorner({ at }: { at: 'tl' | 'tr' | 'bl' | 'br' }) {
-  const flip = {
-    tl: '',
-    tr: 'scale(-1,1)',
-    bl: 'scale(1,-1)',
-    br: 'scale(-1,-1)',
-  }[at]
-  const pos = {
-    tl: 'top-0 left-0',
-    tr: 'top-0 right-0',
-    bl: 'bottom-0 left-0',
-    br: 'right-0 bottom-0',
-  }[at]
+/** A fine filigree for the corners of the plate (drawn for the top left; turned for the others). */
+function Filigree({ at }: { at: 'tl' | 'tr' | 'bl' | 'br' }) {
+  const pos = { tl: 'top-[5px] left-[5px]', tr: 'top-[5px] right-[5px] -scale-x-100', bl: 'bottom-[5px] left-[5px] -scale-y-100', br: 'right-[5px] bottom-[5px] -scale-100' }[at]
   return (
-    <svg className={`pointer-events-none absolute ${pos} size-[clamp(22px,4.2vh,42px)] -translate-x-0`} viewBox="0 0 40 40" style={{ transform: flip }} aria-hidden>
-      <path d="M0 0 H34 L28 6 H6 V28 L0 34 Z" fill="#3a3a3e" stroke="#0d0d0f" strokeWidth="1.2" />
-      <path d="M2 2 H30 M2 2 V30" stroke="#8a8a92" strokeWidth="1" opacity="0.7" />
-      <circle cx="6" cy="6" r="2.2" fill="#9a9aa2" stroke="#1a1a1c" />
-      <circle cx="20" cy="3.2" r="1.3" fill="#7a7a82" />
-      <circle cx="3.2" cy="20" r="1.3" fill="#7a7a82" />
+    <svg className={`wc-filigree ${pos}`} viewBox="0 0 26 26" aria-hidden>
+      <path d="M2 24 V6 Q2 2 6 2 H24" fill="none" stroke="#f0c460" strokeWidth="1.4" />
+      <path d="M6 20 V9 Q6 6 9 6 H20" fill="none" stroke="#b88a2e" strokeWidth="0.9" />
+      <path d="M9 9 Q14 9.5 14 14 Q9.5 14 9 9 Z" fill="#f0c460" opacity="0.85" />
+      <path d="M2 2 L5 5" stroke="#fff3c4" strokeWidth="1" />
+      <circle cx="16.5" cy="6" r="1.1" fill="#f0c460" />
+      <circle cx="6" cy="16.5" r="1.1" fill="#f0c460" />
     </svg>
   )
 }
 
-/** The call to arms: a gold button on a ribbon, with crossed swords. */
-function BeginBanner({ busy, onClick }: { busy: boolean; onClick: () => void }) {
+/** A sword pointing up, for either side of the plate's lettering. */
+function PlateSword() {
   return (
-    <div className="relative shrink-0 px-[clamp(18px,4vw,56px)]">
-      <svg className="pointer-events-none absolute inset-y-[18%] left-0 h-[64%] w-[clamp(26px,5vw,64px)]" viewBox="0 0 60 40" preserveAspectRatio="none" aria-hidden>
-        <path d="M60 4 H6 L18 20 L6 36 H60 Z" fill="#8a6418" stroke="#3a2608" strokeWidth="1.5" />
-        <path d="M60 8 H16 M60 32 H16" stroke="#e8c066" strokeWidth="1" opacity="0.6" />
-      </svg>
-      <svg className="pointer-events-none absolute inset-y-[18%] right-0 h-[64%] w-[clamp(26px,5vw,64px)]" viewBox="0 0 60 40" preserveAspectRatio="none" style={{ transform: 'scaleX(-1)' }} aria-hidden>
-        <path d="M60 4 H6 L18 20 L6 36 H60 Z" fill="#8a6418" stroke="#3a2608" strokeWidth="1.5" />
-        <path d="M60 8 H16 M60 32 H16" stroke="#e8c066" strokeWidth="1" opacity="0.6" />
-      </svg>
-      <button className="btn btn-gold begin-btn relative w-full py-[clamp(8px,1.8vh,16px)] font-display text-[clamp(14px,2.2vh,19px)] tracking-wider" onClick={onClick} disabled={busy}>
-        {busy ? <LoaderCircle size={18} className="animate-spin" /> : <Swords size={18} />}
-        {busy ? 'Raising the banners…' : 'Begin the War'}
-      </button>
-    </div>
+    <svg className="h-[clamp(24px,4.2vh,40px)] w-auto shrink-0 drop-shadow-[0_2px_2px_rgb(0_0_0/0.6)]" viewBox="0 0 20 40" aria-hidden>
+      <defs>
+        <linearGradient id="wc-blade" x1="0" x2="1">
+          <stop offset="0" stopColor="#f6f8fa" />
+          <stop offset="0.5" stopColor="#d2d7dd" />
+          <stop offset="0.51" stopColor="#8f969f" />
+          <stop offset="1" stopColor="#b8bec6" />
+        </linearGradient>
+        <linearGradient id="wc-hilt" x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0" stopColor="#fff3c4" />
+          <stop offset="0.5" stopColor="#d8a642" />
+          <stop offset="1" stopColor="#6e490c" />
+        </linearGradient>
+      </defs>
+      <path d="M10 1 L12.6 6 V26 H7.4 V6 Z" fill="url(#wc-blade)" stroke="#2a0a0c" strokeWidth="0.7" strokeLinejoin="round" />
+      <path d="M10 6 V24.5" stroke="#6b737c" strokeWidth="0.7" />
+      <path d="M1.5 26 Q10 28.4 18.5 26 L18.8 28 Q10 30.2 1.2 28 Z" fill="url(#wc-hilt)" stroke="#3a2406" strokeWidth="0.6" />
+      <rect x="8.6" y="29" width="2.8" height="6.4" rx="0.6" fill="#4a2a18" stroke="#1a0e06" strokeWidth="0.4" />
+      <path d="M8.6 30.5 H11.4 M8.6 32.2 H11.4 M8.6 33.9 H11.4" stroke="#c9a04a" strokeWidth="0.45" />
+      <circle cx="10" cy="37" r="2.2" fill="url(#wc-hilt)" stroke="#3a2406" strokeWidth="0.6" />
+    </svg>
+  )
+}
+
+/** The call to arms: a royal crimson plate in black iron and double brass, filigree at its corners. */
+function BeginPlate({ busy, onClick }: { busy: boolean; onClick: () => void }) {
+  return (
+    <button className="wc-begin shrink-0" onClick={onClick} disabled={busy}>
+      <span className="wc-begin-face">
+        {(['tl', 'tr', 'bl', 'br'] as const).map((k) => (
+          <Filigree key={k} at={k} />
+        ))}
+        <PlateSword />
+        <span className="wc-sep" />
+        <span className="wc-begin-text wc-brass-text flex items-center gap-2 text-[clamp(15px,2.4vh,22px)] whitespace-nowrap">
+          {busy && <LoaderCircle size={18} className="animate-spin text-[#f0c460]" />}
+          {busy ? 'RAISING THE BANNERS' : 'BEGIN THE WAR'}
+        </span>
+        <span className="wc-sep r" />
+        <PlateSword />
+      </span>
+    </button>
   )
 }
 
 function Plaque({ label, value }: { label: string; value: number }) {
   return (
-    <div className="plaque rounded-sm py-[clamp(2px,0.6vh,6px)]">
-      <div className="text-[10.5px] tracking-[0.14em] text-ink-300 uppercase">{label}</div>
-      <div className="font-display text-[clamp(14px,2.3vh,20px)] leading-tight font-bold text-gold-200">{value}</div>
+    <div className="wc-stat py-[clamp(4px,0.8vh,8px)]">
+      <div className="font-display text-[10px] font-bold tracking-[0.18em] text-[#c9a24a] uppercase">{label}</div>
+      <div className="wc-brass-text font-display text-[clamp(15px,2.4vh,21px)] leading-tight font-bold">{value}</div>
     </div>
   )
 }
@@ -634,21 +714,45 @@ const HOLDING_DOT: Record<string, string> = {
   guildhall: '#d98a52',
 }
 
-function MapPreview({ world, castles, factions, seed, plain, bridge, rifts }: { world: World; castles: CastleDef[]; factions?: FactionDef[]; seed: number; plain?: boolean; bridge?: [number, number]; rifts?: { x: number; z: number }[] }) {
+function MapPreview({
+  world,
+  castles,
+  factions,
+  seed,
+  plain,
+  bridge,
+  rifts,
+  temple,
+}: {
+  world: World
+  castles: CastleDef[]
+  factions?: FactionDef[]
+  seed: number
+  plain?: boolean
+  bridge?: [number, number]
+  rifts?: { x: number; z: number }[]
+  /** The Sanctuary of the High King (Alliance War, with the High King's Blessing). */
+  temple?: { x: number; z: number }
+}) {
   const ref = useRef<HTMLCanvasElement>(null)
   // The countryside is laid out when the war begins; work it out here too (it is deterministic) so the preview shows it.
   const country = useMemo(() => {
-    if (plain) return { villages: [], sites: [] }
+    if (plain) return { villages: [], sites: [], granges: [] }
     try {
-      return generateCountryside(world, castles, seed)
+      // (No granges on the Long Night.)
+      const c = generateCountryside(world, castles, seed, { granges: !rifts })
+      // (Nothing is built near the Sanctuary.)
+      if (!temple) return c
+      const clear = (p: { x: number; z: number }) => Math.hypot(temple.x - p.x, temple.z - p.z) > 260
+      return { villages: c.villages.filter(clear), sites: c.sites.filter(clear), granges: c.granges.filter(clear) }
     } catch {
-      return { villages: [], sites: [] }
+      return { villages: [], sites: [], granges: [] }
     }
-  }, [world, castles, seed, plain])
+  }, [world, castles, seed, plain, rifts, temple])
   useEffect(() => {
     const cv = ref.current
     if (!cv) return
-    const S = 190
+    const S = 360
     cv.width = cv.height = S
     const ctx = cv.getContext('2d')!
     const img = ctx.createImageData(S, S)
@@ -676,9 +780,12 @@ function MapPreview({ world, castles, factions, seed, plain, bridge, rifts }: { 
       }
     }
     ctx.putImageData(img, 0, 0)
-    drawStructures(ctx, world, S)
+    // The marks are drawn in a 190-unit frame, scaled up: the same size on the page, but sharp.
+    const D = 190
+    ctx.setTransform(S / D, 0, 0, S / D, 0, 0)
+    drawStructures(ctx, world, D)
     const team = (fid: string) => factions?.find((f) => f.id === fid)?.team ?? (fid === 'player' ? 'A' : fid === 'neutral' ? 'N' : 'B')
-    const px = (v: number) => ((v + world.half) / world.size) * S
+    const px = (v: number) => ((v + world.half) / world.size) * D
     // Mines and lumber camps: small marks under everything else.
     for (const r of country.sites) {
       ctx.fillStyle = r.kind === 'mine' ? '#c8c2b6' : '#7fb35a'
@@ -689,6 +796,18 @@ function MapPreview({ world, castles, factions, seed, plain, bridge, rifts }: { 
       ctx.closePath()
       ctx.fill()
     }
+    // The granges, each tied to its castle.
+    drawGranges(
+      ctx,
+      world,
+      D,
+      country.granges,
+      (id) => castles.find((c) => c.id === id),
+      (g) => {
+        const f = castles.find((c) => c.id === g.castleId)?.faction ?? 'neutral'
+        return f === 'neutral' ? '#8a7a56' : (factions?.find((x) => x.id === f)?.color ?? '#5f93ec')
+      },
+    )
     // Free villages (dots) and the special holdings (diamonds), each in its own colour.
     for (const v of country.villages) {
       const x = px(v.x)
@@ -725,11 +844,12 @@ function MapPreview({ world, castles, factions, seed, plain, bridge, rifts }: { 
       ctx.fill()
       ctx.stroke()
     }
+    if (temple) drawTemple(ctx, px(temple.x), px(temple.z), 6.5, 1)
     for (const k of castles) {
       // (A city's gatehouses and wards are part of the city: its walls show them.)
       if (k.gate || k.district) continue
-      const x = ((k.x + world.half) / world.size) * S
-      const y = ((k.z + world.half) / world.size) * S
+      const x = ((k.x + world.half) / world.size) * D
+      const y = ((k.z + world.half) / world.size) * D
       if (k.village) {
         ctx.fillStyle = HOLDING_DOT[k.holding ?? 'village']
         ctx.strokeStyle = '#0e0b08'
@@ -746,9 +866,19 @@ function MapPreview({ world, castles, factions, seed, plain, bridge, rifts }: { 
       const t = team(k.faction)
       ctx.fillStyle = k.faction === 'player' ? '#5f93ec' : t === 'A' ? '#4fd1c5' : t === 'B' ? '#de5f45' : t === 'C' ? '#e8a030' : '#d1a73f'
       const rank = k.tier >= ROYAL_SEAT_TIER ? 'royal' : k.capital ? 'lord' : 'castle'
-      drawShield(ctx, x, y, rank === 'royal' ? 13 : rank === 'lord' ? 10 : 8, ctx.fillStyle as string, rank)
+      drawShield(ctx, x, y, rank === 'royal' ? 13 : rank === 'lord' ? 10 : 8, ctx.fillStyle as string, rank, chargeForTeam(t))
     }
-  }, [world, castles, factions, country, bridge, rifts])
+    // An old campaign map: the corners in shadow, a fine gilt line inside the frame.
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    const vg = ctx.createRadialGradient(S / 2, S / 2, S * 0.3, S / 2, S / 2, S * 0.74)
+    vg.addColorStop(0, 'rgba(20,12,4,0)')
+    vg.addColorStop(1, 'rgba(20,12,4,0.42)')
+    ctx.fillStyle = vg
+    ctx.fillRect(0, 0, S, S)
+    ctx.strokeStyle = 'rgba(232,192,102,0.55)'
+    ctx.lineWidth = 1.5
+    ctx.strokeRect(4.5, 4.5, S - 9, S - 9)
+  }, [world, castles, factions, country, bridge, rifts, temple])
   return (
     <div className="relative h-full w-full">
       <canvas ref={ref} className="well h-full w-full rounded-sm [image-rendering:auto]" />
@@ -785,11 +915,11 @@ function HoldingsLegend() {
 }
 
 function Label({ children }: { children: ReactNode }) {
-  return <div className="mb-1.5 font-display text-[12px] font-bold tracking-[0.12em] text-gold-300/80">{children}</div>
+  return <div className="wc-label mb-1.5 text-[11.5px] uppercase">{children}</div>
 }
 
 /** Layered silhouette landscape for the title screen. */
-function MenuBackdrop() {
+export function MenuBackdrop() {
   return (
     <div className="absolute inset-0">
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_70%_30%,#5b3a1e_0%,#2a1a12_35%,#0b0c0e_75%)]" />

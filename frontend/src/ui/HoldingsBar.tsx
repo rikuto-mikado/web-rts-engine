@@ -1,8 +1,10 @@
 import { ChevronDown, Swords, Tent } from 'lucide-react'
 import { Shield } from './Shield'
+import { chargeForTeam } from '../render/heraldry'
 import { Glyph } from './Glyph'
 import { useState } from 'react'
 import { HOLDINGS, PLAYER, type GameEngine } from '../game/engine'
+import { GRANGE } from '../game/granary'
 import { fmt, total } from '../game/troops'
 import type { Selection } from '../render/GameRenderer'
 import { useEngine } from './common'
@@ -10,7 +12,7 @@ import { useViewport } from './viewport'
 
 /**
  * The player's holdings, stacked down the top right under the header: the seat
- * of power first, then castles, vassal villages and outposts. A long list
+ * of power first, then castles and strongholds, the granges, vassal villages and outposts. A long list
  * scrolls inside its own box, so the layout never breaks however much is held.
  * Click to fly the camera there.
  */
@@ -23,7 +25,12 @@ export function HoldingsBar({ engine, selection, onSelect, mapShown = false }: {
     .filter((c) => c.faction === PLAYER && !c.ruined)
     .sort((a, b) => (a.id === capId ? -1 : b.id === capId ? 1 : Number(!!a.village) - Number(!!b.village) || b.tier - a.tier))
   const outposts = engine.state.outposts.filter((o) => o.faction === PLAYER)
-  const count = castles.length + outposts.length
+  // The granges come after the castles they feed, before the villages.
+  const forts = castles.filter((c) => !c.village)
+  const villages = castles.filter((c) => c.village)
+  const granges = (engine.state.granges ?? []).filter((g) => engine.grangeOwner(g) === PLAYER)
+  const now = engine.state.time
+  const count = castles.length + granges.length + outposts.length
   if (count === 0) return null
   const compact = vp.compact
   // About six rows show before the list starts to scroll; on phones it stops short of the map in the corner below.
@@ -47,7 +54,33 @@ export function HoldingsBar({ engine, selection, onSelect, mapShown = false }: {
       </button>
       {open && (
         <div className="scroll-thin space-y-1 overflow-y-auto px-1.5 pb-1.5" style={{ maxHeight: maxH }}>
-          {castles.map((c) => {
+          {[...forts, ...granges, ...villages].map((item) => {
+            if ('barn' in item) {
+              const g = item
+              const sel = selection?.kind === 'grange' && selection.id === g.id
+              const attacked = now - (g.assaultAt ?? -999) < 8
+              const barn = Math.min(1, g.barn / GRANGE.barnMax)
+              return (
+                <button
+                  key={g.id}
+                  onClick={() => onSelect({ kind: 'grange', id: g.id }, true)}
+                  title={`${g.name}: barn ${Math.round(barn * 100)}% full, field wall ${Math.round((g.walls / GRANGE.walls) * 100)}%${attacked ? ' (UNDER ATTACK)' : ''}`}
+                  className={`well relative flex w-full items-center gap-2 rounded-sm px-2 py-1 text-left transition-[filter] hover:brightness-125 ${sel ? 'outline outline-1 outline-gold-400' : ''} ${attacked ? 'animate-pulse outline outline-1 outline-ember-400' : ''}`}
+                >
+                  <span className="grid size-6 shrink-0 place-items-center rounded-sm bg-ink-700 text-gold-300">{attacked ? <Swords size={12} /> : <Glyph name="sheaf" size={14} />}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-display text-[12.5px] font-bold leading-tight text-ink-100">{g.name}</span>
+                    <span className="flex items-center gap-1.5 text-[12px] leading-tight text-ink-300 tabular-nums">
+                      {Math.round(barn * 100)}%
+                      <span className="h-1 flex-1 overflow-hidden bg-black/50">
+                        <span className="block h-full bg-gold-400" style={{ width: `${barn * 100}%` }} />
+                      </span>
+                    </span>
+                  </span>
+                </button>
+              )
+            }
+            const c = item
             const home = c.id === capId
             const sel = selection?.kind === 'castle' && selection.id === c.id
             const n = total(c.garrison)
@@ -57,14 +90,14 @@ export function HoldingsBar({ engine, selection, onSelect, mapShown = false }: {
               <button
                 key={c.id}
                 onClick={() => onSelect({ kind: 'castle', id: c.id }, true)}
-                title={`${c.name}: ${fmt(n)} ${c.village ? 'militia' : 'soldiers'}, tier ${c.tier}${c.battleId ? ' (UNDER SIEGE)' : ''}`}
+                title={`${c.name} (${c.subtitle}): ${fmt(n)} ${c.village ? 'militia' : 'soldiers'}${c.battleId ? ' (UNDER SIEGE)' : ''}`}
                 className={`well relative flex w-full items-center gap-2 rounded-sm px-2 py-1 text-left transition-[filter] hover:brightness-125 ${sel ? 'outline outline-1 outline-gold-400' : ''} ${c.battleId ? 'animate-pulse outline outline-1 outline-ember-400' : ''}`}
               >
                 {H ? (
                   <span className="grid size-6 shrink-0 place-items-center rounded-sm bg-ink-700 text-gold-300">{c.battleId ? <Swords size={12} /> : <Glyph name={H.icon} size={14} />}</span>
                 ) : (
                   <span className="grid size-6 shrink-0 place-items-center">
-                    <Shield rank={engine.seatRank(c)} color={engine.factionColor(c.faction)} size={home ? 17 : 15} />
+                    <Shield rank={engine.seatRank(c)} color={engine.factionColor(c.faction)} charge={chargeForTeam(engine.team(c.faction))} size={home ? 17 : 15} />
                   </span>
                 )}
                 <span className="min-w-0 flex-1">
@@ -74,7 +107,6 @@ export function HoldingsBar({ engine, selection, onSelect, mapShown = false }: {
                     <span className="h-1 flex-1 overflow-hidden bg-black/50">
                       <span className="block h-full bg-royal-400" style={{ width: `${fill * 100}%` }} />
                     </span>
-                    <span className="text-[10px] text-gold-500">{'▮'.repeat(c.tier)}</span>
                   </span>
                 </span>
               </button>

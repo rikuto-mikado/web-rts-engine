@@ -1,4 +1,5 @@
-import { Castle as CastleIcon, ChevronDown, ChevronsLeft, ChevronsRight, CircleAlert, Coins, Hammer, Handshake, Package, Plus, Swords, Users } from 'lucide-react'
+import { ChevronDown, ChevronsLeft, ChevronsRight, CircleAlert, Hammer, Handshake, Package, Plus, Swords, Users } from 'lucide-react'
+import { NIGHT_AFFINITY } from '../game/daylight'
 import { Glyph } from './Glyph'
 import { useState } from 'react'
 import { useViewport } from './viewport'
@@ -8,6 +9,7 @@ import { fmt, roman, total, totalInt } from '../game/troops'
 import type { Selection } from '../render/GameRenderer'
 import { PixelPortrait } from './PixelPortrait'
 import { Shield } from './Shield'
+import { chargeForTeam } from '../render/heraldry'
 import { Bar, FormationIcon, RELATION_COLOR, STATUS_TEXT, SectionTitle, StackBar, Tab, UnitGlyph, moraleColor, useEngine } from './common'
 
 interface Props {
@@ -267,7 +269,6 @@ function RealmTab({ engine, selection, onSelect }: { engine: GameEngine; selecti
   const net = totals.income - totals.upkeep
   return (
     <div className="space-y-5">
-      <RankCard engine={engine} power={totals.totalPower} />
       <section>
         <SectionTitle right={<span className={`text-[12px] font-bold tabular-nums ${net >= 0 ? 'text-emerald-400' : 'text-ember-300'}`}>{net >= 0 ? '+' : ''}{net.toFixed(1)}/s</span>}>Treasury</SectionTitle>
         <div className="well space-y-1 rounded-lg px-2.5 py-2 text-[13px]">
@@ -316,9 +317,9 @@ function RealmTab({ engine, selection, onSelect }: { engine: GameEngine; selecti
                 className={`w-full rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${sel ? 'bg-gold-500/10 ring-1 ring-gold-400/60' : 'well hover:bg-white/6'}`}
               >
                 <div className="flex items-center gap-2">
-                  <Shield rank={engine.seatRank(c)} color={engine.factionColor(c.faction)} size={c.capital ? 15 : 13} className={c.battleId ? 'animate-pulse' : ''} />
+                  <Shield rank={engine.seatRank(c)} color={engine.factionColor(c.faction)} charge={chargeForTeam(engine.team(c.faction))} size={c.capital ? 15 : 13} className={c.battleId ? 'animate-pulse' : ''} />
                   <span className="flex-1 font-medium">
-                    {c.name} <span className="text-[12px] text-ink-500">T{c.tier}</span>
+                    {c.name} <span className="text-[12px] text-ink-500">{c.subtitle}</span>
                   </span>
                   {c.autoRecruit && <Hammer size={11} className="text-gold-400" />}
                   {c.battleId && <span className="rounded bg-ember-500 px-1 text-[11px] font-bold">SIEGE</span>}
@@ -481,7 +482,7 @@ function ArmiesTab({ engine, selection, onSelect, onFormArmy }: { engine: GameEn
               <button
                 key={c.key}
                 onClick={() => (army ? onSelect({ kind: 'army', id: army.id }, true) : depot ? onSelect({ kind: 'outpost', id: depot.id }, true) : onFormArmy())}
-                title={`${c.name}, ${c.title}\n+ ${c.strengths.join('\n+ ')}\n− ${c.weaknesses.join('\n− ')}`}
+                title={`${c.name}, ${c.title}\n+ ${c.strengths.join('\n+ ')}\n− ${c.weaknesses.join('\n− ')}${NIGHT_AFFINITY[c.key] ? `\n${NIGHT_AFFINITY[c.key].note}` : ''}`}
                 className={`well flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-white/6 ${wound > 0 ? 'opacity-70' : ''}`}
               >
                 <PixelPortrait spec={c.portrait} size={30} className={`ring-1 ring-white/10 ${wound > 0 ? 'grayscale' : ''}`} />
@@ -506,7 +507,7 @@ function WarTab({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint: (x
   const A = engine.teamPower('A')
   const B = engine.teamPower('B')
   const share = A.power / Math.max(1, A.power + B.power)
-  const realms = Object.values(s.factions).filter((f) => f.team !== 'N')
+  const realms = Object.values(s.factions).filter((f) => f.team !== 'N' && !f.sacred)
   const row = (fid: string) => {
     const f = s.factions[fid]
     const castles = s.castles.filter((c) => c.faction === fid)
@@ -521,7 +522,6 @@ function WarTab({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint: (x
             {f.leader && <Glyph name="crown" size={12} className="mr-1 -mt-0.5 text-gold-300" />}
             {fid === PLAYER ? `${f.name} (you)` : f.name}
           </span>
-          <span className="w-7 text-center text-[11px] font-bold text-gold-300 tabular-nums" title="Realm rank">{f.alive ? engine.rankOf(fid) : '–'}</span>
           <span className="w-5 text-right text-ink-400 tabular-nums">{castles.length}</span>
           <span className="w-12 text-right text-ink-300 tabular-nums">~{fmt(Math.round(p / 50) * 50)}</span>
         </button>
@@ -664,7 +664,7 @@ function QueenCard({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint:
   )
 }
 
-/** Truces, bribes, free towns and villages to win over, and the infamy that makes all of it dearer. */
+/** Truces, bribes, villages and holdings to win over, and the infamy that makes all of it dearer. */
 function IntrigueTab({ engine, onSelect }: { engine: GameEngine; onSelect: Props['onSelect'] }) {
   const s = engine.state
   const me = s.factions[PLAYER]
@@ -677,8 +677,7 @@ function IntrigueTab({ engine, onSelect }: { engine: GameEngine; onSelect: Props
   const lords = Object.values(s.factions).filter((f) => (f.team === 'B' || f.team === 'C') && f.alive && !f.leader)
   const home = engine.castle(me.capitalId)
   const dist = (x: number, z: number) => (home ? Math.hypot(home.x - x, home.z - z) : 0)
-  // Only what your scouts have seen: free towns, and villages your envoys can reach.
-  const towns = s.castles.filter((c) => c.faction === NEUTRAL && !c.village && !c.ruined && engine.isExplored(c.x, c.z)).sort((a, b) => dist(a.x, a.z) - dist(b.x, b.z))
+  // Villages your envoys can reach (there are no free castles: the free country is all villages and holdings).
   const villages = s.castles
     .filter((c) => c.faction === NEUTRAL && c.village && !c.ruined && engine.isExplored(c.x, c.z))
     .map((c) => ({ c, t: engine.villageTerms(c.id) }))
@@ -774,28 +773,6 @@ function IntrigueTab({ engine, onSelect }: { engine: GameEngine; onSelect: Props
       </section>
 
       <section>
-        <SectionTitle right={<span className="text-[12px] text-ink-500">{towns.length} known</span>}>Free towns</SectionTitle>
-        {towns.length === 0 && <p className="text-[12px] text-ink-500">Your scouts know of no free town that is for sale.</p>}
-        <div className="space-y-1">
-          {towns.map((c) => {
-            const price = engine.townPrice(c)
-            return (
-              <div key={c.id} className="well flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px]">
-                <button className="flex min-w-0 flex-1 items-center gap-2 text-left hover:brightness-125" onClick={() => onSelect({ kind: 'castle', id: c.id }, true)}>
-                  <CastleIcon size={13} className="shrink-0 text-ink-300" />
-                  <span className="truncate font-medium">{c.name}</span>
-                  <span className="text-[12px] text-ink-500 tabular-nums">T{c.tier} · {fmt(total(c.garrison))}</span>
-                </button>
-                <button className="btn h-auto min-h-0 px-2 py-0.5 text-[12px]" disabled={gold < price || !!c.battleId} onClick={() => act(() => engine.buyTown(c.id))}>
-                  <Coins size={11} /> {fmt(price)}g
-                </button>
-              </div>
-            )
-          })}
-        </div>
-      </section>
-
-      <section>
         <SectionTitle right={<span className="text-[12px] text-ink-500">price · odds</span>}>Villages within reach</SectionTitle>
         {villages.length === 0 && <p className="text-[12px] leading-snug text-ink-500">No free village your envoys can reach. Bring an army near one, or hold a castle close by.</p>}
         <div className="space-y-1">
@@ -835,35 +812,6 @@ function Ledger({ label, value, note }: { label: string; value: number; note?: s
         {Math.abs(value).toFixed(1)}/s
       </span>
     </div>
-  )
-}
-
-/** Realm rank: a plain read of how strong the realm is, and how far to the next rank. */
-function RankCard({ engine, power }: { engine: GameEngine; power: number }) {
-  const rank = engine.rankOf(PLAYER)
-  const max = engine.maxRank
-  const lo = engine.rankThreshold(rank)
-  const hi = rank < max ? engine.rankThreshold(rank + 1) : null
-  const pct = hi ? Math.max(0, Math.min(1, (power - lo) / Math.max(1, hi - lo))) : 1
-  return (
-    <section className="well flex items-center gap-3 rounded-sm px-3 py-2.5">
-      <div className="grid size-12 shrink-0 place-items-center rounded-sm border border-gold-400/50 bg-black/30">
-        <div className="text-center leading-none">
-          <div className="text-[9px] tracking-[0.18em] text-gold-400">RANK</div>
-          <div className="font-display text-[22px] font-bold text-gold-200">{rank}</div>
-        </div>
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-baseline justify-between text-[13px]">
-          <span className="font-bold text-ink-100">Realm rank {rank} of {max}</span>
-          <span className="text-ink-400 tabular-nums">{hi ? `${fmt(power)} / ${fmt(hi)}` : 'Highest'}</span>
-        </div>
-        <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/8">
-          <div className="h-full rounded-full bg-gradient-to-r from-gold-500 to-gold-300" style={{ width: `${pct * 100}%` }} />
-        </div>
-        <div className="mt-1 text-[12px] text-ink-500">{hi ? 'Grows with your total strength. Your castles grow grander with each rank.' : 'Your castles stand at their grandest.'}</div>
-      </div>
-    </section>
   )
 }
 

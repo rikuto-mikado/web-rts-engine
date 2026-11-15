@@ -9,6 +9,8 @@ import { applyVision, visionUniforms } from './vision'
 import { buildCityCountry, type CityCountry } from './citycountry'
 import { chunkInstances } from './terrain'
 import { coursedCone, mottle, sailsGeometry, type FortStyle } from './fortress'
+import { buildWard } from './citadel'
+import type { Castle } from '../game/types'
 
 /**
  * The royal city (The Long Night): its great double curtain walls, and the city inside them,
@@ -33,6 +35,27 @@ export function buildCityWalls(world: World): THREE.Group {
   const k = newKit()
   const banners: THREE.BufferGeometry[] = []
   walls.forEach((w, wi) => buildWall(world, w, w.outer ?? wi === walls.length - 1, k, banners))
+  // Open gates (the Imperial Crossroads'): no holding stands in them, so build their gatehouses
+  // here, the same as a royal city's (turned to face out through the wall).
+  walls.forEach((w, wi) => {
+    if (!w.points) return
+    for (const [gx, gz] of w.gatePts ?? []) {
+      if (world.def.castles.some((c) => c.gate && Math.hypot(c.x - gx, c.z - gz) < 40)) continue
+      const fake = { id: `open-gate-${wi}-${gx}-${gz}`, gate: true, ruined: false } as unknown as Castle
+      const v = buildWard(fake, mulberry32(Math.abs(gx * 31 + gz * 17 + wi) | 0), '#a08a56')
+      const [tx, tz] = world.polyDir(world.wallLoop(w), gx, gz)
+      let ox = gx - w.x
+      let oz = gz - w.z
+      const s = -tz * ox + tx * oz >= 0 ? 1 : -1
+      ox = -tz * s
+      oz = tx * s
+      v.group.rotation.y = -Math.atan2(oz, ox)
+      v.group.position.set(gx, world.heightAt(gx, gz), gz)
+      // (No standard flies over an open gate.)
+      v.flag.visible = false
+      group.add(v.group)
+    }
+  })
   const mesh = new THREE.Mesh(groundShade(bmerge([...k.walls, ...k.roofs]), 5, 0.3), buildMat)
   mesh.castShadow = true
   mesh.receiveShadow = true
@@ -187,32 +210,43 @@ export function radiusAt(poly: [number, number][], cx: number, cz: number, a: nu
  * `userData.cleared` lists the ground the countryside took (world circles, for clearing the wild
  * trees) and `userData.smoke` its chimneys.
  */
-export function buildCity(world: World, mobile = false, styles: FortStyle[] = [], avoid: { x: number; z: number; r: number }[] = []): THREE.Group {
+/**
+ * The royal cities with their countryside, one piece of work at a time (each city, then its fields):
+ * the loading screen draws between them. Run every step before the group is shown.
+ */
+export function cityBuild(world: World, mobile = false, styles: FortStyle[] = [], avoid: { x: number; z: number; r: number }[] = []): { group: THREE.Group; steps: { label: string; run: () => void }[] } {
   const group = new THREE.Group()
   const cleared: { x: number; z: number; r: number }[] = []
   const smoke: [number, number, number][] = []
+  group.userData.cleared = cleared
+  group.userData.smoke = smoke
+  const steps: { label: string; run: () => void }[] = []
   world.towns.forEach((town, i) => {
     const [innerW, outerW] = world.townWalls(town)
     if (!town.poly || !innerW?.points || !outerW?.points) return
-    group.add(buildOneCity(world, town, innerW, outerW, mobile, 4711 + i * 977))
-    // Outside the walls: the gate towns and the farmland, clear of the other holdings, the other
-    // cities, the terrain features and whatever else must stay open.
-    const keep = new Set(world.def.castles.filter((c) => Math.hypot(c.x - town.x, c.z - town.z) < town.r + 20).map((c) => c.id))
-    const away = [
-      ...avoid,
-      ...world.def.castles.filter((c) => !keep.has(c.id)).map((c) => ({ x: c.x, z: c.z, r: holdingRadius(c) * 1.5 + 20 })),
-      ...world.towns.filter((t) => t !== town).map((t) => ({ x: t.x, z: t.z, r: t.r + 60 })),
-      ...(world.def.features ?? []).map((f) => ({ x: f.x, z: f.z, r: f.r + 25 })),
-    ]
-    const style = styles[i] ?? 'crown'
-    const cc = buildCityCountry(world, town, outerW, (a) => radiusAt(outerW.points!, town.x, town.z, a), style, mulberry32(9137 + i * 131), away, mobile)
-    group.add(countryMesh(cc, town.x, town.z, style))
-    for (const c of cc.cleared) cleared.push({ x: town.x + c.x, z: town.z + c.z, r: c.r })
-    for (const [x, y, z] of cc.smoke) smoke.push([town.x + x, cc.base + y, town.z + z])
+    const name = world.def.castles.find((c) => c.id === town.keep)?.name
+    steps.push({ label: name ? `Building ${name}` : 'Building the city', run: () => void group.add(buildOneCity(world, town, innerW, outerW, mobile, 4711 + i * 977)) })
+    steps.push({
+      label: 'Tilling the fields',
+      run: () => {
+        // Outside the walls: the gate towns and the farmland, clear of the other holdings, the other
+        // cities, the terrain features and whatever else must stay open.
+        const keep = new Set(world.def.castles.filter((c) => Math.hypot(c.x - town.x, c.z - town.z) < town.r + 20).map((c) => c.id))
+        const away = [
+          ...avoid,
+          ...world.def.castles.filter((c) => !keep.has(c.id)).map((c) => ({ x: c.x, z: c.z, r: holdingRadius(c) * 1.5 + 20 })),
+          ...world.towns.filter((t) => t !== town).map((t) => ({ x: t.x, z: t.z, r: t.r + 60 })),
+          ...(world.def.features ?? []).map((f) => ({ x: f.x, z: f.z, r: f.r + 25 })),
+        ]
+        const style = styles[i] ?? 'crown'
+        const cc = buildCityCountry(world, town, outerW, (a) => radiusAt(outerW.points!, town.x, town.z, a), style, mulberry32(9137 + i * 131), away, mobile)
+        group.add(countryMesh(cc, town.x, town.z, style))
+        for (const c of cc.cleared) cleared.push({ x: town.x + c.x, z: town.z + c.z, r: c.r })
+        for (const [x, y, z] of cc.smoke) smoke.push([town.x + x, cc.base + y, town.z + z])
+      },
+    })
   })
-  group.userData.cleared = cleared
-  group.userData.smoke = smoke
-  return group
+  return { group, steps }
 }
 
 const goldMat = applyVision(new THREE.MeshStandardMaterial({ color: 0xd9b24a, metalness: 0.75, roughness: 0.32, flatShading: true, vertexColors: true }))
@@ -372,6 +406,9 @@ function buildOneCity(world: World, town: TownDef, innerW: CityWall, outerW: Cit
       mark(c.x, c.z, r + 4)
     } else if (c.gate) mark(c.x, c.z, 70)
   }
+  // (Open gates with no holding in them: their gatehouses keep the same ground.)
+  for (const w of [innerW, outerW]) for (const [gx, gz] of w.gatePts ?? []) if (!world.def.castles.some((c) => c.gate && Math.hypot(c.x - gx, c.z - gz) < 40)) mark(gx, gz, 70)
+
   // Small squares where the lanes cross the middle ring, each with a fountain or a statue.
   const squares: { x: number; z: number; r: number; kind: 'fountain' | 'statue' | 'well' }[] = []
   for (let a = 0.15; a < Math.PI * 2; a += 0.4) {
@@ -652,14 +689,14 @@ function housePrototypes(rnd: () => number): Proto[] {
   ]
   for (const o of specs) {
     const k = pkit()
-    house(k, new Frame(0, 0, 0), { ...o, detail: 'high' }, rnd)
+    house(k, new Frame(0, 0, 0), { ...o }, rnd)
     out.push(proto(k, o.w, o.d, 'house'))
   }
   // Shops: awnings over the front, trestles with their wares.
   for (const [o, accent] of [[{ w: 7, d: 6, roof: 'tile', style: 'timber' }, 0xa8322a], [{ w: 6.5, d: 6, roof: 'slate', style: 'plaster' }, 0x2f4f9a], [{ w: 8, d: 6, roof: 'tile', style: 'stone' }, 0x3f6a3a]] as const) {
     const k = pkit()
     const f = new Frame(0, 0, 0)
-    house(k, f, { ...o, storeys: 2, detail: 'high' } as HouseOpts, rnd)
+    house(k, f, { ...o, storeys: 2 } as HouseOpts, rnd)
     f.put(k.accents, box(o.w * 0.85, 0.14, 2.4), 0xffffff, 0, 3.1, o.d / 2 + 1.1, { rx: 0.32 })
     for (const s of [-1, 1]) f.put(k.walls, box(0.16, 2.7, 0.16), PAL.timber, s * o.w * 0.4, 1.6, o.d / 2 + 2.2)
     f.put(k.walls, box(o.w * 0.65, 0.9, 1.1), PAL.timberL, 0, 1.3, o.d / 2 + 1.5)
@@ -670,27 +707,27 @@ function housePrototypes(rnd: () => number): Proto[] {
   // Gable-end to the street: the ridge runs back from the front.
   {
     const k = pkit()
-    house(k, new Frame(0, 0, Math.PI / 2), { w: 8, d: 5.5, storeys: 2, roof: 'tile', style: 'timber', detail: 'high' }, rnd)
+    house(k, new Frame(0, 0, Math.PI / 2), { w: 8, d: 5.5, storeys: 2, roof: 'tile', style: 'timber' }, rnd)
     out.push(proto(k, 5.5, 8, 'house'))
   }
   // An L: a house with a wing running back.
   {
     const k = pkit()
-    house(k, new Frame(0, 0, 0), { w: 8, d: 5.5, storeys: 2, roof: 'slate', style: 'stone', detail: 'high' }, rnd)
-    house(k, new Frame(-2.4, -5.2, Math.PI / 2), { w: 5.5, d: 4.5, storeys: 1, roof: 'slate', style: 'stone', detail: 'mid' }, rnd)
+    house(k, new Frame(0, 0, 0), { w: 8, d: 5.5, storeys: 2, roof: 'slate', style: 'stone' }, rnd)
+    house(k, new Frame(-2.4, -5.2, Math.PI / 2), { w: 5.5, d: 4.5, storeys: 1, roof: 'slate', style: 'stone' }, rnd)
     out.push(proto(k, 8, 10, 'house'))
   }
   // A terrace of three under one roof line.
   {
     const k = pkit()
-    for (let i = 0; i < 3; i++) house(k, new Frame(-5.6 + i * 5.6, 0, 0), { w: 5.5, d: 6, storeys: 2, roof: 'tile', style: i === 1 ? 'plaster' : 'timber', detail: 'high' }, rnd)
+    for (let i = 0; i < 3; i++) house(k, new Frame(-5.6 + i * 5.6, 0, 0), { w: 5.5, d: 6, storeys: 2, roof: 'tile', style: i === 1 ? 'plaster' : 'timber' }, rnd)
     out.push(proto(k, 16.8, 6, 'house'))
   }
   // An inn: big, jettied, its sign on a bracket, benches out front.
   {
     const k = pkit()
     const f = new Frame(0, 0, 0)
-    house(k, f, { w: 11, d: 8, storeys: 2, roof: 'tile', style: 'timber', detail: 'high', annex: true }, rnd)
+    house(k, f, { w: 11, d: 8, storeys: 2, roof: 'tile', style: 'timber', annex: true }, rnd)
     f.put(k.walls, box(0.18, 0.18, 2.4), PAL.iron, 4, 4.6, 4.8)
     f.put(k.accents, box(1.6, 1.3, 0.14), 0xffffff, 4, 3.7, 5.8)
     for (const u of [-3, 1.5]) {
@@ -704,7 +741,7 @@ function housePrototypes(rnd: () => number): Proto[] {
   {
     const k = pkit()
     const f = new Frame(0, 0, 0)
-    house(k, f, { w: 13, d: 8, storeys: 2, roof: 'slate', style: 'stone', detail: 'high', banner: true }, rnd)
+    house(k, f, { w: 13, d: 8, storeys: 2, roof: 'slate', style: 'stone', banner: true }, rnd)
     for (let i = 0; i < 5; i++) {
       const u = -5.2 + i * 2.6
       f.put(k.walls, cyl(0.32, 0.36, 3.2, 8), PAL.stoneL, u, 1.6, 5)
@@ -717,7 +754,7 @@ function housePrototypes(rnd: () => number): Proto[] {
   {
     const k = pkit()
     const f = new Frame(0, 0, 0)
-    house(k, f, { w: 8, d: 6.5, storeys: 1, roof: 'slate', style: 'stone', detail: 'high' }, rnd)
+    house(k, f, { w: 8, d: 6.5, storeys: 1, roof: 'slate', style: 'stone' }, rnd)
     f.put(k.walls, box(1.6, 10, 1.6), PAL.soot, 3, 5, -2.4)
     f.put(k.walls, box(1.5, 0.8, 0.7), PAL.iron, -1.5, 1.2, 4.4)
     f.put(k.walls, box(0.8, 0.8, 0.8), 0x4a3a2a, -1.5, 0.4, 4.4)
@@ -738,7 +775,7 @@ function housePrototypes(rnd: () => number): Proto[] {
   // A thatched cottage that the city grew round.
   {
     const k = pkit()
-    house(k, new Frame(0, 0, 0), { w: 7, d: 5.5, storeys: 1, roof: 'thatch', style: 'timber', detail: 'high', annex: true }, rnd)
+    house(k, new Frame(0, 0, 0), { w: 7, d: 5.5, storeys: 1, roof: 'thatch', style: 'timber', annex: true }, rnd)
     out.push(proto(k, 7, 5.5, 'house'))
   }
   {

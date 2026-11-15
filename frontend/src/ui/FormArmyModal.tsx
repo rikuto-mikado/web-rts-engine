@@ -1,4 +1,5 @@
 import { Castle as CastleIcon, Package, ChevronLeft, ChevronRight, Footprints, Hammer, Swords, X } from 'lucide-react'
+import { NIGHT_AFFINITY } from '../game/daylight'
 import { Glyph } from './Glyph'
 import { useRef, useState, type ReactNode } from 'react'
 import { ROYAL, PLAYER, SPY, SAPPERS, WARDENS, WALL_K, type GameEngine } from '../game/engine'
@@ -293,6 +294,9 @@ export function FormArmyModal({ engine, initialCastleId, initialTargetId, onClos
                         {cmd.weaknesses.map((t) => (
                           <span key={t} className="rounded-sm bg-ember-500/12 px-1.5 py-0.5 text-ember-300">{t}</span>
                         ))}
+                        {NIGHT_AFFINITY[cmd.key] && (
+                          <span className={`rounded-sm px-1.5 py-0.5 ${NIGHT_AFFINITY[cmd.key].mult > 1 ? 'bg-sky-500/12 text-sky-200' : 'bg-slate-500/15 text-slate-300'}`}>{NIGHT_AFFINITY[cmd.key].note}</span>
+                        )}
                         {(s.commanders[cmd.key]?.traits ?? []).map((t) => (
                           <span key={t} className="rounded-sm bg-gold-500/15 px-1.5 py-0.5 text-gold-200">★ {TRAIT_MAP.get(t)?.name}</span>
                         ))}

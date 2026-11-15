@@ -15,7 +15,7 @@ type Page = 'basics' | 'units' | 'formations' | 'field' | 'realm'
 const TOUCH: [string, string][] = [
   ['Tap', 'Select an army or castle'],
   ['Drag', 'Pan the map'],
-  ['Pinch / twist', 'Zoom and rotate'],
+  ['Pinch', 'Zoom (the map stays north-up)'],
   ['Thumb stick', 'Drive the selected army by hand: push harder to go faster; let go and it rolls to a halt. A quick tap turns the commander\'s view (low behind the army) on or off'],
   ['Drag the map', 'Look around freely; touch the stick again to return to the army'],
   ['Double-tap', 'March the selected army there: ground, castle, enemy, or your army to merge'],
@@ -29,7 +29,6 @@ const KEYS: [string, string][] = [
   ['Right-click', 'Order the selected army: move, attack a castle, intercept an enemy, merge into your army'],
   ['Drag / WASD', 'Pan the map'],
   ['Wheel', 'Zoom (closer tilts the view)'],
-  ['Q / E · middle-drag', 'Rotate'],
   ['C', 'Fly to your seat of power'],
   ['V', 'Switch between overhead and tilted view'],
   ['F', 'Muster a new army'],
@@ -101,7 +100,7 @@ function Basics() {
         <SectionTitle>How a war is won</SectionTitle>
         <ol className="space-y-2 text-[14px] leading-relaxed text-ink-300">
           {[
-            ['purse', 'Gold is the main limit. Take castles, buy free towns and expand them to grow it.'],
+            ['purse', 'Gold is the main limit. Castles are the realms\' own and few: take the enemy\'s, win over the free villages and holdings between the realms, and expand what you hold.'],
             ['swords', 'Muster armies from castles: a commander, a mix of troops and a formation.'],
             ['castle', 'Walls must be battered down before a garrison can be stormed. Engineers do it fastest.'],
             ['muster', 'A pulsing red ring is an enemy Great Host gathering. Strike before it unites.'],
@@ -113,7 +112,7 @@ function Basics() {
             ['crown', 'King Aldric rides with the Royal Guard: 520 steel-and-gold knights that can never be replaced. Armies within 350m of him fight harder and hold their nerve. If the Guard is destroyed, the war is lost.'],
             ['mask', 'Corvin Ashe, the spymaster, leads his Whisper Blades and nothing else; they hide on their own. In woods, thickets, river valleys, on a mountain\'s flank, in a hidden camp, or in rain, storm and snow they are concealed; on open ground in fair weather they pass as pilgrims and pedlars, which the enemy ignores but scouts, walls and watch posts see through from further off. They live off the land (never out of supply) and march 28% faster than other armies. Their first blow strikes 2.2x as hard (1.9x from disguise). Found out, they cannot hide again for 90 seconds. With his band selected, the enemy\'s watches show as red rings (orange: where a disguise is seen through), and the road is coloured green under cover, gold in disguise and red where they would be found. In disguise the enemy takes them for pilgrims with mules and carts; we see our own as they are, under an amber ring, their standard furled.'],
             ['dagger', 'The Whisper Blades: Ashe\'s own 130 knife-men, fixed like the Royal Guard (never reinforced; an abbey of yours can take them in to fill their ranks, for gold). Send them after an enemy army and they strike at its leader, not its ranks (the harder the foe, the closer its leaders are guarded): if the knife finds its mark, a commander is carried from the field and the host breaks; the Usurper Queen herself can fall (rarely, and every attempt makes her guard warier). Hidden, they are likelier to succeed; large hosts and seasoned commanders are harder. A failed strike costs about 30% of the band, but the knives in the camp still shake the host (morale -20). The odds of each strike show in Ashe\'s panel (Strike odds) and when sending them to intercept. After each strike they regroup for 150 seconds. They do not storm walls.'],
-            ['pick', 'Tamsin Holt leads the Night Sappers (90 Saboteurs) and nothing else. They hide by the same rules as the Blades, never run out of supply, and are useless in a fight; wiped out, they gather again 5 minutes later. They do the sabotage, not the Blades: with the Blades within 320m to cover them (set the Sappers to Follow the Blades) the work takes 8 seconds instead of 12 and the alarm goes up far less often (15% against 35%).'],
+            ['pick', 'Tamsin Holt leads the Night Sappers (90 Saboteurs) and nothing else. They hide by the same rules as the Blades, never run out of supply, and are useless in a fight; wiped out, they gather again 5 minutes later. They do the sabotage, not the Blades: with the Blades within 320m to cover them (set the Sappers to Follow the Blades) the work takes 8 seconds instead of 12 and the alarm goes up far less often (15% against 35%). Saboteurs are sappers too: with no engineers they can raise an Outrider Pavilion (a hidden camp; raised unseen, the enemy never learns of it) or a Supply Depot, lay stakes, pits, barricades and pitch, and pull down a bridge, but build no siege engines, forts or bridges.'],
             ['mask', 'Sabotage: the Night Sappers, unseen near an enemy castle or fieldwork, can Foul the Wells (garrison -12%, levies -40%), Fire the Granary (the garrison fights shaken for 3 minutes), Undermine the Postern (walls -30%, no mending for 3 minutes), Spoil a depot\'s Stores or Fire the Works. 12 seconds of work unseen; the alarm may go up afterwards.'],
             ['chapel', 'Sanctuary: one of your abbeys takes in the Royal Guard or one of our fixed bands (the Blades, the Sappers, the Wardens) standing there short of men: the wounded are nursed and lay brothers sworn to the Crown fill the ranks, for gold each man.'],
             ['castle', 'The Long Night: hold the King\'s royal city until dawn. The Endless Night pours without pause from the Great Rift before the city; every so often it erupts with whole hosts, fiends, wraith riders and, later, giants. Its battalions mass before the weakest gate (the bar at the bottom warns where) and go in together while others pin a second gate. The outer wall has five gatehouses and the inner three: a gate taken lets the dead into the ring behind it. Station armies at the gates, lay traps before them, keep the wards (they pay and raise men) and sally out to break the trebuchets. Lose the Citadel or the King and the city is lost.'],
@@ -121,7 +120,8 @@ function Basics() {
             ['mask', 'The Usurper has a spymaster too: Mother Sereth, the Grey Abbess, with her Grey Sisters (130, by the same rules as our Blades). They strike at our commanders (the King too: rarely, and every attempt makes his guard warier; the easier the war, the closer our leaders are guarded), rob our wagons, and cover Brother Gall\'s Rootcutters (the mirror of our Night Sappers), who lie up outside the castle a Great Host is marching on and open its postern. Walls, wardens\' keeps, outposts and scouts find them out; keep leaders inside big hosts and wagons guarded.'],
             ['eye', 'Rowan Fenwick, Warden of the March, leads the Wardens of the March (150 Outriders: mounted bowmen) and nothing else. They see nearly twice as far as any host, find hidden bands within 450m whether concealed or disguised (the Grey Sisters among them), and keep every enemy army they sight on our map for a minute. Poor in a stand-up fight; they storm no walls and never run out of supply. Across the lines Corrick Vane\'s Thorn Hunt does the same for the enemy: it rides with the Great Hosts and hunts our Whisper Blades, so ride it down with a host before sending the knives in.'],
             ['shield', 'The fixed bands fight in troops of their own, raised in no castle: the Royal Guard and the Thorn Guard are Household Knights, the Blades and the Sisters Assassins, the Sappers and the Rootcutters Saboteurs, the Wardens and the Hunt Outriders. They are never reinforced, but an abbey of ours fills their ranks for gold; wiped out, the Blades, the Sappers and the Wardens gather again 5 minutes later.'],
-            ['crown', 'War of the Three Crowns: a continent with three walled royal cities - the King\'s in the west, Queen Morwenna\'s in the north, and that of Vaelor the Sun Emperor (with his bronze-and-gold Solar Guard) in the east - each ringed by its vassal lords, the ruined Imperial Crossroads in its broken walls at the heart. The two rival crowns fight each other as well as you, and both lean on whoever grows strongest. A crown is shattered when its monarch falls or its Citadel is taken; shatter both to win. You lose only if the King falls and your Citadel is taken (or nothing of yours is left). No time limit. The Three Crowns panel at the bottom shows each crown\'s standing, castles and Citadel walls.'],
+            ['crown', 'War of the Three Crowns: a continent with three walled royal cities - the King\'s in the west, Queen Morwenna\'s in the north, and that of Vaelor the Sun Emperor (with his bronze-and-gold Solar Guard) in the east - each ringed by its vassal lords, and at the heart the Imperial Crossroads, the old empire\'s own walled city, its gates standing open and only its Citadel held. The two rival crowns fight each other as well as you, and both lean on whoever grows strongest. A crown is shattered when its monarch falls or its Citadel is taken; shatter both to win. You lose only if the King falls and your Citadel is taken (or nothing of yours is left). No time limit. The Three Crowns panel at the bottom shows each crown\'s standing, castles and Citadel walls.'],
+            ['crown', 'The Old Throne: from the 15th minute, whichever crown holds the Imperial Crossroads and keeps its monarch there (stationed, or within 160m and not fighting) for 3 minutes is crowned High Emperor and wins the war outright, the King included (and a rival\'s coronation loses it for you, even with the King alive). The count halts while the monarch is away or fighting, the Crossroads is besieged, or an enemy force of 60+ stands within 400m (the faint gold ring); it starts over when the Crossroads changes hands. While a count runs, every other crown throws its hosts at the Crossroads.'],
             ['crown', 'Across the lines rules Queen Morwenna, the Usurper, with her crimson Thorn Guard. She holds court in the enemy High Seat and rides out with some of the Great Hosts. Destroy her guard and the war is won. Where she was last seen shows on the map (a red crown) and in the War tab; scouts near her report her whereabouts.'],
           ].map(([icon, text]) => (
             <li key={text} className="flex gap-3">
@@ -253,6 +253,23 @@ function Field() {
         <p className="mt-2 text-[13px] text-ember-300/90">An empty outpost is burned by any enemy who stands on it for a few seconds. Keep one garrisoned.</p>
       </section>
       <section>
+        <SectionTitle>Food, granges and starving a castle out</SectionTitle>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Card>
+            <div className="mb-1 font-display text-[15px] font-bold text-gold-100"><Glyph name="sheaf" size={15} className="mr-1 -mt-0.5 text-gold-300" />Stores and granges</div>
+            <p className="text-[13.5px] leading-snug text-ink-300">
+              Every castle keeps stores of food: a few minutes for a full garrison (more for a bigger castle). The garrison and any troops stationed inside eat them. The castle's own fields feed a quarter of a full garrison while no enemy stands in them; the rest comes by wagon from a grange, the walled home farm with its great barn. Each realm's seat has one (take the seat and its grange comes with it, if its holders still had it). A grange sends a wagon every 20 seconds, while its barn holds grain, to the hungriest castle of whoever holds it, so the more castles, the thinner it is spread.
+            </p>
+          </Card>
+          <Card>
+            <div className="mb-1 font-display text-[15px] font-bold text-gold-100"><Glyph name="swords" size={15} className="mr-1 -mt-0.5 text-gold-300" />Taking granges, and hunger</div>
+            <p className="text-[13.5px] leading-snug text-ink-300">
+              A grange's barn fills at harvest (most in summer and autumn, nothing in winter). No soldiers keep it, only a long, low wall round its fields: an enemy band of 60 or more at the wall pulls it down (an 800-strong host in about 75 seconds, engineers far faster, horse slowest), unless the holders' troops stand within 300m; the wall mends once the attack stops. When it falls, the grange and its barn are the takers'. Guard yours with an army (Guard it, from the grange's panel). The holders' armies within 600m are fed from the barn: supplied, at half the upkeep. Empty stores mean hunger: the garrison wastes away, fights shaken, raises no levies and mends no walls; wasted to a third with an enemy at the gates, the castle opens them.
+            </p>
+          </Card>
+        </div>
+      </section>
+      <section>
         <SectionTitle>Supply depots and supply lines</SectionTitle>
         <div className="grid gap-3 sm:grid-cols-2">
           <Card>
@@ -268,6 +285,14 @@ function Field() {
             </p>
           </Card>
         </div>
+      </section>
+      <section>
+        <SectionTitle>Strongholds</SectionTitle>
+        <Card>
+          <p className="text-[13.5px] leading-snug text-ink-300">
+            A stronghold is a fortress built for war, not a lord's seat: no town and no fields. A dry ditch with a palisade and chevaux-de-frise, a curtain with squat bastions whose decks carry ballistas, mangonels and braziers, casemate barracks against the back of the walls, a great keep standing alone in the bailey, and round it the barracks and drill yard, the foundry and siege works, the warhorse stables, the granaries and the cistern. It fights, eats, raises troops and is taken like any castle. A realm's lesser holdings are strongholds and its seat is its only castle: in Conquest each realm holds its royal seat and two strongholds.
+          </p>
+        </Card>
       </section>
       <section>
         <SectionTitle>Holdings between the castles</SectionTitle>
@@ -385,6 +410,8 @@ function Realm() {
             ['storm', 'Storm', 'Archers nearly useless, everything slower.'],
             ['snow', 'Snow', 'Archers −20%, slower marches.'],
             ['clear', 'Clear', 'No penalties.'],
+            ['moon', 'Night', 'Twice a season. Sight shorter, archers −30%, marches −10%. Small camps in the open without fire vanish; ambushes, assassins and saboteurs do better. Columns on the march carry torches and are seen.'],
+            ['dusk', 'Dusk and dawn', 'Half a minute each. Nights are longest in winter, shortest in summer. Elowen and Vesk like the dark; Bran, Gorm and Hrolf do not.'],
           ].map(([icon, name, text]) => (
             <Card key={name}>
               <Glyph name={icon as GlyphName} size={26} className="text-gold-300" />
@@ -398,10 +425,6 @@ function Realm() {
         <Card>
           <div className="mb-1 font-display text-[15px] font-bold text-gold-100"><Glyph name="handshake" size={15} className="mr-1 -mt-0.5 text-gold-300" />Diplomacy</div>
           <p className="text-[13.5px] leading-snug text-ink-300">The Intrigue tab gathers it all: buy a truce with an enemy lord, or in Alliance War bribe one to change sides (lords under pressure are easier to turn); buy free towns; send envoys to villages within reach; and watch your infamy, which abbeys slowly pray away.</p>
-        </Card>
-        <Card>
-          <div className="mb-1 font-display text-[15px] font-bold text-gold-100"><Glyph name="crown" size={15} className="mr-1 -mt-0.5 text-gold-300" />Realm rank</div>
-          <p className="text-[13.5px] leading-snug text-ink-300">Every realm has a rank, shown under its castles and outposts. It rises with total military strength (garrisons and armies) and falls after heavy losses. Each rank makes all of a realm's castles grander. The top rank depends on the map size.</p>
         </Card>
         <Card>
           <div className="mb-1 font-display text-[15px] font-bold text-gold-100">★ Commanders</div>

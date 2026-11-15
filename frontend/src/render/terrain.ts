@@ -5,30 +5,44 @@ import { box, cone, cyl, merge, part, sphere } from './geo'
 import { applyVision } from './vision'
 import { inWoods } from './woods'
 
-export function buildTerrain(world: World): THREE.Mesh {
+/**
+ * The ground, in a few slices of work (heights and colours, a band of rows at a time) so the
+ * loading screen can draw between them; mesh() finishes it once every step has run.
+ */
+export function terrainBuild(world: World, parts: number): { steps: (() => void)[]; mesh: () => THREE.Mesh } {
   const seg = world.hRes - 1
   const geo = new THREE.PlaneGeometry(world.size, world.size, seg, seg)
   geo.rotateX(-Math.PI / 2)
   const pos = geo.attributes.position as THREE.BufferAttribute
   const colors = new Float32Array(pos.count * 3)
   const c: [number, number, number] = [0, 0, 0]
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i)
-    const z = pos.getZ(i)
-    pos.setY(i, world.heightAt(x, z))
-    world.colorAt(x, z, c)
-    colors[i * 3] = c[0]
-    colors[i * 3 + 1] = c[1]
-    colors[i * 3 + 2] = c[2]
+  const steps: (() => void)[] = []
+  const per = Math.ceil(pos.count / Math.max(1, parts))
+  for (let from = 0; from < pos.count; from += per) {
+    const to = Math.min(pos.count, from + per)
+    steps.push(() => {
+      for (let i = from; i < to; i++) {
+        const x = pos.getX(i)
+        const z = pos.getZ(i)
+        pos.setY(i, world.heightAt(x, z))
+        world.colorAt(x, z, c)
+        colors[i * 3] = c[0]
+        colors[i * 3 + 1] = c[1]
+        colors[i * 3 + 2] = c[2]
+      }
+    })
   }
-  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
-  geo.computeVertexNormals()
-  // Smooth shading (the painted ground breaks steep rock into facets and adds the micro-relief itself).
-  const mat = applyVision(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: false, roughness: 0.95, metalness: 0 }), '', true, true)
-  const mesh = new THREE.Mesh(geo, mat)
-  mesh.receiveShadow = true
-  mesh.name = 'terrain'
-  return mesh
+  const mesh = () => {
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+    geo.computeVertexNormals()
+    // Smooth shading (the painted ground breaks steep rock into facets and adds the micro-relief itself).
+    const mat = applyVision(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: false, roughness: 0.95, metalness: 0 }), '', true, true)
+    const m = new THREE.Mesh(geo, mat)
+    m.receiveShadow = true
+    m.name = 'terrain'
+    return m
+  }
+  return { steps, mesh }
 }
 
 /** A wide skirt of hills beyond the playable area so the world has no visible edge. */

@@ -1,4 +1,5 @@
-import { ChevronsLeft, ChevronsRight, CircleArrowUp, Castle as CastleIcon, Coins, Combine, Flag, Hammer, Handshake, House, Megaphone, Package, Scissors, Shield, Swords, Tent, Undo2, Users, X } from 'lucide-react'
+import { ChevronsLeft, ChevronsRight, Castle as CastleIcon, Coins, Combine, Flag, Hammer, Handshake, House, Megaphone, Package, Scissors, Shield, Swords, Tent, Undo2, Users, X } from 'lucide-react'
+import { NIGHT_AFFINITY } from '../game/daylight'
 import { Glyph } from './Glyph'
 import { STANCES } from '../game/convoyai'
 import type { GlyphName } from '../render/glyphs'
@@ -21,14 +22,14 @@ import {
   FEATURE_INFO,
   HOLDINGS,
   HOLDING_EFFECTS,
-  capacityForTier,
-  incomeForTier,
   type GameEngine,
 } from '../game/engine'
 import { COLUMN, FORMATIONS, FORMATION_ORDER } from '../game/formations'
-import { OUTPOST_KINDS } from '../game/outposts'
+import { OUTPOST_KINDS, type OutpostKind } from '../game/outposts'
 import { DOCTRINES, doctrineOf } from '../game/doctrines'
 import { RESOURCE, RESOURCE_STOCK } from '../game/countryside'
+import { GRANGE, STORES } from '../game/granary'
+import { TEMPLE } from '../game/sanctuary'
 import { TRAIT_MAP } from '../game/traits'
 import { fmt, roman, total, totalInt } from '../game/troops'
 import type { Army, Battle, Castle, Convoy, ConvoyStanceKind, Outpost, WorkJob } from '../game/types'
@@ -63,6 +64,7 @@ export function SelectionPanel({ engine, selection, onSelect, onFormArmy, toast 
             Sent by an ally to stand in {engine.castle((engine.state.aidCalls ?? []).find((c) => c.id === a.aidFor)?.castleId)?.name ?? 'a castle'} until the danger passes.
           </p>
         )}
+        <SacredBox engine={engine} army={a} />
         {a.vassalOf && (
           <p className="mt-3 text-[12.5px] leading-snug text-ink-400">
             Militia of {engine.castle(a.vassalOf)?.name ?? 'a vassal village'}. They act on their own: they go to help a besieged castle nearby and head home when the fighting is over.
@@ -86,6 +88,15 @@ export function SelectionPanel({ engine, selection, onSelect, onFormArmy, toast 
     return (
       <Shell onClose={close}>
         <SitePanel engine={engine} siteId={site.id} onSelect={onSelect} toast={toast} />
+      </Shell>
+    )
+  }
+  if (selection.kind === 'grange') {
+    const g = engine.grange(selection.id)
+    if (!g) return null
+    return (
+      <Shell onClose={close}>
+        <GrangePanel engine={engine} grangeId={g.id} onSelect={onSelect} toast={toast} />
       </Shell>
     )
   }
@@ -328,16 +339,23 @@ function ArmyHeader({ engine, army }: { engine: GameEngine; army: Army }) {
       )}
       {cmd && (cmd.strengths.length > 0 || cmd.weaknesses.length > 0) && (
         <div className="mt-2 flex flex-wrap gap-1 text-[12px]">
-          {cmd.strengths.map((t) => (
-            <span key={t} className="rounded bg-emerald-500/12 px-1.5 py-0.5 text-emerald-300">
-              {/^[+−-]/.test(t) ? t : `+ ${t}`}
-            </span>
-          ))}
+          {cmd.strengths.map((t) => {
+            // (The High King's blessing: a greater guard, a wider and stronger presence.)
+            const b = army.blessed ? t.replace(/\b520\b/, String(TEMPLE.guard)).replace('350m', `${TEMPLE.aura}m`).replace('+15%', '+20%').replace('-10%', '-15%') : t
+            return (
+              <span key={t} className="rounded bg-emerald-500/12 px-1.5 py-0.5 text-emerald-300">
+                {/^[+−-]/.test(b) ? b : `+ ${b}`}
+              </span>
+            )
+          })}
           {cmd.weaknesses.map((t) => (
             <span key={t} className="rounded bg-ember-500/12 px-1.5 py-0.5 text-ember-300">
               {/^[+−-]/.test(t) ? t : `− ${t}`}
             </span>
           ))}
+          {NIGHT_AFFINITY[cmd.key] && (
+            <span className={`rounded px-1.5 py-0.5 ${NIGHT_AFFINITY[cmd.key].mult > 1 ? 'bg-sky-500/12 text-sky-200' : 'bg-slate-500/15 text-slate-300'}`}>{NIGHT_AFFINITY[cmd.key].note}</span>
+          )}
         </div>
       )}
       <div className="mt-3 grid grid-cols-3 gap-1.5 text-center">
@@ -458,10 +476,11 @@ function PlayerArmy({ engine, army, toast, onSelect }: { engine: GameEngine; arm
         <div className="mb-3 rounded-sm border border-gold-400/40 bg-gold-500/10 px-2.5 py-2 text-[12.5px] leading-snug">
           <div className="font-bold text-gold-200"><Glyph name="crown" size={13} className="mr-1 -mt-0.5 inline text-gold-300" />The Royal Guard</div>
           <p className="mt-0.5 text-ink-300">
-            Household knights from the homeland: never reinforced, no upkeep. In the field the King's presence steadies every friendly army within 350m (+15% damage, -10% losses, morale holds). Allies answer his summons more readily; envoys near him do better. If the Guard is destroyed, the war is lost. In a castle it waits in the keep and rides out by the far gate if the castle falls.
+            Household knights from the homeland: never reinforced, no upkeep. In the field the King's presence steadies every friendly army within {army.blessed ? `${TEMPLE.aura}m (blessed: +20% damage, -15% losses, morale holds firm)` : '350m (+15% damage, -10% losses, morale holds)'}. Allies answer his summons more readily; envoys near him do better. If the Guard is destroyed, the war is lost. In a castle it waits in the keep and rides out by the far gate if the castle falls.
           </p>
         </div>
       )}
+      {army.royal && army.faction === PLAYER && <TempleBox engine={engine} army={army} toast={toast} />}
       {battle && <BattleBox engine={engine} battle={battle} />}
 
       <div className="parchment mt-3 flex items-center gap-2 rounded-sm px-3 py-1.5">
@@ -695,7 +714,7 @@ function CastleHeader({ engine, castle }: { engine: GameEngine; castle: Castle }
             {castle.name}
           </h3>
           <p className="text-xs text-ink-300">
-            {castle.subtitle} · Tier {castle.tier}
+            {castle.subtitle}
           </p>
           <p className={`truncate text-[13px] ${color}`}>{rel === 'self' ? 'Your castle' : engine.factionName(castle.faction)}</p>
         </div>
@@ -718,9 +737,6 @@ function PlayerCastle({ engine, castle, onFormArmy, toast, onSelect }: { engine:
   const [batch, setBatch] = useState(50)
   const n = total(castle.garrison)
   const cap = engine.capacity(castle)
-  const gold = engine.state.factions[PLAYER].gold
-  const upCost = engine.upgradeCostOf(castle)
-  const maxTier = engine.maxTier(castle)
   return (
     <div>
       <CastleHeader engine={engine} castle={castle} />
@@ -745,32 +761,12 @@ function PlayerCastle({ engine, castle, onFormArmy, toast, onSelect }: { engine:
           <span className="w-16 text-ink-400">Income</span>
           <span className="flex-1 text-gold-300 tabular-nums">+{engine.castleIncome(castle).toFixed(1)} gold/s</span>
         </div>
+        <StoresRows engine={engine} castle={castle} exact onSelect={onSelect} />
       </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-1.5">
-        <button className="btn btn-gold" onClick={() => onFormArmy(castle.id)} disabled={n < 10}>
-          <Swords size={14} /> Muster army
-        </button>
-        <button
-          className="btn"
-          disabled={castle.tier >= maxTier || gold < upCost || !!castle.battleId}
-          onClick={() => {
-            const err = engine.upgradeCastle(castle.id)
-            if (err) toast(err)
-          }}
-          title={
-            castle.village
-              ? castle.tier >= maxTier
-                ? 'Already walled in stone'
-                : 'Replace the palisade with a stone wall and towers: stronger walls, more room, a little more income'
-              : castle.tier >= maxTier
-                ? 'Already a citadel'
-                : `Tier ${castle.tier + 1}: stronger walls, +${(incomeForTier(castle.tier + 1) - incomeForTier(castle.tier)).toFixed(0)} gold/s, +${capacityForTier(castle.tier + 1) - cap} capacity, faster manpower`
-          }
-        >
-          <CircleArrowUp size={14} /> {castle.tier >= maxTier ? (castle.village ? 'Stone walls' : 'Max tier') : castle.village ? `Stone wall · ${fmt(upCost)}` : `Expand · ${fmt(upCost)}`}
-        </button>
-      </div>
+      <button className="btn btn-gold mt-3 w-full" onClick={() => onFormArmy(castle.id)} disabled={n < 10}>
+        <Swords size={14} /> Muster army
+      </button>
       <AidRow engine={engine} castle={castle} toast={toast} onSelect={onSelect} />
 
       <section className="mt-4">
@@ -855,6 +851,9 @@ function OtherCastle({ engine, castle, onFormArmy, toast }: { engine: GameEngine
         </span>
       </div>
       {k.troops ? <Composition engine={engine} troops={k.troops} /> : <p className="text-[12.5px] text-ink-400">Only a rumour. Send scouts to learn its true strength and make-up.</p>}
+      <div className="mt-2 space-y-1.5 text-xs">
+        <StoresRows engine={engine} castle={castle} exact={engine.seesExactly(castle)} />
+      </div>
       {hostile && castle.faction !== 'neutral' && <SendScouts engine={engine} targetId={castle.id} x={castle.x} z={castle.z} toast={toast} />}
       {hostile && (
         <>
@@ -925,13 +924,16 @@ const FIELD_JOBS: WorkJob[] = ['stakes', 'pit', 'barricade', 'pitch', 'bridge', 
 function EngineersPanel({ engine, army, toast }: { engine: GameEngine; army: Army; toast: (m: string) => void }) {
   const [tab, setTab] = useState<'outposts' | 'siege' | 'field' | null>(null)
   const eng = army.troops.engineers ?? 0
-  if (eng < 10) return null
+  // (Saboteurs alone can do the quiet works and raise a hidden camp or a depot, not siege engines.)
+  const sab = army.troops.saboteurs ?? 0
+  if (eng < 10 && sab < 10) return null
+  const siege = eng >= 10
   const carried = (['tower', 'ram', 'mantlet'] as const).filter((k) => army.engines?.[k]).map((k) => WORKS[k].name)
   const working = army.order.type === 'work' ? army.order : null
   const building = army.order.type === 'build' ? engine.outpost(army.order.outpostId) : null
   const tabs = [
     { key: 'outposts', label: 'Outposts', icon: <Tent size={13} /> },
-    { key: 'siege', label: 'Siege engines', icon: <CastleIcon size={13} /> },
+    ...(siege ? [{ key: 'siege', label: 'Siege engines', icon: <CastleIcon size={13} /> } as const] : []),
     { key: 'field', label: 'Field works', icon: <Hammer size={13} /> },
   ] as const
   return (
@@ -944,16 +946,16 @@ function EngineersPanel({ engine, army, toast }: { engine: GameEngine; army: Arm
           <span className="tabular-nums text-ink-300">{Math.round((working ? working.progress : building?.progress ?? 0) * 100)}%</span>
         </div>
       )}
-      <div className="grid grid-cols-3 gap-1">
+      <div className={`grid gap-1 ${siege ? 'grid-cols-3' : 'grid-cols-2'}`}>
         {tabs.map((t) => (
           <button key={t.key} className={`btn px-1 text-[12px] ${tab === t.key ? 'btn-gold' : ''}`} onClick={() => setTab(tab === t.key ? null : t.key)}>
             {t.icon} {t.label}
           </button>
         ))}
       </div>
-      {tab === 'outposts' && <BuildOutpostButton engine={engine} army={army} toast={toast} onDone={() => setTab(null)} />}
+      {tab === 'outposts' && <BuildOutpostButton engine={engine} army={army} toast={toast} onDone={() => setTab(null)} only={siege ? undefined : SAPPERS.outposts} />}
       {tab === 'siege' && <WorksList engine={engine} army={army} toast={toast} jobs={SIEGE_JOBS} onDone={() => setTab(null)} />}
-      {tab === 'field' && <WorksList engine={engine} army={army} toast={toast} jobs={FIELD_JOBS} onDone={() => setTab(null)} />}
+      {tab === 'field' && <WorksList engine={engine} army={army} toast={toast} jobs={eng >= 10 ? FIELD_JOBS : SAPPERS.works} onDone={() => setTab(null)} />}
     </div>
   )
 }
@@ -982,7 +984,9 @@ function WorksList({ engine, army, toast, jobs, onDone }: { engine: GameEngine; 
                 <span className="text-gold-100">{def.name}</span>
                 <span className="text-gold-300">{def.cost ? `${def.cost}g` : 'free'}</span>
               </span>
-              <span className="block text-[11.5px] font-bold text-gold-300/70">{def.engineers}+ Engineers · ~{def.seconds}s</span>
+              <span className="block text-[11.5px] font-bold text-gold-300/70">
+                {def.engineers}+ {SAPPERS.works.includes(o.job) ? 'Engineers or Saboteurs' : 'Engineers'} · ~{def.seconds}s
+              </span>
               <span className={`mt-0.5 block text-[12px] leading-snug ${o.ok ? 'text-ink-300' : 'text-ember-300'}`}>{o.reason ?? def.description}</span>
             </span>
           </button>
@@ -992,13 +996,13 @@ function WorksList({ engine, army, toast, jobs, onDone }: { engine: GameEngine; 
   )
 }
 
-function BuildOutpostButton({ engine, army, toast, onDone }: { engine: GameEngine; army: Army; toast: (m: string) => void; onDone: () => void }) {
+function BuildOutpostButton({ engine, army, toast, onDone, only }: { engine: GameEngine; army: Army; toast: (m: string) => void; onDone: () => void; only?: OutpostKind[] }) {
   const reveal = useRevealOnce()
   const setOpen = (v: boolean) => {
     if (!v) onDone()
   }
   if (army.order.type === 'build') return null
-  const opts = engine.outpostOptions(army.id)
+  const opts = engine.outpostOptions(army.id).filter((o) => !only || only.includes(o.kind))
   const open = true
   return (
     <div className="mt-1.5">
@@ -1109,8 +1113,11 @@ function ConvoyPanel({ engine, convoyId, onSelect, toast }: { engine: GameEngine
   if (!w) return null
   if (w.race) return <GoldWagonPanel engine={engine} w={w} onSelect={onSelect} toast={toast} />
   const rel = engine.relation(w.faction)
-  const to = engine.outpost(w.outpostId)
-  const from = engine.castle(w.fromCastleId)
+  // A depot's supply wagons go from a castle to the depot; a grange's grain, a holding's tribute or a mine's gold go to a castle.
+  const toCastle = w.kind === 'gold'
+  const to = toCastle ? engine.castle(w.fromCastleId) : engine.outpost(w.outpostId)
+  const from = toCastle ? (w.grangeId ? engine.grange(w.grangeId) : undefined) : engine.castle(w.fromCastleId)
+  const title = w.grain ? 'Grain wagon' : w.manpower ? 'Abbey wagon' : toCastle ? 'Gold wagon' : 'Supply wagons'
   const hostile = engine.isHostile(w.faction, PLAYER)
   const raiders = hostile
     ? engine.state.armies
@@ -1126,21 +1133,27 @@ function ConvoyPanel({ engine, convoyId, onSelect, toast }: { engine: GameEngine
           <Package size={22} />
         </span>
         <div className="min-w-0">
-          <h3 className="panel-title truncate">Supply wagons</h3>
-          <p className={`text-[13px] ${rel === 'self' ? 'text-royal-300' : rel === 'ally' ? 'text-teal-300' : 'text-ember-300'}`}>{rel === 'self' ? 'Your supply line' : engine.factionName(w.faction)}</p>
+          <h3 className="panel-title truncate">{title}</h3>
+          <p className={`text-[13px] ${rel === 'self' ? 'text-royal-300' : rel === 'ally' ? 'text-teal-300' : 'text-ember-300'}`}>{rel === 'self' ? (toCastle ? 'Ours' : 'Your supply line') : engine.factionName(w.faction)}</p>
         </div>
       </div>
       <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[13px]">
-        <dt className="text-ink-400">From</dt>
-        <dd>{from?.name ?? 'Unknown'}</dd>
+        {from && (
+          <>
+            <dt className="text-ink-400">From</dt>
+            <dd>{from.name}</dd>
+          </>
+        )}
         <dt className="text-ink-400">To</dt>
         <dd>{to?.name ?? 'Unknown'}</dd>
         <dt className="text-ink-400">Load</dt>
-        <dd>+{w.cargo}% stores for the depot</dd>
+        <dd>{w.grain ? 'Grain: food for 1,000 men for three minutes' : w.manpower ? `${w.manpower} volunteers` : toCastle ? `${w.gold ?? 0} gold` : `+${w.cargo}% stores for the depot`}</dd>
       </dl>
       <p className="mt-3 text-[13px] leading-snug text-ink-400">
         {hostile
-          ? 'Unarmed. Any army that reaches the wagons seizes them, and the depot they feed runs short of stores.'
+          ? w.grain
+            ? 'Unarmed. Any army that reaches it seizes the grain, and the castle it was bound for goes hungrier.'
+            : 'Unarmed. Any army that reaches the wagons seizes them, and the depot they feed runs short of stores.'
           : 'Unarmed. If enemies reach the wagons they seize them; keep the road clear.'}
       </p>
       {hostile && (
@@ -2325,6 +2338,194 @@ function SitePanel({ engine, siteId, onSelect, toast }: { engine: GameEngine; si
   )
 }
 
+const clockText = (secs: number) => `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, '0')}`
+
+/**
+ * A castle's food: its stores (and how long they last at this garrison), its fields, and the grange
+ * that feeds it. An enemy castle's stores are known only to troops close by.
+ */
+function StoresRows({ engine, castle, exact, onSelect }: { engine: GameEngine; castle: Castle; exact: boolean; onSelect?: (s: Selection, focus?: boolean) => void }) {
+  const info = engine.storesInfo(castle)
+  if (!info) return null
+  const share = info.stores / Math.max(1, info.max)
+  const color = info.starving ? '#de5f45' : share < STORES.low ? '#e0a84a' : '#c9a24a'
+  const g = info.grange
+  const lost = !!g && g.faction !== castle.faction
+  return (
+    <>
+      <div className="flex items-center gap-2" title="Food for the garrison and the troops stationed inside. Its own fields bring a little in; its grange's wagons the rest.">
+        <span className="w-16 text-ink-400">Stores</span>
+        {exact ? (
+          <>
+            <Bar value={info.stores} max={info.max} color={color} height={5} />
+            <span className={`w-20 text-right tabular-nums ${info.starving ? 'font-bold text-ember-300' : ''}`}>
+              {info.starving ? 'STARVING' : Number.isFinite(info.left) ? `${clockText(info.left)} left` : 'steady'}
+            </span>
+          </>
+        ) : (
+          <span className="flex-1 text-ink-500">Unknown: our troops must come close</span>
+        )}
+      </div>
+      {exact && (
+        <div className="flex items-start gap-2 text-[12px] leading-snug">
+          <span className="w-16 shrink-0 text-ink-500">Food</span>
+          <span className="flex-1 text-ink-400">
+            Feeding {fmt(info.eat)} men ·{' '}
+            {info.held ? <span className="text-ember-300">enemy in its fields</span> : <>its fields feed {fmt(info.gain)}</>}
+            {info.inbound > 0 && <> · grain on the road</>}
+            {g && (
+              <>
+                {' '}
+                ·{' '}
+                {onSelect ? (
+                  <button className="underline decoration-dotted underline-offset-2 hover:text-gold-200" onClick={() => onSelect({ kind: 'grange', id: g.id }, true)}>
+                    {g.name}
+                  </button>
+                ) : (
+                  g.name
+                )}
+                {lost && <span className="text-ember-300"> (held by {g!.faction === 'neutral' ? 'others' : engine.factionName(g!.faction)})</span>}
+              </>
+            )}
+          </span>
+        </div>
+      )}
+    </>
+  )
+}
+
+/** A grange: who holds it, what it feeds, and armies to send to take it (or to guard it). */
+function GrangePanel({ engine, grangeId, onSelect, toast }: { engine: GameEngine; grangeId: string; onSelect: Props['onSelect']; toast: (m: string) => void }) {
+  const g = engine.grange(grangeId)
+  if (!g) return null
+  const owner = engine.grangeOwner(g)
+  const home = engine.castle(g.castleId)
+  const hostile = engine.isHostile(owner, PLAYER)
+  const attacked = engine.state.time - (g.assaultAt ?? -999) < 3
+  const feeds = engine.grangeFeeds(g)
+  const season = engine.season()
+  const harvest = GRANGE.harvest[season] ?? 0
+  const fedArmies = engine.state.armies.filter((a) => engine.grangeFeeding(a) === g)
+  const t = engine.state.time
+  const near = engine.state.armies
+    .filter((a) => a.faction === PLAYER && a.status !== 'retreating' && !a.royal && !a.vassalOf && !a.blades && !a.wardens && !engine.isSpyBand(a))
+    .map((a) => ({ a, d: Math.hypot(a.x - g.x, a.z - g.z) }))
+    .sort((x, y) => x.d - y.d)
+    .slice(0, 4)
+  const going = engine.state.armies.filter((a) => a.faction === PLAYER && a.takeGrangeId === g.id)
+  return (
+    <div>
+      <div className="flex items-center gap-3 pr-6">
+        <span className="grid size-12 place-items-center rounded-sm" style={{ background: 'linear-gradient(160deg, #c9a24a, #5a4420)' }}>
+          <Glyph name="sheaf" size={26} className="text-gold-100" />
+        </span>
+        <div className="min-w-0">
+          <h3 className="panel-title truncate">{g.name}</h3>
+          <p className="text-[13px] text-ink-400">
+            {owner === 'neutral' ? 'Free' : owner === PLAYER ? 'Ours' : `Held by ${engine.factionName(owner)}`} · the home farm of{' '}
+            {home ? (
+              <button className="underline decoration-dotted underline-offset-2 hover:text-gold-200" onClick={() => onSelect({ kind: 'castle', id: home.id }, true)}>
+                {home.name}
+              </button>
+            ) : (
+              'a lost castle'
+            )}
+          </p>
+        </div>
+      </div>
+      <div className="mt-3 space-y-1.5 text-xs">
+        <div className="flex items-center gap-2" title="The long, low wall round its fields. Pulled down to nothing, the grange is taken; it mends once the attack stops.">
+          <span className={`w-14 ${attacked ? 'text-ember-300' : 'text-ink-400'}`}>Wall</span>
+          <Bar value={g.walls} max={GRANGE.walls} color={attacked ? '#de5f45' : '#b8ae98'} height={5} />
+          <span className="w-28 text-right whitespace-nowrap tabular-nums">{attacked ? 'UNDER ATTACK' : `${Math.round((g.walls / GRANGE.walls) * 100)}%`}</span>
+        </div>
+        <div className="flex items-center gap-2" title="Grain in the barn: it fills at harvest (summer and autumn most, winter not at all); the wagons and the armies it feeds draw on it.">
+          <span className="w-14 text-ink-400">Barn</span>
+          <Bar value={g.barn} max={GRANGE.barnMax} color="#c9a24a" height={5} />
+          <span className="w-28 text-right whitespace-nowrap tabular-nums">{harvest ? `${season} +${fmt(harvest)}` : 'Winter: none'}</span>
+        </div>
+      </div>
+      <p className="mt-3 text-[13px] text-ink-300">
+        {feeds.length
+          ? g.barn < GRANGE.cargo
+            ? 'The barn is empty: no wagons until the next harvest comes in.'
+            : `A wagon of grain every ${GRANGE.every}s (food for 1,000 men for three minutes) to the hungriest castle it feeds${g.nextWagonAt > t ? `; the next in ${Math.ceil(g.nextWagonAt - t)}s` : ''}.`
+          : 'Its grain has nowhere to go: its holders have no castle to feed.'}
+      </p>
+      {feeds.length > 0 && (
+        <section className="mt-3">
+          <SectionTitle>{`Feeds ${feeds.length} castle${feeds.length === 1 ? '' : 's'}`}</SectionTitle>
+          <div className="space-y-1">
+            {feeds.slice(0, 6).map((c) => {
+              const info = engine.storesInfo(c)
+              const exact = c.faction === PLAYER || engine.seesExactly(c)
+              return (
+                <button key={c.id} className="well flex w-full items-center gap-2 rounded-sm px-2.5 py-1.5 text-[12.5px] hover:brightness-125" onClick={() => onSelect({ kind: 'castle', id: c.id }, true)}>
+                  <span className="w-28 truncate text-left">{c.name}</span>
+                  {info && exact ? <Bar value={info.stores} max={info.max} color={info.starving ? '#de5f45' : '#c9a24a'} height={4} /> : <span className="flex-1 text-left text-ink-500">stores unknown</span>}
+                </button>
+              )
+            })}
+            {feeds.length > 6 && <p className="text-[12px] text-ink-500">and {feeds.length - 6} more</p>}
+          </div>
+        </section>
+      )}
+      {fedArmies.length > 0 && <p className="mt-2 text-[12.5px] text-ink-300">Feeding {fedArmies.map((a) => a.name).join(', ')} (supplied, half the upkeep).</p>}
+      <p className="mt-2 text-[12.5px] leading-snug text-ink-400">
+        No soldiers keep a grange, only its wall. An enemy band of {GRANGE.takeMen} or more at the wall pulls it down (engineers and foot fastest, horse slowest), unless the holders' troops stand within {GRANGE.guardReach}m; when it falls, the grange and its barn are theirs. The holders' armies within {GRANGE.feedReach}m are fed from the barn: supplied, at half the upkeep.
+      </p>
+      {hostile && (
+        <section className="mt-3">
+          <SectionTitle>Send an army to take it</SectionTitle>
+          {going.length > 0 && <p className="mb-1 text-[12.5px] text-gold-300">{going.map((a) => a.name).join(', ')} on the way.</p>}
+          {near.length === 0 && <p className="text-[13px] text-ink-500">No army in the field to send. Muster one from a castle.</p>}
+          <div className="space-y-1">
+            {near.map(({ a, d }) => (
+              <button
+                key={a.id}
+                className="well flex w-full items-center justify-between rounded-sm px-2.5 py-1.5 text-[13px] hover:brightness-125 disabled:opacity-50"
+                disabled={totalInt(a.troops) < GRANGE.takeMen}
+                title={totalInt(a.troops) < GRANGE.takeMen ? `Too few: it takes ${GRANGE.takeMen} men` : undefined}
+                onClick={() => {
+                  const err = engine.orderTake(a.id, g.id)
+                  toast(err ?? `${a.name} marches to take ${g.name}.`)
+                }}
+              >
+                <span>{a.name}</span>
+                <span className="text-ink-400 tabular-nums">
+                  {fmt(totalInt(a.troops))} · wall down in ~{Math.ceil(g.walls / Math.max(0.1, engine.grangeSiege(a)))}s · {Math.round(d)}m
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+      {owner === PLAYER && (
+        <section className="mt-3">
+          <SectionTitle>Guard it</SectionTitle>
+          {near.length === 0 && <p className="text-[13px] text-ink-500">No army in the field to send. Muster one from a castle.</p>}
+          <div className="space-y-1">
+            {near.map(({ a, d }) => (
+              <button
+                key={a.id}
+                className="well flex w-full items-center justify-between rounded-sm px-2.5 py-1.5 text-[13px] hover:brightness-125"
+                onClick={() => {
+                  // A standing guard over the farm: it falls on any enemy that comes near, then back to its post.
+                  const err = engine.setStance(a.id, { kind: 'guard', x: g.x, z: g.z, r: GUARD_RADII[1] })
+                  toast(err ?? `${a.name} stands guard over ${g.name}.`)
+                }}
+              >
+                <span>{a.name}</span>
+                <span className="text-ink-400 tabular-nums">{Math.round(d)}m</span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  )
+}
+
 /** Summon allied lords to one of your armies or castles, then march on this castle together. */
 function SummonBox({ engine, castle, toast }: { engine: GameEngine; castle: Castle; toast: (m: string) => void }) {
   const mine = engine.state.armies.filter((a) => a.faction === PLAYER && a.status !== 'retreating')
@@ -2393,6 +2594,75 @@ function Stat({ label, value, accent }: { label: string; value: string; accent?:
     <div className="rounded-md well py-1.5">
       <div className="text-[11px] tracking-wider text-ink-400 uppercase">{label}</div>
       <div className={`text-sm font-bold tabular-nums ${accent ? 'text-gold-300' : ''}`}>{value}</div>
+    </div>
+  )
+}
+
+const clock = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`
+
+/** The Sanctuary of the High King, as the King sees it: when it opens, the prayer, the answer. */
+function TempleBox({ engine, army, toast }: { engine: GameEngine; army: Army; toast: (m: string) => void }) {
+  const sa = engine.state.sanctuary
+  if (!sa) return null
+  const pct = Math.floor((sa.progress / TEMPLE.prayer) * 100)
+  const far = Math.hypot(army.x - sa.x, army.z - sa.z) > TEMPLE.reach
+  const ride = () => {
+    engine.orderArmy(army.id, { type: 'move', x: sa.x, z: sa.z + TEMPLE.reach * 0.5 })
+    toast('The King rides for the Sanctuary of the High King.')
+  }
+  return (
+    <div className="holy-box mb-3 rounded-sm px-2.5 py-2 text-[12.5px] leading-snug">
+      <div className="holy-title flex items-center gap-1.5">
+        <Glyph name="sun" size={14} className="text-[#f0c460]" />
+        Sanctuary of the High King
+      </div>
+      {sa.blessed ? (
+        <p className="mt-1 text-[#d8e4f4]">
+          The High King has answered. The Royal Guard is {TEMPLE.guard} strong, and the King&apos;s presence reaches {TEMPLE.aura}m.
+          {sa.over ? '' : ` The High King's paladins ride until ${TEMPLE.castles} castles are ours (${sa.captures} so far).`}
+        </p>
+      ) : (
+        <>
+          <p className="mt-1 text-[#c8d2e0]">
+            {sa.praying
+              ? 'The King kneels before the flame. Keep him out of the fighting until the prayer is done.'
+              : `Once in this war the King may pray here: ${TEMPLE.prayer} seconds within ${TEMPLE.reach}m, out of any fight${sa.progress > 0 ? ' (he can take up the prayer where he left it)' : ''}. The High King grants a stronger guard and presence, and sends his paladins until ${TEMPLE.castles} enemy castles are ours.`}
+          </p>
+          {(sa.praying || sa.progress > 0) && (
+            <div className="mt-1.5 flex items-center gap-2">
+              <div className="holy-bar flex-1">
+                <i style={{ width: `${pct}%` }} />
+              </div>
+              <span className="font-display text-[11px] font-bold tracking-[0.1em] text-[#dcecff] tabular-nums">{sa.praying ? `PRAYING ${pct}%` : `${pct}%`}</span>
+            </div>
+          )}
+          {far && (
+            <button className="btn btn-gold mt-2 w-full justify-center" onClick={ride}>
+              <Glyph name="sun" size={14} /> Ride to the Sanctuary
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+/** A band of the High King's paladins: whom they serve, and how far their work has gone. */
+function SacredBox({ engine, army }: { engine: GameEngine; army: Army }) {
+  const sa = engine.state.sanctuary
+  if (!army.sacred || !sa) return null
+  const left = Math.max(0, (sa.blessedAt ?? 0) + TEMPLE.limit - engine.state.time)
+  const target = army.order.type === 'attack' ? engine.castle(army.order.castleId)?.name : null
+  return (
+    <div className="holy-box mt-3 rounded-sm px-2.5 py-2 text-[12.5px] leading-snug">
+      <div className="holy-title flex items-center gap-1.5"><Glyph name="sun" size={14} className="text-[#f0c460]" />Paladins of the High King</div>
+      <p className="mt-1 text-[#c8d2e0]">
+        Led by {army.captainName}, one of the five Justices. They ride for the nearest enemy castle{target ? ` (now ${target})` : ''}; a castle they take is ours. They need no supply, pay no upkeep and never break.
+      </p>
+      <div className="mt-1.5 flex items-center justify-between font-display text-[11px] font-bold tracking-[0.1em] text-[#dcecff] tabular-nums">
+        <span>CASTLES {sa.captures}/{TEMPLE.castles}</span>
+        <span>HOME IN {clock(left)}</span>
+      </div>
     </div>
   )
 }

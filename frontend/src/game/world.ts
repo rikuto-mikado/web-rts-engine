@@ -55,6 +55,19 @@ export function wardReach(id: string): number {
   return ring ? ring + 7 : 62
 }
 
+/**
+ * The sizes of castle (a castle's tier). Fixed by the map, never built up:
+ *
+ *   1  a motte and bailey (timber)          3  a lord's seat
+ *   2  a stronghold, or a small castle      4  an alliance leader's High Seat
+ *   5  a royal seat (the King's, the Usurper's, the Sun Emperor's)
+ *
+ * The size sets the ground it covers and its walls, garrison room, income, manpower and stores
+ * (engine.ts: wallsForTier, capacityForTier, incomeForTier, ...). Villages keep tiers of their own
+ * (1 palisade, 2 stone wall, which they raise themselves once they are someone's).
+ */
+export const CASTLE_SIZES = { motte: 1, stronghold: 2, lord: 3, high: 4, royal: ROYAL_SEAT_TIER } as const
+
 export function castleRadius(tier: number): number {
   // A royal seat covers about 1.75x the ground of a lord's greatest castle.
   if (tier >= ROYAL_SEAT_TIER) return (34 + 4 * 12) * CASTLE_SCALE * 1.32
@@ -387,9 +400,14 @@ export class World {
       h = lerp(level + this.detail.noise(x * 0.01, z * 0.01) * 1.2, h, smoothstep(town.r + 40, town.r + 260, d))
     }
 
+    // Escarpments: the tableland to the north stands higher, its edge a cliff; ravines climb it.
+    // (Before the castles: a castle on the tableland, or on the long slope up to it, is levelled
+    // on top of the rise, never buried in it.)
+    for (const e of this.def.escarpments ?? []) h += this.escarpRise(e, x, z)
+
     // Castles sit on flattened plateaus, shaped like their walls (a hill castle on its hilltop).
     for (const c of natural ? [] : this.def.castles) {
-      const r = castleRadius(Math.max(c.tier, Math.min(4, c.tier + 1)))
+      const r = castleRadius(c.tier)
       const d = Math.hypot(x - c.x, z - c.z)
       if (d < r * 2.4) {
         const shape = this.walls.get(c.id)
@@ -429,9 +447,6 @@ export class World {
         h = lerp(h, t, smoothstep(-66, -22, sO))
       }
     }
-
-    // Escarpments: the tableland to the north stands higher, its edge a cliff; ravines climb it.
-    for (const e of this.def.escarpments ?? []) h += this.escarpRise(e, x, z)
 
     const { d: dr, width } = this.distToRiver(x, z)
     const half = width * 0.5
@@ -606,7 +621,7 @@ export class World {
     if (f <= 0) return 0
     for (const c of this.def.castles) {
       const d = Math.hypot(x - c.x, z - c.z)
-      const R = castleRadius(Math.max(c.tier, Math.min(4, c.tier + 1)))
+      const R = castleRadius(c.tier)
       // (A castle's country, its suburbs and fields, is cleared land.)
       f *= c.village ? smoothstep(R * 1.4, R * 2.3, d) : smoothstep(R * 1.65, R * 2.45, d)
     }
@@ -1076,19 +1091,25 @@ export class World {
     let water: number | undefined
     let axis: number | undefined
     let rot = Math.atan2(-c.z, -c.x) + (rnd() - 0.5) * 0.5
-    const swell = (a: number, amp: number, ph: number[]) => 1 + amp * Math.sin(2 * a + ph[0]) + amp * 0.6 * Math.sin(3 * a + ph[1])
     const ph = [rnd() * 6.28, rnd() * 6.28]
-    if (site === 'plain') {
-      // An irregular polygon: five to seven corners, each pushed in or out, one or two salients.
+    // An irregular polygon: five to seven corners, each pushed in or out, one or two salients (the
+    // outline on the plain, and on the landward side of a castle on the water).
+    const polygon = () => {
       const n = 5 + Math.floor(rnd() * 3)
       const base = rnd() * Math.PI * 2
       const verts: [number, number][] = []
+      const at: number[] = []
       for (let k = 0; k < n; k++) {
         const a = base + ((k + (rnd() - 0.5) * 0.5) / n) * Math.PI * 2
         const r = (k % 3 === 0 ? 1.08 : 0.9) + rnd() * 0.16
         verts.push([Math.cos(a) * r, Math.sin(a) * r])
-        corners.push(a)
+        at.push(a)
       }
+      return { verts, at }
+    }
+    if (site === 'plain') {
+      const { verts, at } = polygon()
+      corners = at
       for (let i = 0; i < PROF_N; i++) prof[i] = rayPoly(verts, angOf(i))
     } else if (site === 'hill') {
       // Along the ridge: the bearing where the ground stays highest on both sides.
@@ -1125,8 +1146,10 @@ export class World {
       // The ends of the ridge get the gates' main road; the main gate down the gentler end.
       rot = ringH[Math.round((axis / (Math.PI * 2)) * 24) % 24] < ringH[(Math.round((axis / (Math.PI * 2)) * 24) + 12) % 24] ? axis : axis + Math.PI
     } else {
-      // On the water: a straight curtain along the bank, the landward side bulging out.
+      // On the water: a straight curtain along the bank, the landward side an irregular polygon.
       water = Math.atan2(wetZ, wetX)
+      const { verts, at } = polygon()
+      const landAt = (a: number) => rayPoly(verts, a)
       // Where the water begins on that side: the wall runs out to stand on the bank itself (a quay
       // below it) when the water is near enough, else it squares off facing it.
       let edge = Infinity
@@ -1137,23 +1160,18 @@ export class World {
         }
       }
       const bank = edge < 1.42 ? clamp(edge - 16 / R, 0.72, 1.2) : 1
-      for (let i = 0; i < PROF_N; i++) {
-        const a = angOf(i)
-        const da = Math.atan2(Math.sin(a - water), Math.cos(a - water))
-        const land = swell(a, 0.05, ph) * (1.04 + 0.1 * (1 - Math.cos(da)) * 0.5)
-        const line = Math.cos(da) > 0.05 ? bank / Math.cos(da) : Infinity
-        prof[i] = Math.min(land, line)
+      const line = (a: number) => {
+        const da = Math.atan2(Math.sin(a - water!), Math.cos(a - water!))
+        return Math.cos(da) > 0.05 ? bank / Math.cos(da) : Infinity
       }
-      // Where the bank wall meets the landward ring: corner towers.
+      for (let i = 0; i < PROF_N; i++) prof[i] = Math.min(landAt(angOf(i)), line(angOf(i)))
+      // Corner towers: the polygon's own corners that the bank leaves standing, and where the bank
+      // wall meets the landward walls.
+      corners = at.filter((a) => landAt(a) < line(a))
       for (let i = 0; i < PROF_N; i++) {
         const a = angOf(i)
-        const da = Math.atan2(Math.sin(a - water), Math.cos(a - water))
-        const land = swell(a, 0.05, ph) * (1.04 + 0.1 * (1 - Math.cos(da)) * 0.5)
         const prev = angOf((i + PROF_N - 1) % PROF_N)
-        const dp = Math.atan2(Math.sin(prev - water), Math.cos(prev - water))
-        const landP = swell(prev, 0.05, ph) * (1.04 + 0.1 * (1 - Math.cos(dp)) * 0.5)
-        const onLine = (x: number, l: number) => x < l - 0.005
-        if (onLine(prof[i], land) !== onLine(prof[(i + PROF_N - 1) % PROF_N], landP)) corners.push(a)
+        if (landAt(a) < line(a) !== landAt(prev) < line(prev)) corners.push(a)
       }
       rot = water + Math.PI + (rnd() - 0.5) * 0.4
       // Anywhere else the water comes close, keep the wall back from it (on the bank: just clear of it).
@@ -1168,7 +1186,7 @@ export class World {
         }
       }
     }
-    if (site !== 'plain') {
+    if (site === 'hill') {
       const o = Float32Array.from(prof)
       for (let i = 0; i < PROF_N; i++) prof[i] = (o[(i + PROF_N - 1) % PROF_N] + 2 * o[i] + o[(i + 1) % PROF_N]) / 4
     }
@@ -1185,7 +1203,8 @@ export class World {
     for (let i = 0; i < PROF_N; i++) prof[i] = clamp(prof[i], 0.72, 1.22)
     // (No corner tower in a gateway.)
     corners = corners.filter((a) => gates.every((g) => Math.abs(Math.atan2(Math.sin(a - g), Math.cos(a - g))) > 0.3))
-    const plain = Math.max(10, 16 + this.noise.fbm(c.x * 0.0014, c.z * 0.0014, 4) * 22) + 2
+    // (Plus the rise of the tableland, where an escarpment lifts the land the castle stands on.)
+    const plain = Math.max(10, 16 + this.noise.fbm(c.x * 0.0014, c.z * 0.0014, 4) * 22) + 2 + (this.def.escarpments ?? []).reduce((sum, e) => sum + this.escarpRise(e, c.x, c.z), 0)
     // A hill castle crowns its hill; anywhere else the plateau is levelled at the land's own height.
     const level = site === 'hill' ? Math.max(plain, h0 + 2) : plain
     return { x: c.x, z: c.z, r: R, rot, gates, prof, site, level, corners, water, axis }
@@ -1223,25 +1242,6 @@ export class World {
     }
     const r = wallRAt(w, g) + 26
     return [w.x + Math.cos(g) * r, w.z + Math.sin(g) * r]
-  }
-
-  /** A castle grew (or a save restored its tier): move its walls and replan the cells around. */
-  setCastleTier(castleId: string, tier: number) {
-    const w = this.walls.get(castleId)
-    if (!w) return
-    const before = w.r
-    w.r = wallRadius(tier)
-    if (before === w.r || !this.navCost.length) return
-    const reach = Math.max(before, w.r) + 30
-    const [i0, j0] = this.navIndex(w.x - reach, w.z - reach)
-    const [i1, j1] = this.navIndex(w.x + reach, w.z + reach)
-    const R = this.navRes
-    for (let j = j0; j <= j1; j++) {
-      for (let i = i0; i <= i1; i++) {
-        this.navCost[j * R + i] = this.cellCost(-this.half + (i + 0.5) * NAV_CELL, -this.half + (j + 0.5) * NAV_CELL)
-      }
-    }
-    this.components = null
   }
 
   /** True if the point lies on a curtain wall (outside its gate openings). */

@@ -2,6 +2,7 @@ import { FactionAI } from './ai'
 import { ConvoyAI, besideRoad, runStances } from './convoyai'
 import { isFieldStance, runFieldStances } from './fieldorders'
 import { NightAI } from './nightai'
+import { SACRED_FACTION, TEMPLE, runSanctuary } from './sanctuary'
 import type { GlyphName } from '../render/glyphs'
 import { generateCountryside, RESOURCE, RESOURCE_STOCK } from './countryside'
 import { DOCTRINES, doctrineMix, doctrineOf } from './doctrines'
@@ -10,10 +11,13 @@ import { TRAITS, combineTraits, type TraitMods } from './traits'
 import { ICE } from './world'
 import { SEASON_SECONDS, WEATHER_LABEL, climate, nextWeather, seasonAt, type ClimateEffects } from './weather'
 import { COLUMN, FORMATIONS, suggestFormation, type FormationDef } from './formations'
+import { NIGHT, NIGHT_AFFINITY, byNight, daylightAt, type Daylight, type DayPhase } from './daylight'
+import { GRANGE, STORES, storesMax } from './granary'
 import { clamp, mulberry32 } from './noise'
 import {
   addTroops,
   armySpeed,
+  fmt,
   combinedArmsBonus,
   commanderMod,
   emptyTroops,
@@ -28,8 +32,10 @@ import {
   subTroops,
 } from './troops'
 import type {
+  Grange,
   HoldingKind,
   WarHistory,
+  WarTeam,
   WarTally,
   Army,
   ArmyOrder,
@@ -49,7 +55,6 @@ import type {
   GameRules,
   GameState,
   AllianceMuster,
-  GameMode,
   MapSize,
   Outpost,
   Obstacle,
@@ -172,7 +177,7 @@ export const HOLDINGS: Record<HoldingKind, {
   caravanserai: { name: 'Caravanserai', icon: 'caravan', blurb: 'A great trade wagon every 90 seconds (320 gold, 480 walled); your wagons within 600m roll 1.5x faster.', price: 1.4, tribute: [0, 320 / 90, 480 / 90], every: 90, militia: [0, 300, 480], mix: { infantry: 0.5, cavalry: 0.2, archers: 0.3 }, loot: [700, 950], infamy: 1 },
   abbey: { name: 'Abbey', icon: 'chapel', blurb: 'No gold: every 45 seconds 50 volunteers (90 walled) for your nearest castle; commanders heal 25% faster (40% walled); every 3 minutes a point of infamy is forgiven. Plundering it costs 2 infamy.', price: 1.2, tribute: [0, 0, 0], every: 45, militia: [0, 260, 420], mix: { infantry: 0.6, cavalry: 0, archers: 0.4 }, loot: [300, 450], infamy: 2 },
   keep: { name: "Wardens' keep", icon: 'tower', blurb: 'No gold: a strong, horse-heavy garrison (400, 650 walled) that rides out on its own against scouts, wagons and raiding parties of up to 150 within 800m.', price: 1.3, tribute: [0, 0, 0], every: 45, militia: [0, 400, 650], mix: { infantry: 0.4, cavalry: 0.4, archers: 0.2 }, loot: [350, 550], infamy: 1 },
-  guildhall: { name: 'Siege guildhall', icon: 'anvil', blurb: 'No gold: engineers cost 18 (15 walled), outposts and castle upgrades 15% less (25% walled), and all your castle walls mend 1.5x faster.', price: 1.3, tribute: [0, 0, 0], every: 45, militia: [0, 280, 460], mix: { infantry: 0.6, cavalry: 0, archers: 0.4 }, loot: [400, 600], infamy: 1 },
+  guildhall: { name: 'Siege guildhall', icon: 'anvil', blurb: 'No gold: engineers cost 18 (15 walled), outposts 15% less (25% walled), and all your castle walls mend 1.5x faster.', price: 1.3, tribute: [0, 0, 0], every: 45, militia: [0, 280, 460], mix: { infantry: 0.6, cavalry: 0, archers: 0.4 }, loot: [400, 600], infamy: 1 },
 }
 export const HOLDING_EFFECTS = {
   caravanAura: 600,
@@ -206,7 +211,6 @@ export const VILLAGE = {
   walls: [0, 260, 700] as number[],
   manpower: 220,
   manpowerRegen: 0.9,
-  stoneWallCost: 650,
   /** Envoys need one of your armies within this distance, or a castle of yours nearby. */
   envoyArmyReach: 420,
   envoyCastleReach: 1100,
@@ -260,6 +264,17 @@ export const ENCIRCLE = { perSide: 0.1, max: 0.3, apart: 1.05 }
 
 /** War of the Three Crowns: the commanders who serve the Sun Emperor (the rest of the enemy's serve the Usurper). */
 export const SUN_COURT = ['emperor', 'vesk', 'sabine', 'ulric']
+
+/**
+ * War of the Three Crowns: Claiming the Old Throne. The crown whose side holds the Imperial
+ * Crossroads (the old empire's fortress at the heart of the map), with its monarch standing there
+ * (stationed, or within `reach` and not fighting), counts down `seconds` to a coronation: crowned
+ * High Emperor, that crown wins the war outright. The count pauses while the monarch is away or
+ * fighting, while the Crossroads is besieged, or while any enemy force of `contestMen` or more is
+ * within `contest`; it is lost when the Crossroads changes hands. The throne opens `opensAt` into
+ * the war. While a count runs, every other unbroken crown and its lords make for the Crossroads.
+ */
+export const CORONATION = { heartId: 'heart', opensAt: 900, seconds: 180, reach: 160, contest: 400, contestMen: 60 }
 
 export const ROYAL = {
   key: 'sovereign',
@@ -349,7 +364,7 @@ export const BLADES = {
   /** Every attempt on the Queen makes her guard warier. */
   wary: 0.07,
   /** A harder foe keeps a closer watch on its leaders (taken off the chance of a strike on its armies). */
-  bodyguard: { easy: 0.08, normal: 0.16, hard: 0.34, brutal: 0.38 } as Record<string, number>,
+  bodyguard: { easy: 0.08, normal: 0.14, hard: 0.22, brutal: 0.26 } as Record<string, number>,
   /** Men lost: on success, on failure, on failure against the Queen's Thorn Guard. */
   lossWin: [0.06, 0.14],
   lossFail: [0.25, 0.35],
@@ -422,6 +437,21 @@ export const SAPPERS = {
   /** Wiped out: the sapmaster gathers a new band this long after, this strong (filled up at an abbey). */
   returnAfter: 300,
   returnSize: 40,
+  /**
+   * Saboteurs are sappers too: each counts as an engineer for the quiet works (a hidden camp, a
+   * supply depot, traps and barricades, pulling down a bridge), never for siege engines, the
+   * strong field forts or bridging a river.
+   */
+  outposts: ['pavilion', 'depot'] as OutpostKind[],
+  works: ['stakes', 'pit', 'barricade', 'pitch', 'demolish'] as WorkJob[],
+}
+
+/** Hands an army can put to a job: its engineers, and its saboteurs where the job is theirs too. */
+export function crewFor(a: Army, job: WorkJob | OutpostKind): number {
+  const eng = a.troops.engineers ?? 0
+  const sab = a.troops.saboteurs ?? 0
+  const theirs = (SAPPERS.works as string[]).includes(job) || (SAPPERS.outposts as string[]).includes(job)
+  return Math.floor(eng + (theirs ? sab : 0))
 }
 
 /** Commanders whose bands hide on their own (concealed or disguised): the spymasters and the sapmasters. */
@@ -524,17 +554,6 @@ export const SCOUT = {
   closeSight: 450,
 }
 
-/** Top realm rank per map size, and how far past its starting strength a realm must grow to reach the rank below the top. */
-const RANK_MAX: Record<MapSize, number> = { small: 5, medium: 6, large: 7 }
-const RANK_REACH: Record<GameMode, Record<MapSize, number>> = {
-  campaign: { small: 2.6, medium: 2.6, large: 2.6 },
-  survival: { small: 3.8, medium: 3.8, large: 4.4 },
-  alliance: { small: 2.8, medium: 2.8, large: 3.0 },
-  convoy: { small: 3, medium: 3, large: 3 },
-  nightfall: { small: 3, medium: 3, large: 3 },
-  grand: { small: 3.2, medium: 3.2, large: 3.2 },
-}
-
 /** Rear attacks: joining a fight already under way from behind the enemy line. */
 export const REAR = {
   /** The front must have been locked this long. */
@@ -577,8 +596,17 @@ export const DIFFICULTY: Record<Difficulty, DifficultyDef> = {
 }
 
 /** How the enemy AI plays: in Alliance War always as a hard foe; in Conquest as the chosen difficulty. */
+/**
+ * Conquest pits two realms of the same size against each other (a seat and two strongholds each):
+ * the difficulty is the foe's income against ours, nothing else. Conquest has three difficulties
+ * (Brutal is Alliance War's Last Stand).
+ */
+export const CONQUEST_INCOME: Record<Exclude<Difficulty, 'brutal'>, number> = { easy: 0.6, normal: 0.8, hard: 1.1 }
+
 export function foeDifficulty(mode: GameRules['mode'], difficulty: Difficulty): DifficultyDef {
-  return mode === 'alliance' ? DIFFICULTY.hard : DIFFICULTY[difficulty]
+  if (mode === 'alliance') return DIFFICULTY.hard
+  if (mode === 'survival') return { ...DIFFICULTY[difficulty], income: CONQUEST_INCOME[difficulty === 'brutal' ? 'hard' : difficulty] }
+  return DIFFICULTY[difficulty]
 }
 
 /** Smaller maps put the enemy closer, so its first Great Host comes sooner (and later on large maps). */
@@ -598,9 +626,6 @@ export function maxManpowerForTier(tier: number) {
 }
 export function manpowerRegenForTier(tier: number) {
   return 1 + tier * 1.4
-}
-export function upgradeCost(tier: number) {
-  return Math.round(700 * Math.pow(tier, 1.6))
 }
 
 /** Recruitment mixes used by auto-recruit and the AI. */
@@ -641,7 +666,7 @@ interface Force {
   mired?: boolean
   /** The Royal Guard itself; and armies within the Sovereign's presence. */
   royal?: boolean
-  presence?: boolean
+  presence?: 0 | 1 | 2
   /** Archers shooting from inside a wagon laager. */
   campArchers?: number
   /** The ground it fights on (terrain features): multipliers on what it takes and deals. */
@@ -716,8 +741,6 @@ export class GameEngine {
       this.reach = clamp(this.world.size / 3000, 1, 3.5)
       this.pace = Math.pow(this.spread, 0.6)
     }
-    // Castles that grew since the map was made: their walls stand farther out.
-    for (const c of state.castles) if (!c.village) this.world.setCastleTier(c.id, c.tier)
     // (The Royal Guard is raised once the engine is fully built; see the end of the constructor.)
     // Engineers' bridges from a saved game (indices must line up with the save).
     if (this.world.bridges.length === 0) {
@@ -735,7 +758,7 @@ export class GameEngine {
     this.visionTex = new Uint8Array(this.visRes * this.visRes)
     if (state.explored) decodeBits(state.explored, this.explored)
     for (const f of Object.values(state.factions)) {
-      if (f.id !== PLAYER && f.team !== 'N') this.ais.set(f.id, state.rules.mode === 'convoy' ? new ConvoyAI(this, f.id) : f.undying ? new NightAI(this, f.id) : new FactionAI(this, f.id))
+      if (f.id !== PLAYER && f.team !== 'N' && !f.sacred) this.ais.set(f.id, state.rules.mode === 'convoy' ? new ConvoyAI(this, f.id) : f.undying ? new NightAI(this, f.id) : new FactionAI(this, f.id))
     }
     // A saved game in the depth of winter: the ice is where it was.
     if (state.frozen) this.world.setFrozen(true)
@@ -792,15 +815,44 @@ export class GameEngine {
     const world0 = world ?? new World(scenario)
     world = world0
     // (Convoy Raid's forest road has no countryside: only the caravanserai and the castle.)
-    const country = rules.mode === 'convoy' ? { villages: [], sites: [] } : generateCountryside(world0, def.castles, scenario.seed)
+    // (No granges on the forest road or the Long Night: neither war is fought over food.)
+    const country = rules.mode === 'convoy' ? { villages: [], sites: [], granges: [] } : generateCountryside(world0, def.castles, scenario.seed, { granges: !rules.night })
     // The Long Night: nothing stands where the rifts open.
     if (rules.night) {
       const clear = (p: { x: number; z: number }) => rules.night!.rifts.every((r) => Math.hypot(r.x - p.x, r.z - p.z) > 420)
       country.villages = country.villages.filter(clear)
       country.sites = country.sites.filter(clear)
     }
+    // The Sanctuary of the High King: its own level ground, and nothing built near it.
+    const sanct = rules.mode === 'alliance' && rules.blessing ? def.sanctuary : undefined
+    if (sanct) {
+      const clear = (p: { x: number; z: number }) => Math.hypot(sanct.x - p.x, sanct.z - p.z) > 260
+      country.villages = country.villages.filter(clear)
+      country.sites = country.sites.filter(clear)
+      country.granges = country.granges.filter(clear)
+      world0.levelGround(sanct.x, sanct.z, 120)
+      factions[SACRED_FACTION.id] = { ...SACRED_FACTION, gold: 0, alive: true, capitalId: null, ai: { nextDecisionAt: 1e9, nextRaidAt: 1e9, retakeQueue: [] }, host: null }
+    }
     // Villages and holdings stand on levelled ground (room for their stone walls when they grow).
     for (const v of country.villages) world0.levelGround(v.x, v.z, villageRadius(2) * 1.2)
+    // Granges: a level farmyard, and a cart track to the gates of the castle each one feeds.
+    for (const g of country.granges) {
+      // (Level ground under the whole walled farm: its fields too.)
+      world0.levelGround(g.x, g.z, Math.hypot(GRANGE.outerX, GRANGE.outerZ) / 1.5)
+      const c = def.castles.find((x) => x.id === g.castleId)
+      if (c) {
+        const town = world0.towns.find((t) => Math.hypot(t.x - c.x, t.z - c.z) < t.r)
+        const stop = town ? town.r + 30 : wallRadius(c.tier) + 24
+        const cx = town ? town.x : c.x
+        const cz = town ? town.z : c.z
+        const pts: [number, number][] = [[g.x + Math.sin(g.heading) * GRANGE.outerZ, g.z + Math.cos(g.heading) * GRANGE.outerZ]]
+        for (const p of world0.findPath(pts[0][0], pts[0][1], c.x, c.z)) {
+          if (Math.hypot(p[0] - cx, p[1] - cz) < stop) break
+          pts.push(p)
+        }
+        if (pts.length > 1) (world0.def.roads ??= []).push({ width: 6, points: pts })
+      }
+    }
     if (country.villages.length && !factions[NEUTRAL]) {
       factions[NEUTRAL] = {
         id: NEUTRAL,
@@ -820,17 +872,19 @@ export class GameEngine {
       subtitle: c.subtitle,
       faction: c.faction,
       tier: c.tier,
-      baseTier: c.tier,
       x: c.x,
       z: c.z,
       capital: !!c.capital,
       staging: !!c.staging,
+      stronghold: !!c.stronghold,
       gate: !!c.gate,
       tower: !!c.tower,
       garrison: { ...empty, ...c.garrison },
       walls: c.village ? 0 : wallsForTier(c.tier),
       maxWalls: c.village ? 0 : wallsForTier(c.tier),
       manpower: c.village ? 60 : maxManpowerForTier(c.tier) * 0.6,
+      // The war opens with full stores.
+      stores: c.village || rules.night || rules.mode === 'convoy' ? undefined : storesMax(c.tier, capacityForTier(c.tier)),
       village: !!c.village,
       holding: c.holding,
       battleId: null,
@@ -861,6 +915,7 @@ export class GameEngine {
       convoys: [],
       obstacles: [],
       sites: country.sites,
+      granges: country.granges.map((g, i) => ({ ...g, faction: def.castles.find((c) => c.id === g.castleId)?.faction ?? NEUTRAL, nextWagonAt: 8 + (i % 7) * 3, walls: GRANGE.walls, barn: GRANGE.barnStart })),
       intel: {},
       builtBridges: [],
       commanders,
@@ -880,9 +935,9 @@ export class GameEngine {
       ...(rules.mode === 'convoy' ? { royalId: null, foeRoyalId: null, bladesId: null, sistersId: null, wardensId: null, huntId: null, sappersId: null, cuttersId: null } : {}),
       ...(rules.mode === 'nightfall' ? { foeRoyalId: null, bladesId: null, sistersId: null, wardensId: null, huntId: null, sappersId: null, cuttersId: null } : {}),
       ...(rules.mode !== 'grand' ? { sunRoyalId: null } : {}),
+      ...(sanct ? { sanctuary: { x: sanct.x, z: sanct.z, progress: 0, praying: false, blessed: false, bands: 0, nextBandAt: 0, captures: 0 } } : {}),
     }
     const engine = new GameEngine(content, state, world)
-    engine.initRanks()
     if (rules.mode === 'convoy') {
       engine.setupConvoy()
       return engine
@@ -895,7 +950,9 @@ export class GameEngine {
       return engine
     }
     const goal =
-      rules.mode === 'alliance'
+      rules.mode === 'grand'
+        ? `Take ${engine.castleName('keepB')} and ${engine.castleName('keepC')} to shatter both rival crowns, or hold ${engine.castleName(CORONATION.heartId)} with the King from the ${CORONATION.opensAt / 60}th minute and be crowned High Emperor. The war is lost if ${engine.castleName('keep')} falls and the King with it.`
+        : rules.mode === 'alliance'
         ? `Your alliance must take ${engine.castleName(rules.victoryCastles[0])}, the enemy High Seat, and hold ${engine.castleName(rules.defeatCastles[0])}.`
         : `Take ${rules.victoryCastles.map((id) => engine.castleName(id)).join(', ')}. Do not lose ${rules.defeatCastles.map((id) => engine.castleName(id)).join(', ')}.`
     engine.log('info', 'The war begins', goal)
@@ -1047,7 +1104,52 @@ export class GameEngine {
     return army.commanderKey ? combineTraits(this.state.commanders[army.commanderKey]?.traits) : NO_TRAITS
   }
   climate(): ClimateEffects {
-    return climate(seasonAt(this.state.time), this.state.weather.kind)
+    const e = climate(seasonAt(this.state.time), this.state.weather.kind)
+    // By night: bows find few marks, and the columns pick their way by torchlight.
+    const d = this.nightDark()
+    if (d > 0) {
+      e.ranged *= byNight(1, NIGHT.archers, d)
+      e.speed *= byNight(1, NIGHT.march, d)
+    }
+    return e
+  }
+  /** The light now: day, dusk, night or dawn (the Long Night is night throughout). */
+  daylight(): Daylight {
+    if (this.state.rules.night) return { dark: 1, phase: 'night', next: Infinity, twilight: 0 }
+    return daylightAt(this.state.time)
+  }
+  /** How dark it is, for the rules (0 by day, 1 at the dead of night; the Long Night has rules of its own). */
+  nightDark(): number {
+    return this.state.rules.night ? 0 : daylightAt(this.state.time).dark
+  }
+  /** Torches: an army on the march or in a fight by night carries them (a spymaster's band never does). */
+  torchlit(a: Army): boolean {
+    if (a.veil || HIDING_KEYS.includes(a.commanderKey ?? '') || this.state.factions[a.faction]?.undying) return false
+    return a.status === 'marching' || a.status === 'retreating' || a.status === 'battle' || a.status === 'sieging'
+  }
+  /** How far one can see this army now: by night, less far, unless its torches give it away. */
+  private sightOn(a: Army): number {
+    const d = this.nightDark()
+    return d > 0 && !this.torchlit(a) ? byNight(1, NIGHT.sight, d) : 1
+  }
+  /** Night ranges for watchmen and scouts (in proportion to the darkness). */
+  nightSight(wardens = false): number {
+    const d = this.nightDark()
+    return d > 0 ? byNight(1, wardens ? NIGHT.wardenSight : NIGHT.sight, d) : 1
+  }
+  private lastPhase: DayPhase | null = null
+  /** Dusk, night, dawn and day in the chronicle. */
+  private updateDaylight() {
+    if (this.state.rules.night) return
+    const l = daylightAt(this.state.time)
+    const was = this.lastPhase
+    this.lastPhase = l.phase
+    if (was === null || was === l.phase) return
+    const secs = Math.round(l.next)
+    if (l.phase === 'dusk') this.log('info', 'Dusk', `The light is failing: night falls in ${secs} seconds. Columns on the march light their torches; small camps in the open will vanish into the dark.`)
+    else if (l.phase === 'night') this.log('info', 'Night', `Archers find few marks and everyone sees less far; ambushes, assassins and saboteurs do better. Bands camped without fire in the open are hidden. Dawn in ${Math.round(secs / 60)} minutes.`)
+    else if (l.phase === 'dawn') this.log('info', 'Dawn', `The sky pales in the east: full day in ${secs} seconds.`)
+    else this.log('info', 'Day breaks', 'Camps in the open can be seen again, and the archers have their light back.')
   }
   season() {
     return seasonAt(this.state.time)
@@ -1125,15 +1227,23 @@ export class GameEngine {
   inKeep(a: Army): boolean {
     return !!a.royal && (a.order.type === 'station' || a.order.type === 'hold') && a.status !== 'marching' && this.insideWalls(a)
   }
-  /** The Sovereign's presence: the Royal Guard of this side is in the field within 350m. */
-  inPresence(a: Army): boolean {
+  /**
+   * The Sovereign's presence: the Royal Guard of this side is in the field within 350m (1); or,
+   * once the High King has blessed him, within 550m and stronger (2). The High King's paladins
+   * always fight blessed.
+   */
+  inPresence(a: Army): 0 | 1 | 2 {
+    if (a.sacred) return 2
     const team = this.team(a.faction)
-    const r = ROYAL.aura
+    let best: 0 | 1 | 2 = 0
     for (const g of this.state.armies) {
       if (!g.royal || this.team(g.faction) !== team || this.insideWalls(g)) continue
-      if (Math.abs(g.x - a.x) < r && Math.abs(g.z - a.z) < r && Math.hypot(g.x - a.x, g.z - a.z) < r) return true
+      const level = g.blessed ? 2 : 1
+      if (level <= best) continue
+      const r = g.blessed ? TEMPLE.aura : ROYAL.aura
+      if (Math.abs(g.x - a.x) < r && Math.abs(g.z - a.z) < r && Math.hypot(g.x - a.x, g.z - a.z) < r) best = level
     }
-    return false
+    return best
   }
   /** The Royal Guard of a realm, if it still rides. */
   royalArmy(f: Faction = PLAYER): Army | undefined {
@@ -1513,6 +1623,8 @@ export class GameEngine {
     // Sighted by this side's Wardens a little while ago: still on the map.
     if ((a.marked?.[team] ?? 0) > this.state.time) return true
     const hidden = this.isHidden(a)
+    // By night everyone sees less far, unless the army carries torches.
+    const night = this.sightOn(a)
     const near = (x: number, z: number, r: number) => Math.abs(x - a.x) < r && Math.abs(z - a.z) < r && Math.hypot(x - a.x, z - a.z) < r
     // In the Deepwood a host is lost among the trees: seen only close by (the Wardens read its tracks
     // further off), and those inside see only half as far out.
@@ -1521,7 +1633,7 @@ export class GameEngine {
       const D = FEATURES.deepwood
       for (const b of this.state.armies) {
         if (this.team(b.faction) !== team) continue
-        if (near(b.x, b.z, b.wardens ? WARDENS.reveal : hidden ? Math.min(D.seen, STEALTH.uncover) : D.seen)) return true
+        if (near(b.x, b.z, b.wardens ? WARDENS.reveal * this.nightSight(true) : (hidden ? Math.min(D.seen, STEALTH.uncover) : D.seen) * night)) return true
       }
       for (const c of this.state.castles) if (!c.ruined && this.team(c.faction) === team && near(c.x, c.z, holdingRadius(c) + D.seen * 0.6)) return true
       return false
@@ -1529,16 +1641,17 @@ export class GameEngine {
     for (const b of this.state.armies) {
       if (this.team(b.faction) !== team) continue
       const blind = woods && this.world.featureKindAt(b.x, b.z) === 'deepwood' ? FEATURES.deepwood.sight : 1
-      if (near(b.x, b.z, (hidden ? STEALTH.uncover : SIGHT.army * this.sightScale) * this.lookout(b) * (b.wardens ? WARDENS.sight : 1) * blind)) return true
+      const eyes = b.wardens && night < 1 ? this.nightSight(true) : night
+      if (near(b.x, b.z, (hidden ? STEALTH.uncover : SIGHT.army * this.sightScale) * this.lookout(b) * (b.wardens ? WARDENS.sight : 1) * blind * eyes)) return true
     }
     for (const c of this.state.castles) {
       if (c.ruined || this.team(c.faction) !== team) continue
-      if (near(c.x, c.z, holdingRadius(c) + (hidden ? STEALTH.uncover : (c.village ? SIGHT.holding : SIGHT.castle) * this.sightScale))) return true
+      if (near(c.x, c.z, holdingRadius(c) + (hidden ? STEALTH.uncover : (c.village ? SIGHT.holding : SIGHT.castle) * this.sightScale) * night)) return true
     }
     for (const o of this.state.outposts) {
       if (this.team(o.faction) !== team || o.progress < 1) continue
       const tower = o.kind === 'redoubt'
-      if (near(o.x, o.z, hidden ? (tower ? STEALTH.towerUncover : STEALTH.uncover) : (tower ? SIGHT.tower : SIGHT.outpost) * this.sightScale)) return true
+      if (near(o.x, o.z, (hidden ? (tower ? STEALTH.towerUncover : STEALTH.uncover) : (tower ? SIGHT.tower : SIGHT.outpost) * this.sightScale) * night)) return true
     }
     return false
   }
@@ -1548,7 +1661,7 @@ export class GameEngine {
   }
   /** Is this side close enough (450m) to count that force exactly? */
   closeTo(team: Team, x: number, z: number): boolean {
-    const r = SCOUT.closeSight
+    const r = SCOUT.closeSight * byNight(1, NIGHT.exact, this.nightDark())
     for (const c of this.state.castles) if (this.team(c.faction) === team && Math.abs(c.x - x) < r && Math.hypot(c.x - x, c.z - z) < r) return true
     for (const a of this.state.armies) {
       if (this.team(a.faction) !== team) continue
@@ -1690,7 +1803,7 @@ export class GameEngine {
     const g = key === 'engineers' ? this.guildTier(f) : 0
     return g ? Math.min(u.cost_gold, HOLDING_EFFECTS.guildEngineer[g]) : u.cost_gold
   }
-  /** Building discount (outposts, castle upgrades) from a guildhall. */
+  /** Building discount (outposts) from a guildhall. */
   buildDiscount(f: Faction): number {
     return 1 - (HOLDING_EFFECTS.guildDiscount[this.guildTier(f)] ?? 0)
   }
@@ -1705,8 +1818,9 @@ export class GameEngine {
   /** Gold per second a holding yields (before realm and season modifiers). */
   castleIncome(c: Castle): number {
     if (c.ruined || c.village) return 0
-    // The Long Night: a city under siege earns little (the fields are the enemy's).
-    return incomeForTier(c.tier) * (this.state.rules.mode === 'nightfall' ? NIGHT_ECONOMY : 1)
+    // The Long Night: a city under siege earns little (the fields are the enemy's). Enemies standing
+    // in a castle's fields halve its income too.
+    return incomeForTier(c.tier) * (this.state.rules.mode === 'nightfall' ? NIGHT_ECONOMY : 1) * (this.fieldsHeld.has(c.id) ? STORES.fieldsIncome : 1)
   }
   /** Gold per second a vassal village sends its lord (by wagon). */
   tributeRate(c: Castle): number {
@@ -1722,12 +1836,6 @@ export class GameEngine {
   }
   manpowerRegen(c: Castle): number {
     return (c.village ? VILLAGE.manpowerRegen : manpowerRegenForTier(c.tier)) * (this.state.rules.mode === 'nightfall' ? NIGHT_ECONOMY : 1)
-  }
-  maxTier(c: Castle): number {
-    return c.village ? 2 : 4
-  }
-  upgradeCostOf(c: Castle): number {
-    return c.village ? VILLAGE.stoneWallCost : Math.round(upgradeCost(c.tier) * this.buildDiscount(c.faction))
   }
   private visIndex(x: number, z: number) {
     const half = this.world.half
@@ -1788,7 +1896,7 @@ export class GameEngine {
       if (a.faction !== faction) continue
       field = addTroops(field, a.troops)
       fieldPower += this.armyPower(a)
-      if (!a.royal) paid += total(a.troops)
+      if (!a.royal) paid += total(a.troops) * (this.grangeFeeding(a) ? GRANGE.feedUpkeep : 1)
     }
     let income = 0
     let manpower = 0
@@ -1851,7 +1959,7 @@ export class GameEngine {
     this.events.push({ type: 'chronicle', entry })
   }
 
-  private newId(prefix: string) {
+  newId(prefix: string) {
     return `${prefix}${this.state.nextId++}`
   }
 
@@ -1869,6 +1977,7 @@ export class GameEngine {
     if (u.recruitable === false) return `${u.name} are never raised in a castle.`
     if (c.faction !== faction) return 'You do not hold this castle.'
     if (c.battleId) return 'Cannot recruit while under siege.'
+    if (this.starving(c)) return 'The garrison is starving: no one can be raised until food comes in.'
     count = Math.floor(count)
     if (count <= 0) return null
     const room = this.capacity(c) - total(c.garrison)
@@ -1908,37 +2017,6 @@ export class GameEngine {
       if (n > 0) this.recruit(castleId, key, n, faction)
     }
     return before - f.gold
-  }
-
-  upgradeCastle(castleId: string, faction: Faction = PLAYER): string | null {
-    if (this.castle(castleId)?.village) return 'The village raises its own stone walls in time.'
-    const c = this.castle(castleId)
-    const f = this.faction(faction)
-    if (!c || !f || c.faction !== faction) return 'You do not hold this castle.'
-    if (c.tier >= this.maxTier(c)) return c.village ? 'Already walled in stone.' : 'Already a citadel.'
-    if (c.battleId) return 'Cannot build while under siege.'
-    const cost = this.upgradeCostOf(c)
-    if (f.gold < cost) return `Needs ${cost} gold.`
-    f.gold -= cost
-    c.tier++
-    // The curtain wall moves out: anyone caught on the new line steps clear, and everyone replans.
-    this.world.setCastleTier(c.id, c.tier)
-    for (const a of this.state.armies) {
-      if (Math.hypot(a.x - c.x, a.z - c.z) > holdingRadius(c) + 40) continue
-      if (!this.world.isPassable(a.x, a.z)) [a.x, a.z] = this.world.nearestPassable(a.x, a.z)
-      a.path = []
-      a.pathTarget = null
-    }
-    const newMax = c.village ? VILLAGE.walls[c.tier] : wallsForTier(c.tier)
-    c.walls += newMax - c.maxWalls
-    c.maxWalls = newMax
-    this.events.push({ type: 'castle_changed', castleId: c.id })
-    if (faction === PLAYER) {
-      if (c.village) this.log('info', `${c.name} is walled in stone`, 'Stronger walls, more room for troops and a little more income.', c.x, c.z)
-      else this.log('info', `${c.name} is expanded`, `Now tier ${c.tier}: stronger walls, more income, manpower and room for troops.`, c.x, c.z)
-      this.notify()
-    }
-    return null
   }
 
   setAutoRecruit(castleId: string, template: string | null) {
@@ -2237,7 +2315,6 @@ export class GameEngine {
     const a = this.army(armyId)
     if (!a) return []
     const f = this.faction(a.faction)
-    const eng = a.troops.engineers ?? 0
     const bridge = this.bridgeNear(a.x, a.z)
     const site = this.bridgeSite(a.x, a.z)
     const mine = (this.state.obstacles ?? []).filter((o) => o.faction === a.faction).length
@@ -2249,7 +2326,7 @@ export class GameEngine {
       const ground = job === 'stakes' || job === 'pit' || job === 'barricade' || job === 'pitch'
       let reason: string | null = null
       if (a.battleId || a.status === 'retreating') reason = 'Not while fighting or retreating.'
-      else if (eng < w.engineers) reason = `Needs ${w.engineers}+ Engineers.`
+      else if (crewFor(a, job) < w.engineers) reason = (a.troops.saboteurs ?? 0) >= w.engineers && !SAPPERS.works.includes(job) ? 'Saboteurs cannot build this: it needs Engineers.' : `Needs ${w.engineers}+ Engineers.`
       else if (f && f.gold < w.cost) reason = `Needs ${w.cost} gold.`
       else if (job === 'demolish' && !bridge) reason = 'Stand at an engineers\' bridge.'
       else if (job === 'bridge' && !site) reason = 'Stand on a river bank.'
@@ -2291,14 +2368,14 @@ export class GameEngine {
     }
     const [px, pz] = this.world.nearestPassable(x, z)
     this.orderArmy(a.id, { type: 'work', job, x: px, z: pz, bridge, progress: 0, tx, tz, then })
-    if (a.faction === PLAYER) this.log('deploy', `${a.name}: ${w.name.toLowerCase()}`, `The engineers set to work (about ${Math.round(this.workSeconds(a, job))}s).`, px, pz)
+    if (a.faction === PLAYER) this.log('deploy', `${a.name}: ${w.name.toLowerCase()}`, `The ${a.troops.engineers ? 'engineers' : 'sappers'} set to work (about ${Math.round(this.workSeconds(a, job))}s).`, px, pz)
     this.notify()
     return null
   }
 
   private workSeconds(a: Army, job: WorkJob): number {
     const builder = a.commanderKey && this.state.commanders[a.commanderKey]?.traits.includes('master_builder') ? 2 : 1
-    const extra = Math.max(0, (a.troops.engineers ?? 0) - WORKS[job].engineers)
+    const extra = Math.max(0, crewFor(a, job) - WORKS[job].engineers)
     return (WORKS[job].seconds / builder) * Math.max(0.5, 1 - extra * 0.01)
   }
 
@@ -2995,6 +3072,13 @@ export class GameEngine {
         this.tally().raidGold += w.gold ?? 0
         this.tally().wagonsTaken++
       }
+      if (w.grain) {
+        // Grain: the raiders eat well tonight.
+        raider.morale = Math.min(this.moraleCap(raider), raider.morale + 8)
+        if (w.faction === PLAYER) this.log('lost', 'Grain wagon seized', `${raider.name} of ${this.factionName(raider.faction)} took the grain bound for ${dest.name}.`, w.x, w.z)
+        else if (raider.faction === PLAYER) this.log('victory', 'Grain wagon seized', `${raider.name} took the grain bound for ${dest.name}.`, w.x, w.z)
+        return
+      }
       const what = w.manpower ? `${w.manpower} volunteers` : `${w.gold} gold`
       if (w.faction === PLAYER) this.log('lost', w.manpower ? 'Volunteers waylaid' : 'Gold wagons seized', `${raider.name} of ${this.factionName(raider.faction)} took ${what}.`, w.x, w.z)
       else if (raider.faction === PLAYER) this.log('victory', w.manpower ? 'Volunteers waylaid' : 'Gold wagons seized', `${raider.name} took ${what} from ${this.factionName(w.faction)}.`, w.x, w.z)
@@ -3018,6 +3102,8 @@ export class GameEngine {
     if (!w.path.length || Math.hypot(dest.x - w.x, dest.z - w.z) < (dest.village ? holdingRadius(dest) + 25 : this.wallAt(dest, w.x, w.z) + 30)) {
       const f = this.state.factions[w.faction]
       if (f) f.gold += w.gold ?? 0
+      // Grain fills the castle's stores.
+      if (w.grain && dest.stores !== undefined) dest.stores = Math.min(this.storesMaxOf(dest), dest.stores + w.grain)
       // An abbey's volunteers swell the castle's manpower.
       if (w.manpower) dest.manpower = Math.min(this.maxManpower(dest) * 1.2, dest.manpower + w.manpower)
       this.state.convoys = this.state.convoys!.filter((x) => x.id !== w.id)
@@ -3035,6 +3121,8 @@ export class GameEngine {
   orderArmy(armyId: string, order: ArmyOrder, internal = false) {
     const a = this.army(armyId)
     if (!a || a.status === 'retreating') return
+    // A new order calls off the taking of a grange.
+    a.takeGrangeId = null
     // An order given by hand replaces any standing order (Convoy Raid), and lets go of the reins.
     if (!internal) {
       a.stance = undefined
@@ -3396,24 +3484,27 @@ export class GameEngine {
    * and outposts. r: how close a concealed band may come; rd: a disguised one. (Recomputed each second.)
    */
   spyWatches(faction: Faction): { x: number; z: number; r: number; rd: number; name: string; who: string; secret: boolean }[] {
-    const key = `${faction}|${Math.floor(this.state.time)}|${this.state.castles.length}|${this.state.outposts.length}|${this.state.armies.length}`
+    const key = `${faction}|${Math.floor(this.state.time)}|${Math.round(this.nightDark() * 20)}|${this.state.castles.length}|${this.state.outposts.length}|${this.state.armies.length}`
     const hit = this.watchCache.get(faction)
     if (hit && hit.key === key) return hit.list
     const hostile = (f: Faction) => f !== NEUTRAL && this.isHostile(f, faction)
     const list: { x: number; z: number; r: number; rd: number; name: string; who: string; secret: boolean }[] = []
+    // By night the watch sees less far (the Wardens keep more of their eyes).
+    const ns = this.nightSight()
+    const nw = this.nightSight(true)
     for (const c of this.state.castles) {
       if (c.ruined || !hostile(c.faction)) continue
-      if (!c.village) list.push({ x: c.x, z: c.z, r: wallRadius(c.tier) + SPY.castleWatch, rd: wallRadius(c.tier) + SPY.castleWatchDisguised, name: c.name, who: `The watch on the walls of ${c.name}`, secret: false })
-      else if (this.holdingOf(c) === 'keep') list.push({ x: c.x, z: c.z, r: holdingRadius(c) + SPY.postWatch, rd: holdingRadius(c) + SPY.postWatchDisguised, name: c.name, who: `The wardens of ${c.name}`, secret: false })
+      if (!c.village) list.push({ x: c.x, z: c.z, r: wallRadius(c.tier) + SPY.castleWatch * ns, rd: wallRadius(c.tier) + SPY.castleWatchDisguised * ns, name: c.name, who: `The watch on the walls of ${c.name}`, secret: false })
+      else if (this.holdingOf(c) === 'keep') list.push({ x: c.x, z: c.z, r: holdingRadius(c) + SPY.postWatch * ns, rd: holdingRadius(c) + SPY.postWatchDisguised * ns, name: c.name, who: `The wardens of ${c.name}`, secret: false })
     }
     for (const o of this.state.outposts) {
       if (o.progress < 1 || !hostile(o.faction)) continue
-      list.push({ x: o.x, z: o.z, r: SPY.postWatch + 40, rd: SPY.postWatchDisguised + 40, name: o.name, who: `The sentries of ${o.name}`, secret: !!o.secret })
+      list.push({ x: o.x, z: o.z, r: (SPY.postWatch + 40) * ns, rd: (SPY.postWatchDisguised + 40) * ns, name: o.name, who: `The sentries of ${o.name}`, secret: !!o.secret })
     }
     // The other side's Wardens (or Thorn Hunt): a watch on horseback. Secret while we cannot see them.
     for (const b of this.state.armies) {
       if (!b.wardens || !hostile(b.faction) || b.status === 'retreating') continue
-      list.push({ x: b.x, z: b.z, r: WARDENS.reveal, rd: WARDENS.reveal, name: b.name, who: `The riders of ${b.name}`, secret: !this.canSee(this.team(faction), b) })
+      list.push({ x: b.x, z: b.z, r: WARDENS.reveal * nw, rd: WARDENS.reveal * nw, name: b.name, who: `The riders of ${b.name}`, secret: !this.canSee(this.team(faction), b) })
     }
     this.watchCache.set(faction, { key, list })
     return list
@@ -3453,12 +3544,12 @@ export class GameEngine {
     const disguised = veil === 'disguised'
     const watch = this.watchedAt(a, a.x, a.z, veil)
     if (watch) return `${watch} saw them.`
-    const r = SPY.bump + total(a.troops) * SPY.bumpPerMan
+    const r = (SPY.bump + total(a.troops) * SPY.bumpPerMan) * this.nightSight()
     for (const b of this.state.armies) {
       if (!hostile(b.faction) || b.veil) continue
       const d = Math.hypot(b.x - a.x, b.z - a.z)
       // Scouts look closer at every column on the road.
-      if (disguised && b.order.type === 'scout' && d < SPY.scoutEye) return `Enemy scouts saw through the disguise of ${a.name}.`
+      if (disguised && b.order.type === 'scout' && d < SPY.scoutEye * this.nightSight()) return `Enemy scouts saw through the disguise of ${a.name}.`
       // Closing on the prey they chose is the ambush itself, not a blunder.
       if (a.order.type === 'intercept' && a.order.armyId === b.id) continue
       if (d < r) return `They ran into ${b.name}.`
@@ -3898,7 +3989,7 @@ export class GameEngine {
   /** Does the player see this enemy castle or army exactly (own, allied, neutral, or close to our forces)? */
   seesExactly(target: { x: number; z: number; faction: Faction }): boolean {
     if (!this.isHostile(target.faction, PLAYER) || target.faction === NEUTRAL) return true
-    const r = SCOUT.closeSight
+    const r = SCOUT.closeSight * byNight(1, NIGHT.exact, this.nightDark())
     for (const c of this.state.castles) if (c.faction === PLAYER && Math.abs(c.x - target.x) < r && Math.hypot(c.x - target.x, c.z - target.z) < r) return true
     for (const a of this.state.armies) if (a.faction === PLAYER && Math.abs(a.x - target.x) < r && Math.hypot(a.x - target.x, a.z - target.z) < r) return true
     return false
@@ -3950,9 +4041,12 @@ export class GameEngine {
     const t = this.state.time
     const w = this.state.weather.kind
     const wErr = w === 'storm' ? 0.2 : w === 'rain' ? 0.1 : w === 'snow' ? 0.06 : 0
+    // By night the scouts see less far (and count a little worse).
+    const ns = this.nightSight()
+    const sight = SCOUT.sight * ns
     const note = (id: string, x: number, z: number, troops: Troops) => {
       const d = Math.hypot(x - a.x, z - a.z)
-      const error = 0.06 + wErr + (d / SCOUT.sight) * 0.14
+      const error = 0.06 + wErr + (1 - ns) * 0.15 + (d / sight) * 0.14
       const skew = 1 + (Math.random() * 2 - 1) * error
       const counted: Troops = {}
       for (const k in troops) counted[k] = Math.max(0, Math.round((troops[k] ?? 0) * skew))
@@ -3961,25 +4055,25 @@ export class GameEngine {
     }
     for (const c of this.state.castles) {
       if (c.ruined || !this.isHostile(c.faction, a.faction) || c.faction === NEUTRAL) continue
-      if (Math.hypot(c.x - a.x, c.z - a.z) < SCOUT.sight) note(c.id, c.x, c.z, c.garrison)
+      if (Math.hypot(c.x - a.x, c.z - a.z) < sight) note(c.id, c.x, c.z, c.garrison)
     }
     for (const b of this.state.armies) {
       if (!this.isHostile(b.faction, a.faction)) continue
       const d = Math.hypot(b.x - a.x, b.z - a.z)
       if (this.isHidden(b)) {
         // Only found by riding right up to the trees.
-        if (d < SCOUT.uncover) {
+        if (d < SCOUT.uncover * ns) {
           b.revealedUntil = t + 90
           if (a.faction === PLAYER) this.log('victory', 'An ambush uncovered', `${a.name} found ${b.name} lying in wait.`, b.x, b.z)
           note(b.id, b.x, b.z, b.troops)
         }
         continue
       }
-      if (d < SCOUT.sight) note(b.id, b.x, b.z, b.troops)
+      if (d < sight) note(b.id, b.x, b.z, b.troops)
     }
     // The Usurper's standard: our scouts know it even flying over a keep.
     const q = this.foeRoyal()
-    if (q && this.team(a.faction) === this.team(PLAYER) && Math.hypot(q.x - a.x, q.z - a.z) < SCOUT.sight) a.scoutQueen = { x: Math.round(q.x), z: Math.round(q.z), t }
+    if (q && this.team(a.faction) === this.team(PLAYER) && Math.hypot(q.x - a.x, q.z - a.z) < sight) a.scoutQueen = { x: Math.round(q.x), z: Math.round(q.z), t }
   }
 
   /** The scouts made it home: their report becomes what we know. */
@@ -4066,7 +4160,8 @@ export class GameEngine {
       const stealth = (this.world.forestAt(a.x, a.z) > 0.3 ? 0.6 : 1) * (this.traitsOf(a).ambush > 1 ? 0.7 : 1) * weather
       type Observer = { faction: Faction; army?: Army; castle?: Castle }
       const spotted: Observer[] = []
-      const roll = (range: number, x: number, z: number, bonus = 1) => Math.hypot(x - a.x, z - a.z) < range && Math.random() < SCOUT.spotChance * stealth * bonus
+      const ns = this.nightSight()
+      const roll = (range: number, x: number, z: number, bonus = 1) => Math.hypot(x - a.x, z - a.z) < range * ns && Math.random() < SCOUT.spotChance * stealth * bonus
       for (const b of this.state.armies) {
         if (b.id === a.id || b.battleId || b.status === 'retreating' || b.order.type === 'scout' || b.pursuit) continue
         if (!this.isHostile(b.faction, a.faction) || this.atPeace(b.faction, a.faction)) continue
@@ -4151,13 +4246,12 @@ export class GameEngine {
     if (c.faction !== NEUTRAL) return { price: 0, chance: 0, reason: 'The village already has a lord.' }
     if (c.battleId) return { price: 0, chance: 0, reason: 'Not while fighting rages there.' }
     const f = this.state.factions[faction]
-    const rank = this.rankOf(faction)
     const infamy = f?.infamy ?? 0
     const near = this.state.castles.filter((x) => x.faction === faction && !x.village && Math.hypot(x.x - c.x, x.z - c.z) < 1400).length
     const militia = total(c.garrison)
-    const price = Math.round((200 + militia * 1.7) * HOLDINGS[this.holdingOf(c)].price * (1.2 - 0.06 * rank) * (1 + 0.35 * infamy))
+    const price = Math.round((200 + militia * 1.7) * HOLDINGS[this.holdingOf(c)].price * 1.14 * (1 + 0.35 * infamy))
     const king = this.state.armies.some((a) => a.royal && a.faction === faction && Math.hypot(a.x - c.x, a.z - c.z) < 420)
-    const chance = clamp(0.5 + 0.06 * rank + 0.1 * Math.min(2, near) - 0.14 * infamy + (king ? ROYAL.envoy : 0), 0.12, 0.95)
+    const chance = clamp(0.56 + 0.1 * Math.min(2, near) - 0.14 * infamy + (king ? ROYAL.envoy : 0), 0.12, 0.95)
     let reason: string | null = null
     if ((c.talksCooldown ?? 0) > this.state.time) reason = `The elders will not hear envoys again for ${Math.ceil((c.talksCooldown ?? 0) - this.state.time)}s.`
     else {
@@ -4210,7 +4304,8 @@ export class GameEngine {
   /** A free village taken by force: loot, captives, and a burned ruin nobody can use. */
   private plunderVillage(c: Castle, winners: Army[]) {
     const main = [...winners].sort((x, y) => total(y.troops) - total(x.troops))[0]
-    const captor = main.faction
+    // (What the High King's hosts win is ours.)
+    const captor = main.sacred ? PLAYER : main.faction
     const H = HOLDINGS[this.holdingOf(c)]
     const loot = Math.round(H.loot[0] + Math.random() * (H.loot[1] - H.loot[0]))
     const captives = Math.round(40 + c.manpower * 0.6)
@@ -4234,74 +4329,6 @@ export class GameEngine {
     else if (Math.hypot(c.x - this.capitalOf(PLAYER).x, c.z - this.capitalOf(PLAYER).z) < 2500) this.log('warning', `${this.factionName(captor)} plunders ${c.name}`, 'The village is burned to the ground.', c.x, c.z)
   }
 
-  // --- Realm ranks -------------------------------------------------------------
-
-  /**
-   * Ranks measure a realm's total military strength against one yardstick
-   * shared by every realm in this war: the player's starting strength.
-   * Steady play takes the player to about one rank short of the top.
-   */
-  initRanks() {
-    const size = this.state.rules.size ?? 'medium'
-    const max = RANK_MAX[size]
-    // Measured against the player's starting strength, so other lords' ranks read relative to yours.
-    const start = Math.max(this.totals(PLAYER).totalPower, 300)
-    const reach = RANK_REACH[this.state.rules.mode][size]
-    // Rank 1 at the start; rank (max - 1) at start × reach.
-    const growth = Math.pow(reach, 1 / Math.max(1, max - 2))
-    this.state.ranks = { base: start * growth * 0.92, growth, max }
-    for (const f of Object.keys(this.state.factions)) this.state.factions[f].rank = this.rankFor(this.totals(f).totalPower, 1)
-  }
-
-  /** Strength needed to hold a rank. */
-  rankThreshold(rank: number): number {
-    const r = this.state.ranks
-    if (!r || rank <= 1) return 0
-    return r.base * Math.pow(r.growth, rank - 2)
-  }
-
-  get maxRank(): number {
-    return this.state.ranks?.max ?? 6
-  }
-
-  rankOf(f: Faction): number {
-    if (f === NEUTRAL) return 0
-    return this.state.factions[f]?.rank ?? 1
-  }
-
-  /** Castle splendour (0–5) follows the owner's realm rank. */
-  splendourOf(c: Castle): number {
-    if (c.village) return 0
-    const r = this.rankOf(c.faction)
-    if (r <= 1) return 0
-    return Math.round(((r - 1) / Math.max(1, this.maxRank - 1)) * 5)
-  }
-
-  private rankFor(power: number, current: number): number {
-    let r = 1
-    while (r < this.maxRank && power >= this.rankThreshold(r + 1)) r++
-    // Hysteresis: a rank is only lost once strength falls well below it.
-    if (r < current && power >= this.rankThreshold(current) * 0.85) return current
-    return r
-  }
-
-  private updateRanks() {
-    if (!this.state.ranks) this.initRanks()
-    for (const [fid, f] of Object.entries(this.state.factions)) {
-      if (fid === NEUTRAL || !f.alive) continue
-      const prev = f.rank ?? 1
-      const next = this.rankFor(this.totals(fid).totalPower, prev)
-      if (next === prev) continue
-      f.rank = next
-      if (fid === PLAYER) {
-        if (next > prev && this.state.rules.mode !== 'convoy') this.log('victory', `Your realm rises to rank ${next}`, next === this.maxRank ? 'The highest standing in this war. Your castles stand at their grandest.' : 'Your castles grow grander, and every lord takes note.')
-        else if (this.state.rules.mode !== 'convoy') this.log('warning', `Your realm falls to rank ${next}`, 'Heavy losses have cost us standing.')
-      } else if (next === this.maxRank && next > prev) {
-        this.log('info', `${f.name} reaches rank ${next}`, 'The mightiest realm in the war.')
-      }
-    }
-  }
-
   /** Armies far from friendly castles, outposts or camps lose men and morale. */
   private updateSupply(dt: number) {
     // Convoy Raid is a short fight on one road: nobody starves.
@@ -4312,7 +4339,13 @@ export class GameEngine {
     const clim = this.climate()
     for (const a of this.state.armies) {
       // The dead neither eat nor tire; Corvin Ashe's people, posing as pilgrims and players, buy or beg it in the enemy's own villages.
-      if (this.state.factions[a.faction]?.undying || this.isSpyBand(a) || a.wardens) {
+      if (this.state.factions[a.faction]?.undying || this.state.factions[a.faction]?.sacred || this.isSpyBand(a) || a.wardens) {
+        a.supplied = true
+        continue
+      }
+      // The King at the Sanctuary of the High King: its brothers feed his guard.
+      const sa = this.state.sanctuary
+      if (a.royal && sa && Math.hypot(a.x - sa.x, a.z - sa.z) < TEMPLE.reach * 3) {
         a.supplied = true
         continue
       }
@@ -4320,12 +4353,15 @@ export class GameEngine {
       const reach = this.traitsOf(a).supply
       let ok = false
       for (const c of this.state.castles) {
-        if (this.team(c.faction) !== team || c.faction === NEUTRAL) continue
+        // (A starving castle has nothing to spare for armies in the field.)
+        if (this.team(c.faction) !== team || c.faction === NEUTRAL || this.starving(c)) continue
         if (Math.hypot(c.x - a.x, c.z - a.z) < this.supplyRange(c) * reach * this.groundSupply(c.x, c.z, clim.supply)) {
           ok = true
           break
         }
       }
+      // A grange of ours with grain in its barn feeds the armies camped near it.
+      if (!ok && this.grangeFeeding(a)) ok = true
       if (!ok) {
         for (const o of this.state.outposts) {
           if (o.progress >= 1 && this.team(o.faction) === team && Math.hypot(o.x - a.x, o.z - a.z) < this.outpostSupplyRange(o) * reach * this.groundSupply(o.x, o.z, clim.supply)) {
@@ -4350,6 +4386,253 @@ export class GameEngine {
     }
   }
 
+  // --- Food: stores, granges and hunger ------------------------------------------------
+
+  private foodClock = 0
+  /** Castles whose fields an enemy stands in (worked out once a second). */
+  private fieldsHeld = new Set<string>()
+
+  /** Does this castle keep stores (and so can it be starved)? */
+  fed(c: Castle | undefined): boolean {
+    return !!c && !c.village && !c.ruined && c.stores !== undefined
+  }
+  /** Food for a full garrison of this castle. */
+  storesMaxOf(c: Castle): number {
+    return storesMax(c.tier, this.capacity(c))
+  }
+  starving(c: Castle | undefined): boolean {
+    return this.fed(c) && (c!.stores ?? 0) <= 0 && c!.hungerSince != null
+  }
+  /** The armies standing inside a castle's walls as part of its garrison (they eat its food). */
+  private stationedIn(c: Castle): Army[] {
+    return this.state.armies.filter((a) => a.faction === c.faction && a.order.type === 'station' && a.order.castleId === c.id && !a.battleId && this.insideWalls(a))
+  }
+  /** Mouths to feed: the garrison and the troops stationed inside. */
+  mouths(c: Castle): number {
+    let n = total(c.garrison)
+    for (const a of this.stationedIn(c)) n += total(a.troops)
+    return n
+  }
+  /** Food the castle's own fields bring in each second (none while an enemy stands in them, or in a siege). */
+  fieldsYield(c: Castle): number {
+    return this.fieldsHeld.has(c.id) || c.battleId ? 0 : this.capacity(c) * STORES.fields
+  }
+  /** What the castle panel shows about its food. */
+  storesInfo(c: Castle): { stores: number; max: number; eat: number; gain: number; left: number; starving: boolean; held: boolean; inbound: number; grange: Grange | undefined } | null {
+    if (!this.fed(c)) return null
+    const eat = this.mouths(c)
+    const gain = this.fieldsYield(c)
+    const stores = c.stores ?? 0
+    const left = eat > gain ? stores / (eat - gain) : Infinity
+    const inbound = (this.state.convoys ?? []).filter((w) => w.grain && w.fromCastleId === c.id).length
+    return { stores, max: this.storesMaxOf(c), eat, gain, left, starving: this.starving(c), held: this.fieldsHeld.has(c.id), inbound, grange: this.grangeOf(c.id) }
+  }
+
+  grange(id: string | null | undefined): Grange | undefined {
+    return id ? (this.state.granges ?? []).find((g) => g.id === id) : undefined
+  }
+  grangeOf(castleId: string): Grange | undefined {
+    return (this.state.granges ?? []).find((g) => g.castleId === castleId)
+  }
+  /** Who holds a grange (and so whom its grain feeds). */
+  grangeOwner(g: Grange): Faction {
+    return g.faction
+  }
+  /** The castles a grange feeds: a free grange its own castle (while that is free); a realm's grange every castle of the realm. */
+  grangeFeeds(g: Grange): Castle[] {
+    if (g.faction === NEUTRAL) {
+      const own = this.castle(g.castleId)
+      return own && own.faction === NEUTRAL && this.fed(own) ? [own] : []
+    }
+    return this.state.castles.filter((c) => c.faction === g.faction && this.fed(c))
+  }
+  /** Why this army cannot be sent to take this grange, or null. */
+  takeProblem(armyId: string, grangeId: string): string | null {
+    const a = this.army(armyId)
+    const g = this.grange(grangeId)
+    if (!a || !g) return 'Nothing to take here.'
+    if (!this.isHostile(a.faction, g.faction)) return 'This grange is already ours.'
+    if (total(a.troops) < GRANGE.takeMen) return `Too few: it takes ${GRANGE.takeMen} men to pull down the wall.`
+    return null
+  }
+  /** Send an army to take a grange: it marches to the wall and pulls it down. */
+  orderTake(armyId: string, grangeId: string): string | null {
+    const err = this.takeProblem(armyId, grangeId)
+    if (err) return err
+    const g = this.grange(grangeId)!
+    this.orderArmy(armyId, { type: 'move', x: g.x, z: g.z })
+    this.army(armyId)!.takeGrangeId = g.id
+    return null
+  }
+  /** How fast this army pulls down a grange's wall (per second). */
+  grangeSiege(a: Army): number {
+    return (siegePower(a.troops, this.units, this.commanderOf(a)) * this.traitsOf(a).siege + total(a.troops) * GRANGE.perMan) * WALL_K * this.climate().siege
+  }
+  /** The armies pulling down a grange's wall now (none while the holders' troops stand near). */
+  grangeAttackers(g: Grange): Army[] {
+    const s = this.state
+    const owner = g.faction
+    const guarded = owner !== NEUTRAL && s.armies.some((a) => a.status !== 'retreating' && !this.isHostile(a.faction, owner) && total(a.troops) >= GRANGE.takeMen && Math.hypot(a.x - g.x, a.z - g.z) < GRANGE.guardReach)
+    if (guarded) return []
+    return s.armies.filter((a) => !a.battleId && a.status !== 'retreating' && this.isHostile(a.faction, owner) && !this.atPeace(a.faction, owner) && total(a.troops) >= GRANGE.takeMen && Math.hypot(a.x - g.x, a.z - g.z) < GRANGE.assaultReach)
+  }
+  /** The grange that feeds this army in the field (one of its own side's, near enough, with grain in the barn). */
+  grangeFeeding(a: Army): Grange | undefined {
+    if (a.royal || this.insideWalls(a)) return undefined
+    return (this.state.granges ?? []).find((g) => g.faction === a.faction && g.barn > 0 && Math.abs(g.x - a.x) < GRANGE.feedReach && Math.hypot(g.x - a.x, g.z - a.z) < GRANGE.feedReach)
+  }
+
+  /** Once a second: the fields, the stores, hunger and surrender, and the granges at work. */
+  private updateFood(dt: number) {
+    const s = this.state
+    const now = s.time
+    // Who stands in whose fields.
+    this.fieldsHeld.clear()
+    for (const c of s.castles) {
+      if (!this.fed(c)) continue
+      const reach = wallRadius(c.tier) + STORES.fieldsReach
+      for (const a of s.armies) {
+        if (a.status === 'retreating' || !this.isHostile(a.faction, c.faction) || this.atPeace(a.faction, c.faction)) continue
+        if (Math.abs(a.x - c.x) > reach || Math.abs(a.z - c.z) > reach || Math.hypot(a.x - c.x, a.z - c.z) > reach) continue
+        if (total(a.troops) < STORES.fieldsMen) continue
+        this.fieldsHeld.add(c.id)
+        break
+      }
+    }
+    for (const c of s.castles) {
+      if (!this.fed(c)) continue
+      const max = this.storesMaxOf(c)
+      const eat = this.mouths(c)
+      const gain = this.fieldsYield(c)
+      c.stores = clamp((c.stores ?? 0) + (gain - eat) * dt, 0, max)
+      const ours = c.faction === PLAYER
+      if (c.stores > max * 0.5) c.lowWarned = false
+      if (ours && !c.lowWarned && c.stores < max * STORES.low && eat > gain) {
+        c.lowWarned = true
+        const secs = Math.round(c.stores / Math.max(1, eat - gain))
+        this.log('warning', `${c.name}'s stores run low`, `Food for about ${Math.max(1, Math.round(secs / 60))} minute${secs >= 90 ? 's' : ''} at this garrison. Clear the enemy from its fields and keep the grain wagons coming.`, c.x, c.z)
+      }
+      if (c.stores > 0 || eat <= gain) {
+        if (c.hungerSince != null && ours) this.log('info', `${c.name} is fed again`, 'Grain has come in; the hunger is over.', c.x, c.z)
+        c.hungerSince = null
+        continue
+      }
+      // Hunger: the garrison wastes away and loses heart.
+      if (c.hungerSince == null) {
+        c.hungerSince = now
+        c.hungerFrom = eat
+        if (ours) this.log('lost', `${c.name} is starving`, 'The stores are empty. The garrison will waste away and fight shaken; it raises no levies and mends no walls. Get grain to it, or it will open its gates to the enemy.', c.x, c.z)
+        else if (this.besiegers(c).some((a) => a.faction === PLAYER)) this.log('victory', `${c.name} is starving`, 'Its stores are empty: hold the siege and it will open its gates.', c.x, c.z)
+      }
+      const keep = 1 - STORES.starve * dt
+      c.garrison = scaleTroops(c.garrison, keep)
+      for (const a of this.stationedIn(c)) a.troops = scaleTroops(a.troops, keep)
+      c.shakenUntil = Math.max(c.shakenUntil ?? 0, now + 1.5)
+      // Wasted to a remnant, with an enemy at the gates: the castle opens them.
+      const left = this.mouths(c)
+      if (left <= Math.max(STORES.surrenderMen, (c.hungerFrom ?? left) * STORES.surrender)) {
+        const at = s.armies
+          .filter((a) => a.status !== 'retreating' && this.isHostile(a.faction, c.faction) && !this.atPeace(a.faction, c.faction) && Math.hypot(a.x - c.x, a.z - c.z) < wallRadius(c.tier) + STORES.surrenderReach)
+          .sort((x, y) => total(y.troops) - total(x.troops))[0]
+        // (In the middle of an assault the storm decides it.)
+        if (at && !c.battleId) this.surrender(c, at)
+      }
+    }
+    this.updateGranges(dt)
+  }
+
+  /** Enemy armies at a castle's walls (in its siege, or close by). */
+  private besiegers(c: Castle): Army[] {
+    const r = wallRadius(c.tier) + STORES.surrenderReach
+    return this.state.armies.filter((a) => this.isHostile(a.faction, c.faction) && Math.hypot(a.x - c.x, a.z - c.z) < r)
+  }
+
+  /** A starved castle opens its gates: the troops stationed inside march out, and the enemy marches in. */
+  private surrender(c: Castle, to: Army) {
+    const prev = c.faction
+    const prevName = this.factionName(prev)
+    for (const a of this.stationedIn(c)) this.withdraw(a, true)
+    if (prev === PLAYER) this.log('lost', `${c.name} opens its gates`, `Starved, the garrison yields to ${to.name} of ${this.factionName(to.faction)}.`, c.x, c.z)
+    else if (to.faction === PLAYER) this.log('victory', `${c.name} opens its gates`, `Starved out, ${prevName === 'Free Towns' ? 'the town' : prevName} yields to ${to.name}.`, c.x, c.z)
+    this.captureCastle(c, [to])
+  }
+
+  /**
+   * The granges, once a second: the harvest into the barn; the holders' armies nearby fed from it;
+   * enemies pulling down the wall (and taking the grange when it falls), or the wall mending; and a
+   * wagon of grain to the hungriest castle it feeds.
+   */
+  private updateGranges(dt: number) {
+    const s = this.state
+    const now = s.time
+    const harvest = GRANGE.harvest[seasonAt(now)] ?? 0
+    for (const g of s.granges ?? []) {
+      const owner = g.faction
+      g.barn = Math.min(GRANGE.barnMax, g.barn + harvest * dt)
+      // The holders' armies camped near it eat from the barn.
+      for (const a of s.armies) if (this.grangeFeeding(a) === g) g.barn = Math.max(0, g.barn - total(a.troops) * dt)
+      // No soldiers keep it: enemies at the wall pull it down, unless the holders' troops are near.
+      const attackers = this.grangeAttackers(g)
+      if (attackers.length) {
+        if ((g.assaultAt ?? -999) < now - 30 && owner === PLAYER) this.log('warning', `${g.name} is under attack`, `${attackers[0].name} of ${this.factionName(attackers[0].faction)} is pulling down the wall round its fields. Send an army: while ours stand near it, the wall holds.`, g.x, g.z)
+        g.assaultAt = now
+        g.walls -= attackers.reduce((n, a) => n + this.grangeSiege(a), 0) * dt
+        if (g.walls <= 0) {
+          const by = attackers.sort((x, y) => total(y.troops) - total(x.troops))[0]
+          g.faction = by.faction
+          g.walls = GRANGE.walls * GRANGE.takenWalls
+          g.nextWagonAt = now + 3
+          for (const a of attackers) a.takeGrangeId = null
+          const home = this.castle(g.castleId)
+          if (owner === PLAYER) this.log('lost', `${g.name} is lost`, `${this.factionName(by.faction)} holds it now, and its barn: its grain goes to their castles${home ? `, and ${home.name} must live on its stores` : ''}.`, g.x, g.z)
+          else if (by.faction === PLAYER) this.log('victory', `${g.name} is ours`, `${by.name} broke through the wall. Its barn (food for ${fmt(g.barn / 60)} men for a minute) and its harvests now feed our castles and our armies camped near it.`, g.x, g.z)
+          this.events.push({ type: 'grange_taken', grangeId: g.id, faction: by.faction })
+        }
+      } else if (now - (g.assaultAt ?? -999) > GRANGE.mendAfter) g.walls = Math.min(GRANGE.walls, g.walls + GRANGE.mend * dt)
+      // A wagon of grain to the hungriest castle it feeds (one wagon on the road to each at a time).
+      if (now < g.nextWagonAt || g.barn < GRANGE.cargo) continue
+      const inbound = new Set((s.convoys ?? []).filter((w) => w.grain).map((w) => w.fromCastleId))
+      let best: Castle | null = null
+      let bestScore = Infinity
+      for (const c of this.grangeFeeds(g)) {
+        if (inbound.has(c.id)) continue
+        const max = this.storesMaxOf(c)
+        const share = (c.stores ?? 0) / Math.max(1, max)
+        if (share > 0.95) continue
+        const score = share - (this.fieldsHeld.has(c.id) ? 0.15 : 0) - (c.battleId ? 0.1 : 0) - (c.hungerSince != null ? 0.3 : 0)
+        if (score < bestScore) {
+          bestScore = score
+          best = c
+        }
+      }
+      if (!best) {
+        g.nextWagonAt = now + 4
+        continue
+      }
+      g.nextWagonAt = now + GRANGE.every
+      g.barn -= GRANGE.cargo
+      const sx = g.x + Math.sin(g.heading) * GRANGE.outerZ
+      const sz = g.z + Math.cos(g.heading) * GRANGE.outerZ
+      const path = this.world.findPath(sx, sz, best.x, best.z)
+      ;(s.convoys ??= []).push({
+        id: this.newId('w'),
+        faction: g.faction,
+        kind: 'gold',
+        outpostId: '',
+        fromCastleId: best.id,
+        gold: 0,
+        grain: GRANGE.cargo,
+        grangeId: g.id,
+        x: sx,
+        z: sz,
+        path: [...path],
+        route: [[sx, sz], ...path],
+        cargo: 0,
+        heading: Math.atan2(best.z - sz, best.x - sx),
+      })
+    }
+  }
+
   // --- Diplomacy ---------------------------------------------------------------
 
   /** Gold a free town asks to join the realm. */
@@ -4359,7 +4642,9 @@ export class GameEngine {
   buyTown(castleId: string): string | null {
     const c = this.castle(castleId)
     const f = this.state.factions[PLAYER]
-    if (!c || c.faction !== NEUTRAL) return 'Only free towns can be bought.'
+    if (!c || c.faction !== NEUTRAL || c.village) return 'Only free towns can be bought.'
+    // (The Old Throne's fortress is won by arms, never bought.)
+    if (c.id === CORONATION.heartId) return 'The Imperial Crossroads is not for sale.'
     if (c.battleId) return 'Not while it is under siege.'
     const price = this.townPrice(c)
     if (f.gold < price) return `The burghers want ${price} gold.`
@@ -4467,6 +4752,112 @@ export class GameEngine {
     return null
   }
 
+  // -------------------------------------------------------------------------
+  // The Old Throne (War of the Three Crowns)
+  // -------------------------------------------------------------------------
+
+  /** A crown's monarch in the field: the King's Royal Guard, the Queen's Thorn Guard, the Emperor's Solar Guard. */
+  monarchOf(team: WarTeam): Army | undefined {
+    const id = team === 'A' ? this.state.royalId : team === 'B' ? this.state.foeRoyalId : this.state.sunRoyalId
+    return id ? this.army(id) : undefined
+  }
+  crownName(team: WarTeam): string {
+    return team === 'A' ? 'King Aldric' : team === 'B' ? 'Queen Morwenna' : 'Emperor Vaelor'
+  }
+
+  /** The Imperial Crossroads, while a rival crown (not `team`) counts down to its coronation there. */
+  coronationThreat(team: Team): Castle | undefined {
+    const c = this.state.coronation
+    if (this.state.rules.mode !== 'grand' || !c || c.team === team || c.progress <= 0) return undefined
+    if (team !== 'N' && this.state.crownsFallen?.[team as WarTeam]) return undefined
+    return this.castle(CORONATION.heartId)
+  }
+
+  /** Why the count at the Old Throne cannot run for this crown now (null: it runs). */
+  private coronationBlock(team: WarTeam, heart: Castle): string | null {
+    const m = this.monarchOf(team)
+    if (!m) return 'The monarch has fallen.'
+    if (m.battleId) return `${this.crownName(team)} is fighting.`
+    if (Math.hypot(m.x - heart.x, m.z - heart.z) > CORONATION.reach && !(m.order.type === 'station' && m.order.castleId === heart.id && this.inKeep(m))) return `${this.crownName(team)} is not at the throne.`
+    if (heart.battleId) return 'The Crossroads is besieged.'
+    for (const a of this.state.armies) {
+      if (a.status === 'retreating' || !this.isHostile(a.faction, heart.faction) || this.atPeace(a.faction, heart.faction)) continue
+      if (total(a.troops) < CORONATION.contestMen) continue
+      if (Math.hypot(a.x - heart.x, a.z - heart.z) < CORONATION.contest) return `Enemies stand before the Crossroads (${a.name}).`
+    }
+    return null
+  }
+
+  private updateCoronation(dt: number) {
+    const s = this.state
+    if (s.rules.mode !== 'grand' || s.crowned) return
+    const heart = this.castle(CORONATION.heartId)
+    if (!heart) return
+    const t = s.time
+    if (t < CORONATION.opensAt) return
+    if (!s.throneOpen) {
+      s.throneOpen = true
+      this.log('warning', 'The Old Throne awaits', `Whichever crown holds ${heart.name} and brings its monarch there for ${CORONATION.seconds / 60} minutes unchallenged is crowned High Emperor, and wins the war.`, heart.x, heart.z)
+    }
+    const tm = this.team(heart.faction)
+    const owner = heart.faction !== 'neutral' && (tm === 'A' || tm === 'B' || tm === 'C') && !s.crownsFallen?.[tm] ? tm : null
+    let c = s.coronation ?? null
+    // The Crossroads changed hands (or its crown is broken): the count is lost.
+    if (c && c.team !== owner) {
+      if (c.progress > 0) this.log(c.team === 'A' ? 'lost' : 'victory', 'The coronation is undone', `${this.crownName(c.team)} has lost ${heart.name}. The count at the Old Throne begins anew.`, heart.x, heart.z)
+      s.coronation = c = null
+    }
+    if (!owner) return
+    const why = this.coronationBlock(owner, heart)
+    if (!c) {
+      if (why) return
+      s.coronation = c = { team: owner, progress: 0, active: false, why: null, warned: 0 }
+    }
+    if (why) {
+      if (c.active) {
+        c.active = false
+        c.haltedAt = t
+        c.haltTold = false
+      }
+      // (Told only once a halt has lasted a few seconds: a scout brushing past is not news.)
+      if (!c.haltTold && c.progress > 0 && t - (c.haltedAt ?? t) >= 5) {
+        c.haltTold = true
+        this.log(owner === 'A' ? 'warning' : 'victory', 'The coronation halts', `${why} ${Math.ceil(CORONATION.seconds - c.progress)}s of the rite remain.`, heart.x, heart.z)
+      }
+      c.why = why
+      return
+    }
+    c.why = null
+    if (!c.active) {
+      c.active = true
+      const told = c.progress <= 0 || c.haltTold
+      c.haltTold = false
+      const left = Math.ceil(CORONATION.seconds - c.progress)
+      if (!told) {
+        // (A halt too short to tell of: the rite simply carries on.)
+      } else if (owner === 'A') this.log('victory', c.progress > 0 ? 'The coronation resumes' : 'The coronation begins', `King Aldric takes the Old Throne at ${heart.name}. Hold it ${left}s and he is crowned High Emperor. The other crowns will throw everything at you.`, heart.x, heart.z)
+      else this.log('warning', c.progress > 0 ? `${this.crownName(owner)}'s coronation resumes!` : `${this.crownName(owner)} claims the Old Throne!`, `${left}s until ${this.crownName(owner)} is crowned High Emperor and the war is lost. Take ${heart.name}, or drive enemies into its shadow to halt the rite.`, heart.x, heart.z)
+    }
+    c.progress += dt
+    // Every other unbroken crown and its lords make for the Crossroads.
+    for (const other of ['A', 'B', 'C'] as const) {
+      if (other !== owner && !s.crownsFallen?.[other]) s.teamFocus[other] = { castleId: heart.id, until: t + 60 }
+    }
+    const left = CORONATION.seconds - c.progress
+    // Reminders at 2 minutes, 1 minute and 30 seconds left (each once).
+    const mark = [30, 60, 120].find((m) => left <= m)
+    if (mark && (c.warned === 0 || c.warned > mark) && left > 1) {
+      c.warned = mark
+      if (owner === 'A') this.log('victory', `${mark}s to the crown`, `King Aldric is ${mark} seconds from the imperial crown.`, heart.x, heart.z)
+      else this.log('warning', `${mark}s to ${this.crownName(owner)}'s crowning!`, `Break the rite at ${heart.name} now.`, heart.x, heart.z)
+    }
+    if (c.progress >= CORONATION.seconds) {
+      s.crowned = owner
+      if (owner === 'A') this.log('victory', 'Imperial Victory!', `King Aldric is crowned High Emperor on the Old Throne. The empire is one again, and the rival crowns bow.`, heart.x, heart.z)
+      else this.log('lost', `${this.crownName(owner)} is crowned High Emperor`, 'The empire is reborn under a rival crown. The war is lost.', heart.x, heart.z)
+    }
+  }
+
   /** What an outpost costs this realm (a guildhall knocks some off). */
   outpostCost(f: Faction, kind: OutpostKind): number {
     return Math.round(OUTPOST_KINDS[kind].cost * this.buildDiscount(f))
@@ -4481,6 +4872,7 @@ export class GameEngine {
     return OUTPOST_ORDER.map((kind) => {
       const def = OUTPOST_KINDS[kind]
       let reason = general
+      if (!reason && crewFor(a, kind) < MIN_ENGINEERS) reason = (a.troops.saboteurs ?? 0) >= MIN_ENGINEERS ? 'Saboteurs cannot raise this: it needs Engineers.' : `Needs at least ${MIN_ENGINEERS} Engineers in the army.`
       if (!reason && !this.terrainSuits(kind, a.x, a.z)) reason = `Needs: ${def.terrain.toLowerCase()}.`
       const cost = this.outpostCost(a.faction, kind)
       if (!reason && (!f || f.gold < cost)) reason = `Needs ${cost} gold.`
@@ -4490,7 +4882,6 @@ export class GameEngine {
 
   private outpostSiteProblem(a: Army): string | null {
     if (a.battleId || a.status === 'retreating') return 'Not while fighting or retreating.'
-    if ((a.troops.engineers ?? 0) < MIN_ENGINEERS) return `Needs at least ${MIN_ENGINEERS} Engineers in the army.`
     if (this.world.iceAt(a.x, a.z)) return 'Not on the ice: it will not hold through the thaw.'
     return this.siteProblemAt(a.faction, a.x, a.z)
   }
@@ -4551,7 +4942,7 @@ export class GameEngine {
     }
     this.state.outposts.push(o)
     this.orderArmy(a.id, { type: 'build', outpostId: o.id })
-    if (a.faction === PLAYER) this.log('deploy', `Engineers begin a ${def.name}`, `${a.name} stays to build it (about ${Math.round(buildSeconds(a.troops.engineers ?? 0, kind))}s).`, o.x, o.z)
+    if (a.faction === PLAYER) this.log('deploy', `${a.troops.engineers ? 'Engineers' : 'Sappers'} begin a ${def.name}`, `${a.name} stays to build it (about ${Math.round(buildSeconds(crewFor(a, kind), kind))}s).`, o.x, o.z)
     return null
   }
 
@@ -4636,7 +5027,7 @@ export class GameEngine {
     if (live.some((m) => m.targetCastleId === targetCastleId)) return 'The alliance is already gathering against that castle. Join that muster instead.'
     if (live.length >= GameEngine.MUSTERS_PER_TEAM) return `At most ${GameEngine.MUSTERS_PER_TEAM} musters at once.`
     if (organizer === PLAYER && live.filter((m) => m.organizer === PLAYER).length >= GameEngine.MUSTERS_PER_PLAYER) return `You can lead at most ${GameEngine.MUSTERS_PER_PLAYER} musters at once.`
-    if (!Object.values(this.state.factions).some((f) => f.team === team && f.id !== organizer && f.alive)) return 'You have no allies to summon.'
+    if (!Object.values(this.state.factions).some((f) => f.team === team && f.id !== organizer && f.alive && !f.sacred)) return 'You have no allies to summon.'
     let x: number
     let z: number
     const army = this.army(rally.armyId)
@@ -4784,7 +5175,7 @@ export class GameEngine {
         }
         const st = this.musterStatus(m.id)!
         // AI lords answer within a few seconds; the player is never waited for.
-        const allAnswered = Object.values(this.state.factions).every((f) => f.team !== m.team || f.id === PLAYER || !f.alive || m.answered.includes(f.id))
+        const allAnswered = Object.values(this.state.factions).every((f) => f.team !== m.team || f.id === PLAYER || !f.alive || f.sacred || m.answered.includes(f.id))
         const ready = st.arrived > 0 && st.enRoute === 0 && allAnswered && t - m.startedAt > 15
         // AI organisers do not wait forever for a single straggler.
         const aiReady = m.organizer !== PLAYER && st.arrived >= 2 && t - m.startedAt > 60
@@ -4799,7 +5190,7 @@ export class GameEngine {
     }
   }
 
-  private removeArmy(a: Army) {
+  removeArmy(a: Army) {
     if (a.commanderKey) {
       const s = this.state.commanders[a.commanderKey]
       if (s && s.armyId === a.id) s.armyId = null
@@ -4827,6 +5218,8 @@ export class GameEngine {
     if (t >= this.nextEconomyAt) {
       this.economy(1)
       this.updateMusters()
+      this.updateCoronation(1)
+      runSanctuary(this, 1)
       this.updateOutposts(1)
       this.updateDepots(1)
       this.updateWorks(1)
@@ -4841,7 +5234,6 @@ export class GameEngine {
       this.towerFire()
       if (this.state.night) this.wallFire()
       this.updateSupply(1)
-      this.updateRanks()
       this.nextEconomyAt = t + 1
     }
     if (t >= this.nextAutoRecruitAt) {
@@ -4877,6 +5269,12 @@ export class GameEngine {
   private economy(dt: number) {
     const s = this.state
     this.updateWeather()
+    this.updateDaylight()
+    this.foodClock += dt
+    if (this.foodClock >= 1) {
+      this.updateFood(this.foodClock)
+      this.foodClock = 0
+    }
     const clim = this.climate()
     // Convoy Raid: no income, upkeep or recruiting; the forces on the road are all there is.
     const fixed = s.rules.mode === 'convoy'
@@ -4887,7 +5285,7 @@ export class GameEngine {
       if (f.team === 'N') {
         // Free towns and villages slowly rebuild their militia.
         const cap = c.village ? VILLAGE.freeMilitia * (this.holdingOf(c) === 'keep' ? 1.4 : 1) : c.tier * 260
-        if (!c.battleId && total(c.garrison) < cap) {
+        if (!c.battleId && total(c.garrison) < cap && !this.starving(c)) {
           if (c.village) {
             const mix = HOLDINGS[this.holdingOf(c)].mix
             for (const k of ['infantry', 'cavalry', 'archers'] as const) c.garrison[k] = (c.garrison[k] ?? 0) + 0.22 * dt * mix[k]
@@ -4907,16 +5305,19 @@ export class GameEngine {
       } else {
         f.gold += this.castleIncome(c) * this.incomeMult(c.faction) * clim.income * dt
       }
+      // A starving castle raises no levies and mends no walls.
+      const hungry = this.starving(c)
       const mpBoost = clim.manpower
-      c.manpower = Math.min(this.maxManpower(c), c.manpower + this.manpowerRegen(c) * mpBoost * dt)
-      if (!c.battleId && c.walls < c.maxWalls && (c.sappedUntil ?? 0) <= s.time) c.walls = Math.min(c.maxWalls, c.walls + c.tier * 3 * dt * (!c.village && this.guildTier(c.faction) ? HOLDING_EFFECTS.guildWalls : 1))
+      if (!hungry) c.manpower = Math.min(this.maxManpower(c), c.manpower + this.manpowerRegen(c) * mpBoost * dt)
+      if (!hungry && !c.battleId && c.walls < c.maxWalls && (c.sappedUntil ?? 0) <= s.time) c.walls = Math.min(c.maxWalls, c.walls + c.tier * 3 * dt * (!c.village && this.guildTier(c.faction) ? HOLDING_EFFECTS.guildWalls : 1))
     }
     const soldiers = new Map<Faction, number>()
     // The Royal Guard costs nothing to keep in the field.
-    for (const a of s.armies) if (!a.royal) soldiers.set(a.faction, (soldiers.get(a.faction) ?? 0) + total(a.troops))
+    // (Armies fed from a grange of theirs cost half as much.)
+    for (const a of s.armies) if (!a.royal) soldiers.set(a.faction, (soldiers.get(a.faction) ?? 0) + total(a.troops) * (this.grangeFeeding(a) ? GRANGE.feedUpkeep : 1))
     for (const [fid, n] of fixed ? [] : soldiers) {
       const f = s.factions[fid]
-      if (!f || f.undying) continue
+      if (!f || f.undying || f.sacred) continue
       f.gold -= n * FIELD_UPKEEP * clim.upkeep * dt
       if (f.gold < 0) {
         f.gold = 0
@@ -4979,7 +5380,7 @@ export class GameEngine {
     this.notify()
   }
 
-  private moraleCap(a: Army) {
+  moraleCap(a: Army) {
     return clamp(70 + (this.commanderOf(a)?.morale_bonus ?? 0) + this.traitsOf(a).morale, 40, 100)
   }
 
@@ -4996,18 +5397,26 @@ export class GameEngine {
     if (a.inPavilion && !inPavilion && a.status !== 'retreating') a.sortieUntil = this.state.time + 20
     a.inPavilion = inPavilion
     const ground = this.world.def.features?.length ? this.world.featureKindAt(a.x, a.z) : null
+    const dark = this.nightDark()
+    const woodsNight = NIGHT.woodsHide * dark
     if (a.status === 'idle' && lodge && OUTPOST_KINDS[lodge.kind].hides) {
       // Inside a hidden camp: out of sight at once.
       a.hiddenSince = Math.min(a.hiddenSince ?? this.state.time, this.state.time - HIDE_SECONDS)
     } else if (a.status === 'idle' && ground === 'thicket') {
-      // Windfall: hidden after 5 seconds instead of 8.
-      if (a.hiddenSince === null) a.hiddenSince = this.state.time - (HIDE_SECONDS - 5)
+      // Windfall: hidden after 5 seconds instead of 8 (sooner by night).
+      if (a.hiddenSince === null) a.hiddenSince = this.state.time - (HIDE_SECONDS - 5) - woodsNight
     } else if (a.status === 'idle' && ground === 'oldwood') {
-      // Among the giant trunks: hidden after 4 seconds.
-      if (a.hiddenSince === null) a.hiddenSince = this.state.time - (HIDE_SECONDS - FEATURES.oldwood.hide)
+      // Among the giant trunks: hidden after 4 seconds (sooner by night).
+      if (a.hiddenSince === null) a.hiddenSince = this.state.time - (HIDE_SECONDS - FEATURES.oldwood.hide) - woodsNight
     } else if (a.status === 'idle' && this.world.forestAt(a.x, a.z) > 0.3) {
-      if (a.hiddenSince === null) a.hiddenSince = this.state.time
-    } else if (a.status !== 'idle') a.hiddenSince = null
+      if (a.hiddenSince === null) a.hiddenSince = this.state.time - woodsNight
+    } else if (a.status === 'idle' && dark >= NIGHT.dark && !nearFriendly && !lodge && !this.state.factions[a.faction]?.undying && total(a.troops) <= NIGHT.campMen) {
+      // By night a band camped without fire in the open slips out of sight after a while.
+      if (a.hiddenSince === null) a.hiddenSince = this.state.time + (NIGHT.campHide - HIDE_SECONDS)
+    } else if (a.status !== 'idle' || (ground !== 'thicket' && ground !== 'oldwood' && this.world.forestAt(a.x, a.z) <= 0.3 && (dark < NIGHT.dark || nearFriendly || lodge))) {
+      // On the move, or day breaks over a camp in the open: in plain sight again.
+      a.hiddenSince = null
+    }
 
     // Convoy Raid: raiders have no castle; the beaten fall back to their hidden camps.
     if (a.status === 'retreating' && this.state.train && !this.nearestCastle(a.x, a.z, a.faction)) {
@@ -5141,7 +5550,7 @@ export class GameEngine {
       case 'work': {
         if (this.moveTowards(a, o.x, o.z, dt, 18)) {
           a.status = 'idle'
-          if ((a.troops.engineers ?? 0) < WORKS[o.job].engineers) {
+          if (crewFor(a, o.job) < WORKS[o.job].engineers) {
             a.order = { type: 'hold' }
             break
           }
@@ -5258,7 +5667,7 @@ export class GameEngine {
           a.status = 'idle'
           if (site.progress < 1) {
             const builder = a.commanderKey && this.state.commanders[a.commanderKey]?.traits.includes('master_builder') ? 2 : 1
-            site.progress = Math.min(1, site.progress + (dt * builder) / buildSeconds(a.troops.engineers ?? 0, site.kind))
+            site.progress = Math.min(1, site.progress + (dt * builder) / buildSeconds(crewFor(a, site.kind), site.kind))
             if (site.progress >= 1) {
               a.order = { type: 'hold' }
               if (a.faction === PLAYER) this.log('capture', `${site.name} is complete`, OUTPOST_KINDS[site.kind].description, site.x, site.z)
@@ -5488,6 +5897,8 @@ export class GameEngine {
     let p = queen ? B.chance.sovereign - B.wary * tries : foe.commanderKey ? B.chance.commander - B.perLevel * (this.commanderLevel(foe) - 1) : B.chance.captain
     p += bl.veil === 'concealed' ? B.hidden : bl.veil === 'disguised' ? B.disguised : 0
     p += B.perAsheLevel * (this.commanderLevel(bl) - 1)
+    // By night the knives come closer before anyone sees them.
+    p += NIGHT.strike * this.nightDark()
     p -= Math.min(B.crowdMax, (total(foe.troops) / 1000) * B.crowd)
     // (The Queen's Thorn Guard has its own measure: warier with every attempt.)
     if (bl.faction === PLAYER && !queen) p -= B.bodyguard[this.state.difficulty] ?? 0
@@ -5608,7 +6019,8 @@ export class GameEngine {
     this.orderArmy(a.id, { type: 'hold' })
     a.steer = undefined
     const covered = !!this.sapperCover(a)
-    const work = covered ? SAPPERS.coveredWork : SABOTAGE.work
+    // By night the work goes faster (and is less often found out afterwards).
+    const work = Math.round((covered ? SAPPERS.coveredWork : SABOTAGE.work) * byNight(1, NIGHT.sabotageWork, this.nightDark()))
     a.sabotage = { targetId, kind, doneAt: this.state.time + work }
     if (a.faction === PLAYER) this.log('deploy', `${a.name} set to work`, `${SABOTAGE_KINDS[kind].name} at ${tg.name}: ${work} seconds${covered ? ', the Blades keeping watch' : ''}, and they must not be seen.`, tg.x, tg.z)
     this.notify()
@@ -5627,7 +6039,11 @@ export class GameEngine {
       if (job.kind === 'wells') {
         c.garrison = scaleTroops(c.garrison, 1 - S.wells.garrison)
         c.manpower = Math.max(0, c.manpower * (1 - S.wells.manpower))
-      } else if (job.kind === 'granary') c.shakenUntil = Math.max(c.shakenUntil ?? 0, t + S.granary.shaken)
+      } else if (job.kind === 'granary') {
+        c.shakenUntil = Math.max(c.shakenUntil ?? 0, t + S.granary.shaken)
+        // The fire takes half the stores with it.
+        if (c.stores !== undefined) c.stores *= 0.5
+      }
       else if (job.kind === 'postern') {
         c.walls = Math.max(0, c.walls - c.maxWalls * S.postern.walls)
         c.sappedUntil = Math.max(c.sappedUntil ?? 0, t + S.postern.sapped)
@@ -5640,7 +6056,7 @@ export class GameEngine {
     const victim = c?.faction ?? o!.faction
     if (a.faction === PLAYER) this.log('victory', `${k.name}: done`, `${this.armyLeader(a)}'s people did their work at ${name}. ${k.blurb}`, c?.x ?? o!.x, c?.z ?? o!.z)
     else if (victim === PLAYER) this.log('lost', `Saboteurs at ${name}`, `Enemy agents struck: ${k.name.toLowerCase()}. ${k.blurb}`, c?.x ?? o!.x, c?.z ?? o!.z)
-    if (Math.random() < (this.sapperCover(a) ? SAPPERS.coveredAlarm : S.alarm)) this.unveil(a, `The alarm went up at ${name} after the deed.`)
+    if (Math.random() < (this.sapperCover(a) ? SAPPERS.coveredAlarm : S.alarm) * byNight(1, NIGHT.sabotageAlarm, this.nightDark())) this.unveil(a, `The alarm went up at ${name} after the deed.`)
   }
 
   /** Royal Guard or Whisper Blades short of men, near enough to this abbey of ours to take sanctuary. */
@@ -5754,8 +6170,10 @@ export class GameEngine {
       // A band that crept in unseen strikes harder and longer than troops lying in the nearest wood.
       const deep = !!amb.veil
       const blow = amb.veil === 'concealed' ? SPY.strike : amb.veil === 'disguised' ? SPY.strikeDisguised : 1.8
-      battle.ambush = { side: hidA ? 'A' : 'B', until: this.state.time + (deep ? SPY.strikeSeconds : 10), power: blow * this.traitsOf(amb).ambush }
-      victim.morale = Math.max(0, victim.morale - (deep ? 28 : 15))
+      // Out of the dark, the blow lands harder still and the shock is worse.
+      const dark = this.nightDark()
+      battle.ambush = { side: hidA ? 'A' : 'B', until: this.state.time + (deep ? SPY.strikeSeconds : 10), power: blow * this.traitsOf(amb).ambush * byNight(1, NIGHT.ambush, dark) }
+      victim.morale = Math.max(0, victim.morale - (deep ? 28 : 15) - NIGHT.ambushMorale * dark)
       if (amb.faction === PLAYER || victim.faction === PLAYER) {
         this.log(amb.faction === PLAYER ? 'victory' : 'warning', 'Ambush!', `${amb.name} bursts from the trees upon ${victim.name}.`, battle.x, battle.z)
       }
@@ -6064,7 +6482,13 @@ export class GameEngine {
     const chargeWindow = b.kind === 'field' && elapsed >= 6 && elapsed < 13
     const clim = this.climate()
     const ambushing = !!b.ambush && b.ambush.side === attackerSide && this.state.time < b.ambush.until
+    const dark = this.nightDark()
     for (const f of attackers) {
+      // Some commanders take to the dark, some do not.
+      const aff = dark > 0 && f.cmd ? NIGHT_AFFINITY[f.cmd.key] : undefined
+      const nightMod = aff ? byNight(1, aff.mult, dark) : 1
+      // The Night Raider's opening blow is worst in the dark.
+      const opening = f.traits.opening > 1 ? byNight(f.traits.opening, NIGHT.nightRaider, dark) : f.traits.opening
       const morale = 0.45 + clamp(f.morale, 0, 100) / 180
       const synergy = combinedArmsBonus(f.troops, this.units, f.cmd)
       const fm = f.formation
@@ -6076,7 +6500,8 @@ export class GameEngine {
         let m = n * u.attack * commanderMod(f.cmd, k, f.level) * morale * synergy
         m *= u.category === 'ranged' ? fm.rangedAttack * clim.ranged : fm.attack
         m *= (f.traits.units[k] ?? 1) * f.traits.attack
-        if (b.kind === 'field' && elapsed < 12) m *= f.traits.opening
+        if (b.kind === 'field' && elapsed < 12) m *= opening
+        m *= nightMod
         if (ambushing) m *= b.ambush!.power
         if (f.inColumn) m *= COLUMN.attack
         if (f.flank) m *= REAR.attack
@@ -6085,7 +6510,7 @@ export class GameEngine {
         if (f.army && (f.army.sortieUntil ?? 0) > this.state.time) m *= 1.6
         if (f.royal) m *= ROYAL.attack
         if (f.army?.blades) m *= BLADES.attack
-        if (f.presence) m *= ROYAL.auraAttack
+        if (f.presence) m *= f.presence === 2 ? TEMPLE.auraAttack : ROYAL.auraAttack
         let extra = 0
         let rearExtra = 0
         if (f.flank && !f.inColumn) {
@@ -6130,7 +6555,7 @@ export class GameEngine {
           (cavalry[j] ?? 0) * fm.cavalryTaken * (g?.melee ?? 1) +
           (charge[j] ?? 0) * (fm.bracesCharge ? 0 : fm.cavalryTaken) * (g?.charge ?? 1) +
           (rear[j] ?? 0)
-        let killed = (dmg * k * share * fm.taken * (f.cmd?.defense_mod ?? 1) * f.traits.taken * (f.mired ? OBSTACLE.pit.taken : 1) * (f.royal ? ROYAL.taken : 1) * (f.army?.blades ? BLADES.taken : 1) * (f.presence ? ROYAL.auraTaken : 1)) / f.terrainDef
+        let killed = (dmg * k * share * fm.taken * (f.cmd?.defense_mod ?? 1) * f.traits.taken * (f.mired ? OBSTACLE.pit.taken : 1) * (f.royal ? ROYAL.taken : 1) * (f.army?.blades ? BLADES.taken : 1) * (f.presence ? (f.presence === 2 ? TEMPLE.auraTaken : ROYAL.auraTaken) : 1)) / f.terrainDef
         if (f.inColumn) killed *= COLUMN.taken
         cas[idx][j] = Math.min(n, killed)
       })
@@ -6235,7 +6660,8 @@ export class GameEngine {
         if (!a) continue
         const n = total(a.troops)
         // The dead know no fear: they fight on until they are cut down.
-        const fearless = !!this.state.factions[a.faction]?.undying
+        // (Nor do the hosts of the High King break.)
+        const fearless = !!this.state.factions[a.faction]?.undying || !!this.state.factions[a.faction]?.sacred
         if (n < 8 || (a.morale <= 0 && !fearless)) {
           this.destroyArmy(a, 'was cut down to the last')
           continue
@@ -6350,7 +6776,7 @@ export class GameEngine {
       if (powerRatio < 0.45) drop += 1.6 * dt * steady
       else if (powerRatio > 2) drop -= 0.6 * dt
       if (f.sheltered && drop > 0) drop *= OUTPOST.steadiness
-      if (f.presence && drop > 0) drop *= ROYAL.auraMorale
+      if (f.presence && drop > 0) drop *= f.presence === 2 ? TEMPLE.auraMorale : ROYAL.auraMorale
       f.army.morale = clamp(f.army.morale - drop, 0, 100)
     }
   }
@@ -6544,7 +6970,9 @@ export class GameEngine {
     }
     const prev = c.faction
     const main = [...winners].sort((x, y) => total(y.troops) - total(x.troops))[0]
-    const captor = main.faction
+    // A castle the High King's hosts take is ours.
+    const captor = main.sacred ? PLAYER : main.faction
+    if (main.sacred && this.state.sanctuary) this.state.sanctuary.captures++
     this.kingsFlight(c, winners)
     c.faction = captor
     c.lastCapturedAt = this.state.time
@@ -6553,12 +6981,20 @@ export class GameEngine {
     c.reliefArmyId = null
     c.walls = Math.round(c.maxWalls * 0.25)
     c.manpower = Math.min(c.manpower, this.maxManpower(c) * 0.3)
+    if (c.stores !== undefined) c.stores = Math.max(c.stores, this.storesMaxOf(c) * STORES.captured)
+    // Its grange goes with it, if the old holders still had it.
+    const grange = this.grangeOf(c.id)
+    if (grange && grange.faction === prev) grange.faction = captor
+    c.hungerSince = null
+    c.lowWarned = false
     c.autoRecruit = null
     c.garrison = emptyTroops(this.unitList)
     const left = floorTroops(scaleTroops(main.troops, 0.2))
     for (const k in left) {
       main.troops[k] -= left[k]
-      c.garrison[k] = left[k]
+      // (The High King's paladins leave the castle to men-at-arms of ours: never paladins in our garrisons.)
+      const into = main.sacred ? 'infantry' : k
+      c.garrison[into] = (c.garrison[into] ?? 0) + left[k]
     }
     this.events.push({ type: 'captured', castleId: c.id, faction: captor })
     this.credit(captor).captures++
@@ -6698,6 +7134,14 @@ export class GameEngine {
       return
     }
     if (r.mode === 'grand') {
+      // Crowned High Emperor on the Old Throne: that crown has won.
+      if (this.state.crowned) {
+        this.state.status = this.state.crowned === 'A' ? 'victory' : 'defeat'
+        this.recordFrame()
+        this.events.push({ type: 'game_over', status: this.state.status })
+        this.notify()
+        return
+      }
       // The Three Crowns: a crown is shattered when its monarch falls or its Citadel is taken.
       const cf = (this.state.crownsFallen ??= {})
       for (const [team, keep, who] of [['B', 'keepB', "The Usurper's"], ['C', 'keepC', "The Sun Emperor's"]] as const) {

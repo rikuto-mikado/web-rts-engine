@@ -44,7 +44,7 @@ export function buildFarmland(x: Ctx) {
     const w = 26 + rnd() * 16
     const h = 18 + rnd() * 12
     const R = Math.hypot(w, h) * 0.5
-    if (x.inWalls(px, pz, 32) || x.nearOuterWall(px, pz, R) || !gentle(x, px, pz, R) || !x.free(px, pz, R * 0.92) || !x.laneClear(px, pz, R * 0.85)) continue
+    if (x.inWalls(px, pz, 32) || !gentle(x, px, pz, R) || !x.free(px, pz, R * 0.92) || !x.laneClear(px, pz, R * 0.85)) continue
     i++
     field(x, px, pz, a + Math.PI / 2 + (rnd() - 0.5) * 0.6, w, h)
     x.taken.push({ x: px, z: pz, r: R * 0.92 })
@@ -176,7 +176,7 @@ function findSpot(x: Ctx, rr: number, near: number, far: number, prefer?: (px: n
     const d = x.rAt(a) + near + x.rnd() * (far - near)
     const px = Math.cos(a) * d
     const pz = Math.sin(a) * d
-    if (x.inWalls(px, pz, 30) || x.nearOuterWall(px, pz, rr) || !gentle(x, px, pz, rr) || !x.free(px, pz, rr) || !x.laneClear(px, pz, rr * 0.9)) continue
+    if (x.inWalls(px, pz, 30) || !gentle(x, px, pz, rr) || !x.free(px, pz, rr) || !x.laneClear(px, pz, rr * 0.9)) continue
     const v = prefer ? prefer(px, pz) : 0
     if (v > bv) {
       bv = v
@@ -239,7 +239,7 @@ function windmill(x: Ctx) {
   const [cx, cz] = f.at(-14, 4)
   if (x.firm(cx, cz, 5)) {
     const cr = facing(px - cx, pz - cz)
-    house(k, new Frame(cx, cz, cr, x.foot(cx, cz, 8, 7, cr)), { w: 8, d: 7, storeys: 1, roof: 'thatch', style: 'timber', detail: 'mid' }, x.rnd)
+    house(k, new Frame(cx, cz, cr, x.foot(cx, cz, 8, 7, cr)), { w: 8, d: 7, storeys: 1, roof: 'thatch', style: 'timber' }, x.rnd)
     x.smoke.push([cx, x.G(cx, cz) + 8, cz])
   }
 }

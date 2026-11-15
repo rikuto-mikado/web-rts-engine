@@ -164,6 +164,27 @@ UNIT_TYPES = [
         "recruitable": False,
         "sort_order": 8,
     },
+    {
+        "key": "paladin",
+        "name": "Paladins",
+        "role": "The High King's knights; come only at his blessing",
+        "description": "Knights of the Order of the High King in white and gold, sent from the Sanctuary when he "
+        "answers the King's prayer. Stronger even than the Household Knights, they ride for the enemy's castles "
+        "and break their gates; they need no bread, take no pay and never turn their backs.",
+        "category": "cavalry",
+        "attack": 2.6,
+        "defense": 2.3,
+        "speed": 1.6,
+        "siege_power": 0.8,
+        "cost_gold": 0,
+        "cost_manpower": 1,
+        "vision": 1.4,
+        "pursuit": 1.4,
+        "counters": {"archers": 2.0, "engineers": 2.5, "outriders": 1.6},
+        "color": "#f4ecd2",
+        "recruitable": False,
+        "sort_order": 9,
+    },
 ]
 
 COMMANDERS = [

@@ -1,6 +1,7 @@
-import { ROYAL, SAPPERS, SPY, NEUTRAL, WARDENS, type GameEngine } from './engine'
+import { CORONATION, ROYAL, SAPPERS, SPY, NEUTRAL, WARDENS, type GameEngine } from './engine'
 import { PLAYER, foeDifficulty } from './engine'
 import { OUTPOST_KINDS, type OutpostKind } from './outposts'
+import { GRANGE } from './granary'
 import { mulberry32 } from './noise'
 import { floorTroops, power, scaleTroops, total, totalInt } from './troops'
 import type { Army, Castle, Faction, FactionState, SabotageKind, Troops } from './types'
@@ -70,7 +71,8 @@ export class FactionAI {
   private myArmies(): Army[] {
     // (On autopilot the player's Royal Guard stays where the player left it.)
     // (Escorts in a battle group follow their lead by themselves: see fieldorders.ts.)
-    return this.s.armies.filter((a) => a.faction === this.id && !a.vassalOf && !a.aidFor && !a.royal && !this.engine.isSpyBand(a) && !a.wardens && !a.stance)
+    // (A band on its way to take a grange is about that business.)
+    return this.s.armies.filter((a) => a.faction === this.id && !a.vassalOf && !a.aidFor && !a.royal && !this.engine.isSpyBand(a) && !a.wardens && !a.stance && !a.takeGrangeId)
   }
   private personality() {
     return this.f.personality ?? 'balanced'
@@ -105,6 +107,7 @@ export class FactionAI {
     this.holdGround()
     this.tidyIdleArmies()
     this.relieveSieges()
+    this.relieveHunger()
     this.raidConvoys()
     this.strikeFromBehind()
     this.interceptInvaders()
@@ -187,6 +190,8 @@ export class FactionAI {
       if (a.status !== 'idle' || a.battleId) continue
       if (host && (a.id === host.hostId || host.detachmentIds.includes(a.id))) continue
       if (this.engine.musterOf(a.id)) continue
+      // A band sent to take a grange stays in the farmyard until it is ours.
+      if (a.takeGrangeId && this.engine.grange(a.takeGrangeId) && this.engine.isHostile(this.engine.grange(a.takeGrangeId)!.faction, this.id)) continue
       // Raiders standing at an enemy outpost stay until it burns.
       if (this.s.outposts.some((o) => this.engine.isHostile(o.faction, this.id) && this.engine.outpostKnown(this.team, o) && Math.hypot(o.x - a.x, o.z - a.z) < 80)) continue
       // Armies holding one of our outposts are its garrison.
@@ -808,7 +813,7 @@ export class FactionAI {
       if (!this.engine.isHostile(c.faction, this.id) || c.ruined || (c.village && c.faction === 'neutral')) continue
       let near = Infinity
       for (const o of ours) near = Math.min(near, Math.hypot(o.x - c.x, o.z - c.z))
-      const score = near * this.engine.targetBias(this.id, c.faction) + this.foeCastle(c) * 0.35 + (c.faction === 'neutral' ? -100 : 0)
+      const score = near * this.engine.targetBias(this.id, c.faction) + this.foeCastle(c) * 0.35 + (c.faction === 'neutral' ? -100 : 0) + (c.id === CORONATION.heartId && this.throneWanted() ? -this.d(500) : 0)
       if (!best || score < best.score) best = { c, score }
     }
     if (!best) return
@@ -817,6 +822,86 @@ export class FactionAI {
       this.engine.log('ally', `The alliance marches on ${best.c.name}`, `${this.f.name} calls every lord within reach to the assault.`, best.c.x, best.c.z)
     } else if (team === 'B' && this.s.rules.mode === 'alliance' && this.engine.isVisible(best.c.x, best.c.z)) {
       this.engine.log('warning', `The enemy alliance targets ${best.c.name}`, 'Expect several hosts to converge there.', best.c.x, best.c.z)
+    }
+  }
+
+  /**
+   * Ride out to take a grange within reach (an enemy's, or a free town's): no soldiers keep one, and
+   * its grain then feeds our castles instead of theirs. Not into the teeth of a host. True if a band
+   * set out.
+   */
+  private takeGrange(): boolean {
+    if (this.rnd() > (this.personality() === 'aggressive' ? 0.45 : 0.3)) return false
+    const e = this.engine
+    let pick: { g: NonNullable<GameEngine['state']['granges']>[number]; from: Castle; d: number } | null = null
+    for (const g of this.s.granges ?? []) {
+      const owner = g.faction
+      if (!e.isHostile(owner, this.id) || e.atPeace(this.id, owner)) continue
+      if (this.s.armies.some((a) => a.faction === this.id && a.takeGrangeId === g.id)) continue
+      // From the nearest castle of ours that can spare the men.
+      const from = this.myCastles()
+        .filter((c) => !c.battleId && total(c.garrison) >= 400 && Math.hypot(g.x - c.x, g.z - c.z) < this.d(1500))
+        .sort((x, y) => Math.hypot(g.x - x.x, g.z - x.z) - Math.hypot(g.x - y.x, g.z - y.z))[0]
+      if (!from) continue
+      const guard = this.s.armies.filter((a) => !e.isHostile(a.faction, owner) && owner !== 'neutral' && Math.hypot(a.x - g.x, a.z - g.z) < 500).reduce((n, a) => n + this.foeArmy(a), 0)
+      if (guard > power(from.garrison, e.units) * 0.25) continue
+      // A free town's grange is worth less to us than an enemy's (it starves no foe of ours).
+      const d = Math.hypot(g.x - from.x, g.z - from.z) * (owner === 'neutral' ? 1.6 : 1)
+      if (!pick || d < pick.d) pick = { g, from, d }
+    }
+    if (!pick) return false
+    const { g, from } = pick
+    const army = this.send(from, 0.3, 'Grange Takers', { type: 'move', x: g.x, z: g.z }, { keep: 220 })
+    if (!army) return false
+    army.takeGrangeId = g.id
+    if (g.faction === PLAYER) e.log('warning', `Raiders ride for ${g.name}`, `${army.name} of ${this.f.name} means to take the farm. Meet them in the farmyard, or its grain will feed their castles instead of ours.`, g.x, g.z)
+    return true
+  }
+
+  /**
+   * Hunger at home: an enemy in a castle's fields while its stores run low, or takers in our
+   * grange. A relief column rides out to drive them off, if a castle near enough can spare one.
+   */
+  private relieveHunger() {
+    const e = this.engine
+    const threats: { x: number; z: number; foe: Army }[] = []
+    for (const c of this.myCastles()) {
+      const info = e.storesInfo(c)
+      if (!info || !info.held || info.stores > info.max * 0.45 || c.battleId) continue
+      const foe = this.s.armies
+        .filter((a) => e.isHostile(a.faction, this.id) && a.status !== 'retreating' && Math.hypot(a.x - c.x, a.z - c.z) < this.d(700))
+        .sort((x, y) => total(y.troops) - total(x.troops))[0]
+      if (foe) threats.push({ x: c.x, z: c.z, foe })
+    }
+    // Our grange being taken, or one of ours lost not long ago: drive the takers out.
+    for (const g of this.s.granges ?? []) {
+      const ours = g.faction === this.id
+      const lost = !ours && this.myCastles().some((c) => c.id === g.castleId)
+      const attackers = ours ? e.grangeAttackers(g) : []
+      if (!attackers.length && !lost) continue
+      const foe = ours ? attackers.sort((x, y) => total(y.troops) - total(x.troops))[0] : this.s.armies.filter((a) => e.isHostile(a.faction, this.id) && a.status !== 'retreating' && Math.hypot(a.x - g.x, a.z - g.z) < GRANGE.guardReach).sort((x, y) => total(y.troops) - total(x.troops))[0]
+      if (foe) threats.push({ x: g.x, z: g.z, foe })
+      else if (lost) {
+        // Nobody holds it now: march back in and take it again.
+        if (this.s.armies.some((a) => a.faction === this.id && a.takeGrangeId === g.id)) continue
+        const from = this.myCastles().find((c) => c.id === g.castleId)
+        if (from && total(from.garrison) >= 260) {
+          const army = this.send(from, 0.25, 'Grange Guard', { type: 'move', x: g.x, z: g.z }, { keep: 200 })
+          if (army) army.takeGrangeId = g.id
+        }
+      }
+    }
+    for (const t of threats) {
+      if (this.s.armies.some((a) => a.faction === this.id && a.order.type === 'intercept' && a.order.armyId === t.foe.id)) continue
+      const free = this.myArmies().find((a) => !a.battleId && a.status !== 'retreating' && !this.engine.musterOf(a.id) && Math.hypot(a.x - t.x, a.z - t.z) < this.d(900) && this.foeArmy(t.foe) < e.armyPower(a) * 1.2)
+      if (free) {
+        e.orderArmy(free.id, { type: 'intercept', armyId: t.foe.id })
+        continue
+      }
+      const donor = this.myCastles()
+        .filter((d) => !d.battleId && Math.hypot(d.x - t.x, d.z - t.z) < this.d(1300) && power(d.garrison, e.units) * 0.6 > this.foeArmy(t.foe) * 0.8)
+        .sort((x, y) => Math.hypot(x.x - t.x, x.z - t.z) - Math.hypot(y.x - t.x, y.z - t.z))[0]
+      if (donor) this.send(donor, 0.6, 'Relief Column', { type: 'intercept', armyId: t.foe.id }, { keep: 200 })
     }
   }
 
@@ -840,6 +925,8 @@ export class FactionAI {
       if (army && camp.faction === PLAYER) this.engine.log('warning', `Raiders march on ${camp.name}`, `${army.name} of ${this.f.name} means to burn it. Keep it garrisoned!`, camp.x, camp.z)
       return
     }
+    // A chevauchée: fire an enemy grange near our lands, so its castles go hungry.
+    if (this.takeGrange()) return
     const team = this.team as 'A' | 'B' | 'C'
     const playerCall = team === 'A' && this.s.callToArms && this.s.callToArms.until > this.s.time ? this.s.callToArms : null
     const focus = playerCall ?? (this.s.teamFocus[team] && this.s.teamFocus[team]!.until > this.s.time ? this.s.teamFocus[team] : null)
@@ -904,15 +991,27 @@ export class FactionAI {
   // ---------------------------------------------------------------------------
 
   private pickHostTarget(fromX: number, fromZ: number): Castle | undefined {
+    // A rival crown is being crowned on the Old Throne: nothing matters more than stopping it.
+    const crowning = this.engine.coronationThreat(this.team)
+    if (crowning && this.engine.isHostile(crowning.faction, this.id)) return crowning
+    const throne = this.throneWanted()
     return this.s.castles
-      .filter((c) => this.engine.isHostile(c.faction, this.id) && c.faction !== 'neutral' && !c.ruined)
+      .filter((c) => this.engine.isHostile(c.faction, this.id) && (c.faction !== 'neutral' || (throne && c.id === CORONATION.heartId)) && !c.ruined)
       .map((c) => {
         let score = Math.hypot(c.x - fromX, c.z - fromZ) * this.engine.targetBias(this.id, c.faction) + this.foeCastle(c) * 0.3
         if (c.faction === PLAYER && this.s.rules.mode !== 'grand') score -= 400
         if (c.capital) score -= 150
+        if (throne && c.id === CORONATION.heartId) score -= this.d(700)
         return { c, score }
       })
       .sort((a, b) => a.score - b.score)[0]?.c
+  }
+
+  /** Three Crowns: the Old Throne is (nearly) open and our crown still stands: the Crossroads is worth a march. */
+  private throneWanted(): boolean {
+    if (this.s.rules.mode !== 'grand' || this.s.time < CORONATION.opensAt - 240) return false
+    const t = this.team
+    return (t === 'A' || t === 'B' || t === 'C') && !this.s.crownsFallen?.[t]
   }
 
   private greatHost() {
@@ -926,6 +1025,8 @@ export class FactionAI {
     const capital = e.castle(this.f.capitalId) ?? this.myCastles()[0]
     if (!capital) return
 
+    // A rival's coronation under way: muster now rather than when the next host was due.
+    if (h.phase === 'idle' && h.nextAt > t + 20 && e.coronationThreat(this.team)) h.nextAt = t
     if (h.phase === 'idle') {
       if (t < h.nextAt) return
       const castles = this.myCastles().filter((c) => !c.battleId && total(c.garrison) > 350)
@@ -1017,6 +1118,12 @@ export class FactionAI {
 
     if (h.phase === 'marching') {
       const host = e.army(h.hostId)
+      // Turned round on the march to break a rival's coronation.
+      const crowning = e.coronationThreat(this.team)
+      if (host && crowning && !host.battleId && host.status !== 'retreating' && e.isHostile(crowning.faction, this.id) && !(host.order.type === 'attack' && host.order.castleId === crowning.id)) {
+        e.orderArmy(host.id, { type: 'attack', castleId: crowning.id })
+        if (this.hostileToPlayer && crowning.faction === PLAYER) e.log('warning', `The Great Host turns on ${crowning.name}!`, `${this.f.name} breaks off its march to stop the coronation.`, host.x, host.z)
+      }
       if (!host || (host.status === 'idle' && !host.battleId) || host.status === 'retreating') {
         h.phase = 'idle'
         h.hostId = null
@@ -1049,6 +1156,8 @@ export class FactionAI {
       if (refuge && !(q.order.type === 'station' && q.order.castleId === refuge.id)) e.orderArmy(q.id, { type: 'station', castleId: refuge.id })
       return
     }
+    // The Old Throne: when our side holds the Crossroads and it is safe, the monarch goes to be crowned.
+    if (this.seekThrone(q)) return
     const h = this.f.host
     const host = h && h.phase === 'marching' ? e.army(h.hostId) : undefined
     // She rides with every other host, from the second one on.
@@ -1062,6 +1171,44 @@ export class FactionAI {
     }
     // Otherwise back to court.
     if (inField && seat && seat.faction === this.id && !(q.order.type === 'station' && q.order.castleId === seat.id)) e.orderArmy(q.id, { type: 'station', castleId: seat.id })
+  }
+
+  /**
+   * Three Crowns: take our monarch to the Old Throne when our side holds the Imperial Crossroads and
+   * what guards it (its garrison, our armies close by, the royal guard itself) clearly outweighs the
+   * enemy strength we can see closing on it; stay for the rite while that holds. True while doing so.
+   */
+  private throneRide = false
+  private seekThrone(q: Army): boolean {
+    const ride = this.seekThroneNow(q)
+    this.throneRide = ride
+    return ride
+  }
+  private seekThroneNow(q: Army): boolean {
+    const e = this.engine
+    if (this.s.rules.mode !== 'grand' || this.s.time < CORONATION.opensAt || !this.throneWanted()) return false
+    const heart = e.castle(CORONATION.heartId)
+    if (!heart || heart.battleId || e.team(heart.faction) !== this.team) return false
+    let guard = e.garrisonPower(heart) + e.armyPower(q)
+    let foe = 0
+    for (const a of this.s.armies) {
+      const d = Math.hypot(a.x - heart.x, a.z - heart.z)
+      // (Fixed distances: the Crossroads is the same fortress whatever the spacing of the castles.)
+      if (a.faction !== this.id && e.team(a.faction) === this.team && d < 600 && a.id !== q.id) guard += e.armyPower(a)
+      else if (e.isHostile(a.faction, this.id) && this.sees(a) && d < 1500) foe += this.foeArmy(a)
+    }
+    const going = Math.hypot(q.x - heart.x, q.z - heart.z) < 1500 || (q.order.type === 'station' && q.order.castleId === heart.id) || (q.order.type === 'move' && Math.hypot(q.order.x - heart.x, q.order.z - heart.z) < 120)
+    // (A higher bar to set out than to stay: no dithering on the road.)
+    if (foe > guard * (going ? 0.9 : 0.5)) return false
+    if (heart.faction === this.id) {
+      if (!(q.order.type === 'station' && q.order.castleId === heart.id)) e.orderArmy(q.id, { type: 'station', castleId: heart.id })
+    } else {
+      // An ally's fortress: wait beside it, inside the reach of the throne.
+      const [x, z] = e.world.nearestPassable(heart.x + 60, heart.z + 60)
+      if (!(q.order.type === 'move' && Math.hypot(q.order.x - x, q.order.z - z) < 30) && Math.hypot(q.x - x, q.z - z) > 40) e.orderArmy(q.id, { type: 'move', x, z })
+    }
+    if (!this.throneRide && !going && this.team !== 'A') e.log('warning', `${e.crownName(this.team as 'B' | 'C')} rides for the Old Throne`, `Spies report the ${q.name} on the road to ${heart.name}.`, q.x, q.z)
+    return true
   }
 
   /**

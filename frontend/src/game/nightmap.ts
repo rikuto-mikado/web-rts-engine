@@ -146,6 +146,17 @@ export function layRoyalCity(o: {
   wallIndex: number
   /** Garrisons scale (1: the Long Night's). */
   garrison?: number
+  /** How far the walls wander from round (1: a city following the lie of the land; less: rounder). */
+  wobble?: number
+  /** Gate bearings, if not the usual spread across the open front (outer, then inner). */
+  outerGates?: number[]
+  innerGates?: number[]
+  outerNames?: string[]
+  innerNames?: string[]
+  /** No wards (strongholds) in this city: only the Citadel and the gatehouses. */
+  noWards?: boolean
+  keepName?: string
+  keepGarrison?: Troops
 }) {
   const { rnd, cx, cz, back, faction, idPrefix: P, city } = o
   const R = (a: number, b: number) => a + rnd() * (b - a)
@@ -161,16 +172,17 @@ export function layRoyalCity(o: {
     const p2 = R(0, 6.28)
     return (a: number) => base * (1 + wob * (0.55 * Math.sin(2 * a + p1) + 0.35 * Math.sin(3 * a + p2)) - 0.12 * Math.cos(a - back) * (wob / 0.18))
   }
-  const rOuter = outline(o.outer, 0.18)
-  const rInner = outline(o.inner, 0.12)
+  const wob = o.wobble ?? 1
+  const rOuter = outline(o.outer, 0.18 * wob)
+  const rInner = outline(o.inner, 0.12 * wob)
   const loop = (rf: (a: number) => number, n: number) => Array.from({ length: n }, (_, k) => at(rf((k / n) * Math.PI * 2), (k / n) * Math.PI * 2))
   const outerPts = loop(rOuter, 44)
   const innerPts = loop(rInner, 30)
   const maxOuter = Math.max(...outerPts.map(([x, z]) => Math.hypot(x - cx, z - cz)))
   const maxInner = Math.max(...innerPts.map(([x, z]) => Math.hypot(x - cx, z - cz)))
   // Gates face the open land; the inner ones sit between the outer.
-  const outerGates = [0, 1, 2, 3, 4].map((k) => front - Math.PI * 0.45 + (k / 4) * Math.PI * 0.9 + R(-0.05, 0.05))
-  const innerGates = [0, 1, 2].map((k) => front - Math.PI * 0.3 + (k / 2) * Math.PI * 0.6)
+  const outerGates = o.outerGates ?? [0, 1, 2, 3, 4].map((k) => front - Math.PI * 0.45 + (k / 4) * Math.PI * 0.9 + R(-0.05, 0.05))
+  const innerGates = o.innerGates ?? [0, 1, 2].map((k) => front - Math.PI * 0.3 + (k / 2) * Math.PI * 0.6)
   // Gates sit on the wall's line (between two corners of the outline, on the chord).
   const onLoop = (pts: [number, number][], a: number): [number, number] => {
     const n = pts.length
@@ -182,7 +194,7 @@ export function layRoyalCity(o: {
     return [Math.round(x0 + (x1 - x0) * f), Math.round(z0 + (z1 - z0) * f)]
   }
   const castles: CastleDef[] = []
-  castles.push({ id: o.keepId, name: `${city} Citadel`, subtitle: o.keepSubtitle, faction, tier: ROYAL_SEAT_TIER, x: cx, z: cz, capital: true, garrison: gs(700, 180, 380, 60) })
+  castles.push({ id: o.keepId, name: o.keepName ?? `${city} Citadel`, subtitle: o.keepSubtitle, faction, tier: ROYAL_SEAT_TIER, x: cx, z: cz, capital: true, garrison: o.keepGarrison ?? gs(700, 180, 380, 60) })
   const COMPASS = (a: number) => {
     const names = ['East', 'South-East', 'South', 'South-West', 'West', 'North-West', 'North', 'North-East']
     return names[(Math.round((((a % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) / (Math.PI / 4)) % 8)]
@@ -194,12 +206,12 @@ export function layRoyalCity(o: {
     const base = COMPASS(a)
     used.set(base, (used.get(base) ?? 0) + 1)
     const nm = used.get(base)! > 1 ? `${base} Lesser` : base
-    castles.push({ id: `${P}og${k}`, name: `${nm} Gate`, subtitle: 'Gatehouse of the Outer Wall', faction, tier: 2, x, z, gate: true, garrison: gs(130, 0, 120, 0) })
+    castles.push({ id: `${P}og${k}`, name: o.outerNames?.[k] ?? `${nm} Gate`, subtitle: 'Gatehouse of the Outer Wall', faction, tier: 2, x, z, gate: true, garrison: gs(130, 0, 120, 0) })
     return [x, z] as [number, number]
   })
   const innerGatePts = innerGates.map((a, k) => {
     const [x, z] = onLoop(innerPts, a)
-    castles.push({ id: `${P}ig${k}`, name: `${['Lion', 'Crown', 'Bell'][k]} Gate`, subtitle: 'Gatehouse of the Inner Wall', faction, tier: 2, x, z, gate: true, garrison: gs(150, 0, 130, 0) })
+    castles.push({ id: `${P}ig${k}`, name: o.innerNames?.[k] ?? `${['Lion', 'Crown', 'Bell'][k]} Gate`, subtitle: 'Gatehouse of the Inner Wall', faction, tier: 2, x, z, gate: true, garrison: gs(150, 0, 130, 0) })
     return [x, z] as [number, number]
   })
   const R0 = castleRadius(ROYAL_SEAT_TIER)
@@ -252,7 +264,7 @@ export function layRoyalCity(o: {
     }
     throw new Error(`No room for a ward in ${city}`)
   }
-  const lower = [
+  const lower = o.noWards ? [] : [
     { id: 'w-market', name: 'Market Ward', subtitle: 'Merchants and their gold' },
     { id: 'w-smiths', name: "Smiths' Ward", subtitle: 'Forges and armouries' },
     { id: 'w-granary', name: 'Granary Ward', subtitle: 'The city’s stores' },
@@ -267,7 +279,7 @@ export function layRoyalCity(o: {
     placed.push({ x, z, r })
     castles.push({ ...w, id: `${P}${w.id}`, faction, tier: 2, x, z, district: true, garrison: gs(120, 20, 70, 10) })
   })
-  const upper = [
+  const upper = o.noWards ? [] : [
     { id: 'w-cathedral', name: 'Cathedral Close', subtitle: 'The great cathedral' },
     { id: 'w-barracks', name: 'Royal Barracks', subtitle: 'The Royal Guard’s halls' },
   ]

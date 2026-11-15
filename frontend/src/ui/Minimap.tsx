@@ -1,8 +1,8 @@
 import { Map as MapIcon, X } from 'lucide-react'
 import { useEffect, useRef, type PointerEvent } from 'react'
-import { drawShield } from '../render/heraldry'
+import { chargeForTeam, drawShield } from '../render/heraldry'
 import { glyphPaths } from '../render/glyphs'
-import { paintTerrain } from './mapPaint'
+import { drawGranges, drawTemple, paintTerrain } from './mapPaint'
 import { useViewport } from './viewport'
 import { PLAYER, type GameEngine } from '../game/engine'
 import { RELATION_COLOR } from './common'
@@ -65,6 +65,19 @@ export function Minimap({ engine, renderer, shown, setShown }: { engine: GameEng
         ctx.arc(toPx(host.rallyX), toPx(host.rallyZ), 7, 0, Math.PI * 2)
         ctx.stroke()
       }
+      drawGranges(
+        ctx,
+        world,
+        SIZE,
+        (engine.state.granges ?? []).map((g) => ({ x: g.x, z: g.z, castleId: g.castleId, faction: g.faction })),
+        (id) => engine.castle(id),
+        (g) => {
+          const o = g.faction ?? 'neutral'
+          return o === 'neutral' ? '#8a7a56' : engine.factionColor(o)
+        },
+      )
+      const sa = engine.state.sanctuary
+      if (sa && engine.isExplored(sa.x, sa.z)) drawTemple(ctx, toPx(sa.x), toPx(sa.z), 5.5, sa.blessed ? 2 : 1)
       for (const c of engine.state.castles) {
         if (c.faction !== 'player' && !engine.isExplored(c.x, c.z)) continue
         const x = toPx(c.x)
@@ -82,7 +95,7 @@ export function Minimap({ engine, renderer, shown, setShown }: { engine: GameEng
           continue
         }
         const rank = engine.seatRank(c)
-        drawShield(ctx, x, y, Math.max(9, r * 2.3) * (rank === 'royal' ? 1.35 : rank === 'lord' ? 1.1 : 1), engine.factionColor(c.faction), rank)
+        drawShield(ctx, x, y, Math.max(9, r * 2.3) * (rank === 'royal' ? 1.35 : rank === 'lord' ? 1.1 : 1), engine.factionColor(c.faction), rank, chargeForTeam(engine.team(c.faction)))
         if (c.battleId && Math.floor(now / 300) % 2) {
           ctx.strokeStyle = mine ? '#ff6a4d' : '#fff'
           ctx.lineWidth = 1.6
