@@ -74,7 +74,7 @@ const ESCORT_COMMANDERS = ['godfrey', 'elowen', 'varian', 'isolde', 'bran']
 /** What each map-kind war is like (each has one size of map). */
 const WAR_HINT: Record<'survival' | 'alliance', string> = {
   survival: "Two realms of a size: your seat and two strongholds against the Ashen Dominion's. A close, quick war.",
-  alliance: 'Sixteen realms against sixteen on a wide map. Take the enemy High Seat.',
+  alliance: "Your kingdom and the allied king's against the Usurper's and the Iron King's. Slay both enemy kings, or take both their seats.",
 }
 
 const MODES: {
@@ -95,8 +95,8 @@ const MODES: {
     key: 'alliance',
     name: 'Alliance War',
     icon: <Handshake size={22} />,
-    tagline: '16 realms against 16',
-    text: 'Fight beside a coalition of AI lords on a huge random map. Call your allies to arms and take the enemy High Seat.',
+    tagline: 'Two kingdoms against two',
+    text: 'An allied king has called you to his aid. Fight beside him; a king slain hands his kingdom to the king beside him.',
   },
   {
     key: 'convoy',

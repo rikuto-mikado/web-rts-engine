@@ -227,7 +227,7 @@ export const FEATURES = {
   oldwood: { arrows: 0.7, charge: 0.6, taken: 0.9, horse: 0.65, hide: 4 },
   /**
    * The Deepwood: a sea of trees. Any host inside is seen only this close (our Wardens and the
-   * Thorn Hunt read its tracks out to their reveal range), and from inside sees only half as far.
+   * our Wardens read its tracks out to their reveal range), and from inside sees only half as far.
    */
   deepwood: { arrows: 0.5, cavalry: 0.7, horse: 0.35, foot: 0.75, seen: 170, sight: 0.5 },
 }
@@ -276,6 +276,15 @@ export const SUN_COURT = ['emperor', 'vesk', 'sabine', 'ulric']
  */
 export const CORONATION = { heartId: 'heart', opensAt: 900, seconds: 180, reach: 160, contest: 400, contestMen: 60 }
 
+/**
+ * Alliance War: the other two courts. The allied king (team A) and the second enemy king (team B)
+ * each keep a court like the Usurper's: a king at the head of his guard and five field commanders.
+ * (The fixed bands are ours alone: no court the computer plays keeps any.)
+ */
+export const COURTS = {
+  ally: { king: 'edmund', guard: 'Crown Guard' },
+  rival: { king: 'draven', guard: 'Black Guard' },
+}
 export const ROYAL = {
   key: 'sovereign',
   guard: 520,
@@ -307,7 +316,7 @@ export const ROYAL = {
  * pedlars, which the enemy pays no heed until someone looks closer.
  */
 export const SPY = {
-  /** Our spymaster, and the enemy's: the Grey Abbess. */
+  /** Our spymaster; and the Grey Abbess, who leads the raiders' knives on Convoy Raid's forest road (nowhere else). */
   key: 'ashe',
   foeKey: 'abbess',
   keys: ['ashe', 'abbess'],
@@ -386,17 +395,14 @@ export const BLADES = {
 }
 
 /**
- * The Wardens of the March (Rowan Fenwick) and their mirror across the lines, the Thorn Hunt
- * (Corrick Vane): a small fixed band of mounted bowmen, raised at the seat on the first day like the
- * Blades. They fight poorly but see far, find hidden bands close by (the other side's spymaster's
- * people among them) and keep what they sight marked on their side's map for a while.
+ * The Wardens of the March (Rowan Fenwick): a small fixed band of mounted bowmen, raised at our seat
+ * on the first day like the Blades (ours alone). They fight poorly but see far, find hidden bands
+ * close by and keep what they sight marked on our map for a while.
  */
 export const WARDENS = {
   key: 'warden',
-  foeKey: 'huntmaster',
-  keys: ['warden', 'huntmaster'],
+  keys: ['warden'],
   name: 'Wardens of the March',
-  foeName: 'Thorn Hunt',
   size: 150,
   /** Their own troops: Outriders, mounted bowmen (never raised in a castle). */
   unit: 'outriders',
@@ -414,18 +420,15 @@ export const WARDENS = {
 }
 
 /**
- * The Night Sappers (Tamsin Holt) and their mirror, the Rootcutters (Brother Gall): a small fixed
- * band of saboteurs who hide by the same rules as the Blades (concealed under cover, disguised in the
+ * The Night Sappers (Tamsin Holt): a small fixed band of saboteurs (ours alone) who hide by the same rules as the Blades (concealed under cover, disguised in the
  * open) and do the quiet work at an enemy stronghold (see SABOTAGE): the Blades strike at leaders,
  * the Sappers at walls, wells and stores. With the spymaster's knives close by to cover them they work
  * faster and are less often found out afterwards.
  */
 export const SAPPERS = {
   key: 'sapmaster',
-  foeKey: 'rootcutter',
-  keys: ['sapmaster', 'rootcutter'],
+  keys: ['sapmaster'],
   name: 'Night Sappers',
-  foeName: 'Rootcutters',
   size: 90,
   /** Their own troops: Saboteurs (never raised in a castle). */
   unit: 'saboteurs',
@@ -595,7 +598,11 @@ export const DIFFICULTY: Record<Difficulty, DifficultyDef> = {
   brutal: { income: 1.1, firstHost: 200, hostEvery: 225, raidEvery: 68, hostFraction: 0.66 },
 }
 
-/** How the enemy AI plays: in Alliance War always as a hard foe; in Conquest as the chosen difficulty. */
+/**
+ * How the AI plays: in Alliance War every king, ally or foe, at the same steady tempo (the Knight
+ * foe's: measured, a faster one made an outnumbered side's slide run away with the war); in Conquest
+ * as the chosen difficulty.
+ */
 /**
  * Conquest pits two realms of the same size against each other (a seat and two strongholds each):
  * the difficulty is the foe's income against ours, nothing else. Conquest has three difficulties
@@ -604,7 +611,7 @@ export const DIFFICULTY: Record<Difficulty, DifficultyDef> = {
 export const CONQUEST_INCOME: Record<Exclude<Difficulty, 'brutal'>, number> = { easy: 0.6, normal: 0.8, hard: 1.1 }
 
 export function foeDifficulty(mode: GameRules['mode'], difficulty: Difficulty): DifficultyDef {
-  if (mode === 'alliance') return DIFFICULTY.hard
+  if (mode === 'alliance') return DIFFICULTY.normal
   if (mode === 'survival') return { ...DIFFICULTY[difficulty], income: CONQUEST_INCOME[difficulty === 'brutal' ? 'hard' : difficulty] }
   return DIFFICULTY[difficulty]
 }
@@ -767,13 +774,15 @@ export class GameEngine {
     if (state.royalId === undefined) this.spawnRoyal()
     // Corvin Ashe keeps his Whisper Blades about him from the first day.
     if (state.bladesId === undefined) this.spawnBlades()
-    // Rowan Fenwick's Wardens ride the march, and Corrick Vane's Thorn Hunt the enemy's.
+    // Rowan Fenwick's Wardens ride the march (the fixed bands are ours alone).
     if (state.wardensId === undefined) this.spawnWardens()
-    // Tamsin Holt's Night Sappers, and Brother Gall's Rootcutters across the lines.
+    // Tamsin Holt's Night Sappers.
     if (state.sappersId === undefined) this.spawnSappers()
-    // ...and across the lines, the Usurper Queen holds court in the enemy High Seat with her Thorn Guard.
+    // ...and across the lines, the Usurper Queen holds court in her royal seat with her Thorn Guard.
     if (state.foeRoyalId === undefined) {
       this.spawnFoeRoyal()
+      // Alliance War: the allied king and the second enemy king at the head of their guards.
+      this.spawnCourtKings()
       this.prepareFrontier()
     }
     // The Three Crowns: the Sun Emperor and his Solar Guard in the eastern Citadel.
@@ -798,6 +807,7 @@ export class GameEngine {
     const d = foeDifficulty(rules.mode, difficulty)
     const factionDefs = def.factions ?? DEFAULT_FACTIONS
     const factions: Record<Faction, FactionState> = {}
+    // (In Alliance War both sides muster alike; elsewhere our allies' first host comes a little later.)
     factionDefs.forEach((f, i) => {
       const capital = def.castles.find((c) => c.faction === f.id && c.capital) ?? def.castles.find((c) => c.faction === f.id && c.district) ?? def.castles.find((c) => c.faction === f.id)
       factions[f.id] = {
@@ -807,7 +817,7 @@ export class GameEngine {
         capitalId: capital?.id ?? null,
         ai: { nextDecisionAt: 6 + (i % 10) * 0.4, nextRaidAt: d.raidEvery * (0.8 + (i % 7) * 0.1), retakeQueue: [] },
         host: f.musters
-          ? { phase: 'idle', hostId: null, rallyX: 0, rallyZ: 0, detachmentIds: [], nextAt: d.firstHost * (f.team === 'A' ? 1.15 : 1) * SIZE_PACE[rules.size ?? 'medium'], startedAt: 0, wave: 0 }
+          ? { phase: 'idle', hostId: null, rallyX: 0, rallyZ: 0, detachmentIds: [], nextAt: d.firstHost * (f.team === 'A' && rules.mode !== 'alliance' ? 1.15 : 1) * SIZE_PACE[rules.size ?? 'medium'], startedAt: 0, wave: 0 }
           : null,
       }
     })
@@ -895,9 +905,27 @@ export class GameEngine {
     const enemyLeader = factionDefs.find((f) => f.team === 'B' && f.leader)?.id ?? factionDefs.find((f) => f.team === 'B')?.id ?? 'enemy'
     // The Three Crowns: the Sun Emperor keeps a court of his own (the rest serve the Usurper).
     const sunLeader = factionDefs.find((f) => f.team === 'C' && f.leader)?.id
+    // Alliance War: the allied king's court, and the second enemy king's (in any other war theirs serve nobody).
+    const allyKing = rules.mode === 'alliance' ? factionDefs.find((f) => f.team === 'A' && f.king && f.id !== PLAYER)?.id : undefined
+    const rivalKing = rules.mode === 'alliance' ? factionDefs.find((f) => f.team === 'B' && f.king && f.id !== enemyLeader)?.id : undefined
+    // (In Alliance War the Usurper's court is the size of the other kings': the Sun Emperor and the
+    // Ashen overlord keep to their own wars. Her huntmaster and sapmaster, their bands gone, serve nobody anywhere.)
+    // (The Grey Abbess leads the raiders' knives on Convoy Raid's forest road and serves nobody elsewhere.)
+    const notHere = [...(rules.mode === 'alliance' ? ['emperor', 'malakor'] : []), 'huntmaster', 'rootcutter', ...(rules.mode === 'convoy' ? [] : ['abbess'])]
     const commanders: GameState['commanders'] = {}
     for (const c of content.commanders) {
-      const owner = c.faction === 'player' ? PLAYER : sunLeader && SUN_COURT.includes(c.key) ? sunLeader : enemyLeader
+      const owner =
+        c.faction === 'player'
+          ? PLAYER
+          : c.faction === 'ally'
+            ? (allyKing ?? '')
+            : c.faction === 'rival'
+              ? (rivalKing ?? '')
+              : notHere.includes(c.key)
+                ? ''
+                : sunLeader && SUN_COURT.includes(c.key)
+                  ? sunLeader
+                  : enemyLeader
       commanders[c.key] = { key: c.key, owner, level: 1, xp: 0, armyId: null, woundedUntil: 0, traits: [], traitChoices: null }
     }
     const state: GameState = {
@@ -932,8 +960,8 @@ export class GameEngine {
       teamFocus: { A: null, B: null, C: null },
       stats: { battlesWon: 0, battlesLost: 0, enemyKilled: 0, playerLost: 0, castlesTaken: 0 },
       // Convoy Raid has neither crowned head in the field; on the Long Night only the King stands.
-      ...(rules.mode === 'convoy' ? { royalId: null, foeRoyalId: null, bladesId: null, sistersId: null, wardensId: null, huntId: null, sappersId: null, cuttersId: null } : {}),
-      ...(rules.mode === 'nightfall' ? { foeRoyalId: null, bladesId: null, sistersId: null, wardensId: null, huntId: null, sappersId: null, cuttersId: null } : {}),
+      ...(rules.mode === 'convoy' ? { royalId: null, foeRoyalId: null, bladesId: null, sistersId: null, wardensId: null, sappersId: null } : {}),
+      ...(rules.mode === 'nightfall' ? { foeRoyalId: null, bladesId: null, sistersId: null, wardensId: null, sappersId: null } : {}),
       ...(rules.mode !== 'grand' ? { sunRoyalId: null } : {}),
       ...(sanct ? { sanctuary: { x: sanct.x, z: sanct.z, progress: 0, praying: false, blessed: false, bands: 0, nextBandAt: 0, captures: 0 } } : {}),
     }
@@ -953,7 +981,7 @@ export class GameEngine {
       rules.mode === 'grand'
         ? `Take ${engine.castleName('keepB')} and ${engine.castleName('keepC')} to shatter both rival crowns, or hold ${engine.castleName(CORONATION.heartId)} with the King from the ${CORONATION.opensAt / 60}th minute and be crowned High Emperor. The war is lost if ${engine.castleName('keep')} falls and the King with it.`
         : rules.mode === 'alliance'
-        ? `Your alliance must take ${engine.castleName(rules.victoryCastles[0])}, the enemy High Seat, and hold ${engine.castleName(rules.defeatCastles[0])}.`
+        ? `An allied king has called you to his aid. Slay both enemy kings, the Usurper and the Iron King, or take both their royal seats, ${rules.victoryCastles.map((id) => engine.castleName(id)).join(' and ')}. A king slain hands his kingdom to the king beside him. Hold ${engine.castleName(rules.defeatCastles[0])}, your own court.`
         : `Take ${rules.victoryCastles.map((id) => engine.castleName(id)).join(', ')}. Do not lose ${rules.defeatCastles.map((id) => engine.castleName(id)).join(', ')}.`
     engine.log('info', 'The war begins', goal)
     return engine
@@ -1288,32 +1316,27 @@ export class GameEngine {
     this.state.royalId = res.id
   }
   /**
-   * The spymasters' own bands, fixed like the Royal Guard: Corvin Ashe's Whisper Blades at the
-   * player's capital, Mother Sereth's Grey Sisters at the enemy's seat. Neither spymaster leads anything else.
+   * The fixed bands are ours alone (no realm the computer plays keeps any): Corvin Ashe's Whisper
+   * Blades, raised at the player's capital like the Royal Guard. He leads nothing else.
    */
   private spawnBlades() {
     this.state.bladesId = null
     this.state.sistersId = null
-    // Not on the forest road or the Long Night (a game saved before the Blades existed loads here too).
+    // Not on the forest road (it raises its own) or the Long Night (a game saved before the Blades existed loads here too).
     if (this.state.rules.mode === 'convoy' || this.state.rules.mode === 'nightfall') return
     this.state.bladesId = this.raiseSpyBand(SPY.key, BLADES.size)
-    this.state.sistersId = this.raiseSpyBand(SPY.foeKey, BLADES.size)
   }
-  /** The Wardens of the March at the player's capital, the Thorn Hunt at the enemy's seat. */
+  /** The Wardens of the March at the player's capital. */
   private spawnWardens() {
     this.state.wardensId = null
-    this.state.huntId = null
     if (this.state.rules.mode === 'convoy' || this.state.rules.mode === 'nightfall') return
     this.state.wardensId = this.raiseSpyBand(WARDENS.key, WARDENS.size)
-    this.state.huntId = this.raiseSpyBand(WARDENS.foeKey, WARDENS.size)
   }
-  /** The Night Sappers at the player's capital, the Rootcutters at the enemy's seat. */
+  /** The Night Sappers at the player's capital. */
   private spawnSappers() {
     this.state.sappersId = null
-    this.state.cuttersId = null
     if (this.state.rules.mode === 'convoy' || this.state.rules.mode === 'nightfall') return
     this.state.sappersId = this.raiseSpyBand(SAPPERS.key, SAPPERS.size)
-    this.state.cuttersId = this.raiseSpyBand(SAPPERS.foeKey, SAPPERS.size)
   }
   /** Raise a fixed band (a spymaster's knives, a sapmaster's saboteurs or a warden's riders; n strong) at the seat of the faction its leader serves. */
   private raiseSpyBand(key: string, n: number): string | null {
@@ -1329,7 +1352,7 @@ export class GameEngine {
     const cap = seat && seat.faction === f ? seat : this.state.castles.find((c) => c.faction === f && !c.village)
     if (!cap) return null
     cap.garrison[unit] = (cap.garrison[unit] ?? 0) + n
-    const name = riders ? (key === WARDENS.key ? WARDENS.name : WARDENS.foeName) : sappers ? (key === SAPPERS.key ? SAPPERS.name : SAPPERS.foeName) : key === SPY.key ? BLADES.name : BLADES.foeName
+    const name = riders ? WARDENS.name : sappers ? SAPPERS.name : BLADES.name
     const res = this.formArmy(cap.id, f, { [unit]: n }, { commanderKey: key, name, retreatAt: riders ? WARDENS.retreatAt : sappers ? SAPPERS.retreatAt : BLADES.retreatAt, order: { type: 'station', castleId: cap.id } })
     if (typeof res === 'string') {
       cap.garrison[unit] = Math.max(0, (cap.garrison[unit] ?? 0) - n)
@@ -1351,7 +1374,7 @@ export class GameEngine {
   /** A spymaster whose band was wiped out raises a new one once recovered. */
   private updateSpyReturns() {
     const t = this.state.time
-    for (const [key, field] of [[SPY.key, 'bladesId'], [SPY.foeKey, 'sistersId'], [WARDENS.key, 'wardensId'], [WARDENS.foeKey, 'huntId'], [SAPPERS.key, 'sappersId'], [SAPPERS.foeKey, 'cuttersId']] as const) {
+    for (const [key, field] of [[SPY.key, 'bladesId'], [WARDENS.key, 'wardensId'], [SAPPERS.key, 'sappersId']] as const) {
       const at = this.state.spyReturnAt?.[key]
       if (!at || t < at) continue
       delete this.state.spyReturnAt![key]
@@ -1386,6 +1409,65 @@ export class GameEngine {
     this.state.foeRoyalId = res.id
     // Everyone knows where she holds court at the start of the war.
     this.state.foeSighting = { x: cap.x, z: cap.z, t: 0, castleId: cap.id, how: 'court' }
+  }
+  /** Alliance War: the allied king and the second enemy king ride out at the head of their guards from their own seats. */
+  private spawnCourtKings() {
+    if (this.state.rules.mode !== 'alliance') return
+    for (const court of Object.values(COURTS)) {
+      const st = this.state.commanders[court.king]
+      const f = st?.owner ? this.state.factions[st.owner] : undefined
+      const cap = f ? this.castle(f.capitalId) : undefined
+      if (!f || !cap || st.armyId) continue
+      const unit = this.bandUnit(ROYAL.unit, 'cavalry')
+      cap.garrison[unit] = (cap.garrison[unit] ?? 0) + ROYAL.guard
+      const res = this.formArmy(cap.id, f.id, { [unit]: ROYAL.guard }, { commanderKey: court.king, name: court.guard, retreatAt: ROYAL.retreatAt, order: { type: 'station', castleId: cap.id } })
+      if (typeof res === 'string') {
+        cap.garrison[unit] = Math.max(0, (cap.garrison[unit] ?? 0) - ROYAL.guard)
+        continue
+      }
+      res.royal = true
+      res.fullStrength = ROYAL.guard
+    }
+  }
+  /**
+   * Alliance War: a king slain, his kingdom passes whole to the other king of his side (the allied
+   * king's to us): his castles with their garrisons, his armies in the field, his commanders and his
+   * treasury. If he led his league, the heir leads it.
+   */
+  private absorbKingdom(fallen: Faction, heir: Faction, guardId: string) {
+    const s = this.state
+    const kf = s.factions[fallen]
+    const hf = s.factions[heir]
+    if (!kf || !hf) return
+    let castles = 0
+    for (const c of s.castles) {
+      if (c.faction !== fallen) continue
+      c.faction = heir
+      c.reliefArmyId = null
+      c.autoRecruit = null
+      const grange = this.grangeOf(c.id)
+      if (grange && grange.faction === fallen) grange.faction = heir
+      this.events.push({ type: 'captured', castleId: c.id, faction: heir })
+      castles++
+    }
+    let armies = 0
+    for (const a of [...s.armies]) {
+      if (a.faction !== fallen || a.id === guardId) continue
+      a.faction = heir
+      armies++
+    }
+    for (const st of Object.values(s.commanders)) if (st.owner === fallen) st.owner = heir
+    hf.gold += kf.gold
+    kf.gold = 0
+    kf.alive = false
+    kf.host = null
+    kf.capitalId = null
+    // (The heir leads the league if the fallen king did: the computer's side of it, not the player.)
+    if (kf.leader && heir !== PLAYER) hf.leader = true
+    kf.leader = false
+    if (heir === PLAYER) this.log('warning', `${kf.name} passes to you`, `Its king is dead. ${castles} castle${castles === 1 ? '' : 's'} and ${armies} arm${armies === 1 ? 'y' : 'ies'} now answer to you, and its captains with them.`)
+    else if (this.team(heir) === 'B') this.log('victory', `${kf.name} is no more`, `Its king is dead. What is left of it (${castles} castle${castles === 1 ? '' : 's'}, ${armies} arm${armies === 1 ? 'y' : 'ies'}) goes over to ${hf.name}.`)
+    this.notify()
   }
   /**
    * Hard and Last Stand Alliance Wars: the outnumbered alliance has been readying its
@@ -1461,7 +1543,8 @@ export class GameEngine {
     if (!a.royal) return null
     if (a.id === this.state.foeRoyalId) return 'queen'
     if (a.id === this.state.sunRoyalId) return 'emperor'
-    return a.faction === PLAYER ? 'king' : null
+    // (Alliance War's other kings: the allied king in a king's harness, the second enemy king in the Thorn harness.)
+    return a.faction === PLAYER || this.team(a.faction) === 'A' ? 'king' : 'queen'
   }
   /**
    * The Three Crowns' balance of power: how much less (below 1) or more (above 1) a lord of one
@@ -1942,10 +2025,12 @@ export class GameEngine {
   }
   incomeMult(f: Faction) {
     if (f === PLAYER) return 1
+    // Alliance War: every realm, ally or foe, earns the same from a castle; the difficulty is the
+    // land each side holds at the start (Squire 5:5 to Last Stand 8:2), nothing else.
+    if (this.state.rules.mode === 'alliance') return 1
     const ft = this.team(f)
     if (ft !== 'B' && ft !== 'C') return 0.85
-    // In Alliance War the player's allies already balance the scales, so the enemy side is richer.
-    return foeDifficulty(this.state.rules.mode, this.state.difficulty).income * (this.state.rules.mode === 'alliance' ? 1.4 : 1)
+    return foeDifficulty(this.state.rules.mode, this.state.difficulty).income
   }
 
   // -------------------------------------------------------------------------
@@ -3210,7 +3295,7 @@ export class GameEngine {
   keepsTogether(a: Army): boolean {
     return !!a.royal || this.isBand(a) || a.stance?.kind === 'escortArmy' || this.escortsOf(a).length > 0
   }
-  /** One of the small fixed bands (the Blades and Sisters, the Sappers and Rootcutters, the Wardens and Hunt). */
+  /** One of the small fixed bands (the Blades, the Sappers, the Wardens; on Convoy Raid the raiders' Grey Sisters). */
   isBand(a: Army): boolean {
     return !!(a.blades || a.wardens || a.sappers)
   }
@@ -3501,7 +3586,7 @@ export class GameEngine {
       if (o.progress < 1 || !hostile(o.faction)) continue
       list.push({ x: o.x, z: o.z, r: (SPY.postWatch + 40) * ns, rd: (SPY.postWatchDisguised + 40) * ns, name: o.name, who: `The sentries of ${o.name}`, secret: !!o.secret })
     }
-    // The other side's Wardens (or Thorn Hunt): a watch on horseback. Secret while we cannot see them.
+    // The other side's Wardens: a watch on horseback. Secret while we cannot see them.
     for (const b of this.state.armies) {
       if (!b.wardens || !hostile(b.faction) || b.status === 'retreating') continue
       list.push({ x: b.x, z: b.z, r: WARDENS.reveal * nw, rd: WARDENS.reveal * nw, name: b.name, who: `The riders of ${b.name}`, secret: !this.canSee(this.team(faction), b) })
@@ -3564,7 +3649,7 @@ export class GameEngine {
   wardenSight(): number {
     return SIGHT.army * this.sightScale * WARDENS.sight
   }
-  /** Each second: what the Wardens (and the Thorn Hunt) sight stays marked on their side's map for a while. */
+  /** Each second: what the Wardens sight stays marked on our map for a while. */
   private updateWardens() {
     const t = this.state.time
     const r = this.wardenSight()
@@ -4667,7 +4752,7 @@ export class GameEngine {
   /** Price and odds of turning an enemy lord (Alliance War). */
   bribeOffer(fid: Faction): { price: number; chance: number } | null {
     const f = this.state.factions[fid]
-    if (!f || (f.team !== 'B' && f.team !== 'C') || f.leader || !f.alive || (this.state.rules.mode !== 'alliance' && this.state.rules.mode !== 'grand')) return null
+    if (!f || (f.team !== 'B' && f.team !== 'C') || f.leader || f.king || !f.alive || (this.state.rules.mode !== 'alliance' && this.state.rules.mode !== 'grand')) return null
     const castles = this.state.castles.filter((c) => c.faction === fid)
     const cap = this.castle(f.capitalId) ?? castles[0]
     if (!cap) return null
@@ -4703,7 +4788,7 @@ export class GameEngine {
   /** A truce: the lord will not attack your lands or armies for a few minutes. */
   pactOffer(fid: Faction): { price: number; duration: number } | null {
     const f = this.state.factions[fid]
-    if (!f || (f.team !== 'B' && f.team !== 'C') || f.leader || !f.alive) return null
+    if (!f || (f.team !== 'B' && f.team !== 'C') || f.leader || f.king || !f.alive) return null
     return { price: Math.round(300 + this.factionSoldiers(fid) * 0.45), duration: 240 }
   }
   signPact(fid: Faction): string | null {
@@ -6092,8 +6177,7 @@ export class GameEngine {
   private updateCovert(dt: number) {
     const t = this.state.time
     for (const a of this.state.armies) {
-      // The enemy's Grey Sisters mend in a castle of theirs (their convent takes them in).
-      // (And the Thorn Hunt in a castle of theirs.)
+      // A band of the other side's (Convoy Raid's Grey Sisters) mends in a castle of theirs.
       if (this.isBand(a) && a.faction !== PLAYER && a.order.type === 'station' && a.status !== 'marching' && this.insideWalls(a)) {
         const full = this.fullStrength(a)
         const n = total(a.troops)
@@ -6831,7 +6915,21 @@ export class GameEngine {
       this.state.royalId = null
       this.log('lost', 'The King has fallen', `The Royal Guard is ${how}. With the Sovereign gone, the realm cannot fight on.`, a.x, a.z)
     }
-    if (a.royal && a.id === this.state.foeRoyalId) {
+    // Alliance War: a king slain (not ours): his kingdom passes to the other king of his side; the
+    // last enemy king slain wins the war.
+    if (a.royal && a.faction !== PLAYER && this.state.rules.mode === 'alliance') {
+      const kf = this.state.factions[a.faction]
+      const heir = kf?.team === 'A' ? PLAYER : Object.values(this.state.factions).find((f) => f.king && f.alive && f.team === kf?.team && f.id !== a.faction)?.id
+      const who = this.commanders.get(a.commanderKey ?? '')?.name ?? 'The king'
+      if (a.id === this.state.foeRoyalId) {
+        this.state.foeRoyalId = null
+        this.state.foeSighting = null
+      }
+      if (kf?.team === 'A') this.log('lost', `${who} has fallen`, `The ${a.name} is ${how}.`, a.x, a.z)
+      else this.log('victory', `${who} has fallen!`, `The ${a.name} is ${how}.${heir ? '' : ' The enemy has no king left: the war is won.'}`, a.x, a.z)
+      if (heir) this.absorbKingdom(a.faction, heir, a.id)
+      else if (kf?.team === 'B') this.state.foeFallen = true
+    } else if (a.royal && a.id === this.state.foeRoyalId) {
       this.state.foeFallen = true
       this.state.foeRoyalId = null
       this.state.foeSighting = null
@@ -6851,20 +6949,18 @@ export class GameEngine {
       // A spymaster's band wiped out: once recovered, the spymaster gathers a new one.
       if (a.blades && SPY.keys.includes(a.commanderKey) && this.state.rules.mode !== 'convoy') {
         this.state.spyReturnAt = { ...(this.state.spyReturnAt ?? {}), [a.commanderKey]: this.state.time + BLADES.returnAfter }
-        if (a.faction === PLAYER) this.state.bladesId = null
+        if (a.commanderKey === SPY.key) this.state.bladesId = null
         else this.state.sistersId = null
       }
       // Likewise a sapmaster whose people were cut down.
       if (a.sappers && SAPPERS.keys.includes(a.commanderKey)) {
         this.state.spyReturnAt = { ...(this.state.spyReturnAt ?? {}), [a.commanderKey]: this.state.time + SAPPERS.returnAfter }
-        if (a.faction === PLAYER) this.state.sappersId = null
-        else this.state.cuttersId = null
+        this.state.sappersId = null
       }
       // Likewise a warden whose riders were cut down.
       if (a.wardens && WARDENS.keys.includes(a.commanderKey)) {
         this.state.spyReturnAt = { ...(this.state.spyReturnAt ?? {}), [a.commanderKey]: this.state.time + WARDENS.returnAfter }
-        if (a.faction === PLAYER) this.state.wardensId = null
-        else this.state.huntId = null
+        this.state.wardensId = null
       }
     }
     const b = this.battle(a.battleId)
@@ -7010,9 +7106,9 @@ export class GameEngine {
       this.log('ally', `${c.name} falls to ${this.factionName(captor)}`, `${this.factionName(prev)} has lost a castle.`, c.x, c.z)
     }
     this.ais.get(prev)?.onCastleLost(c)
-    // Eliminate factions that hold nothing.
     const pf = this.state.factions[prev]
-    if (pf && pf.team !== 'N' && !pf.undying && !this.state.castles.some((x) => x.faction === prev)) {
+    // Eliminate factions that hold nothing.
+    if (pf && pf.alive && pf.team !== 'N' && !pf.undying && !this.state.castles.some((x) => x.faction === prev)) {
       pf.alive = false
       if (prev !== PLAYER) {
         const kind: ChronicleKind = pf.team === 'A' ? 'ally' : 'victory'

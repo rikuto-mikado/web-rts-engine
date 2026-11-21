@@ -519,7 +519,7 @@ function WarTab({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint: (x
         <button onClick={() => cap && onFocusPoint(cap.x, cap.z)} className={`flex w-full items-center gap-2 text-left text-[13px] hover:brightness-125 ${!f.alive ? 'line-through' : ''}`}>
           <i className="size-2.5 shrink-0 rounded-sm" style={{ background: f.color }} />
           <span className={`flex-1 truncate ${fid === PLAYER ? 'font-bold text-royal-300' : ''}`}>
-            {f.leader && <Glyph name="crown" size={12} className="mr-1 -mt-0.5 text-gold-300" />}
+            {(f.king || f.leader) && <Glyph name="crown" size={12} className="mr-1 -mt-0.5 text-gold-300" />}
             {fid === PLAYER ? `${f.name} (you)` : f.name}
           </span>
           <span className="w-5 text-right text-ink-400 tabular-nums">{castles.length}</span>
@@ -617,7 +617,7 @@ function WarTab({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint: (x
       ) : (
         <section>
           <SectionTitle right={<span className="text-[12px] text-ink-500">rank · castles · soldiers</span>}>Enemy realms</SectionTitle>
-          <div>{realms.filter((f) => f.team === 'B').map((f) => row(f.id))}</div>
+          <div>{realms.filter((f) => f.team === 'B').sort((a, b) => (a.leader ? -1 : b.leader ? 1 : 0)).map((f) => row(f.id))}</div>
         </section>
       )}
     </div>
@@ -635,6 +635,8 @@ function QueenCard({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint:
   const age = sight ? Math.max(0, s.time - sight.t) : 0
   const when = age < 20 ? 'just now' : age < 60 ? `${Math.round(age)}s ago` : `${Math.round(age / 60)} min ago`
   const where = sight ? engine.placeName(sight.x, sight.z) : ''
+  // (Alliance War: while the second enemy king lives, her death only hands him her kingdom.)
+  const another = s.rules.mode === 'alliance' && Object.values(s.factions).some((f) => f.team === 'B' && f.king && f.alive && f.id !== q?.faction)
   const status = s.foeFallen
     ? 'Slain. The enemy alliance is broken.'
     : live
@@ -649,7 +651,7 @@ function QueenCard({ engine, onFocusPoint }: { engine: GameEngine; onFocusPoint:
       <div className="flex items-center gap-2.5">
         <PixelPortrait spec={def.portrait} size={40} className={`ring-1 ring-[#c9464f]/60 ${s.foeFallen ? 'grayscale' : ''}`} />
         <div className="min-w-0 flex-1">
-          <div className="text-[11px] tracking-wider text-[#f2a0a6] uppercase">{s.foeFallen ? 'The Usurper is dead' : 'Slay the Usurper to win'}</div>
+          <div className="text-[11px] tracking-wider text-[#f2a0a6] uppercase">{s.foeFallen ? 'The Usurper is dead' : another ? 'Slay the Usurper: her kingdom falls' : 'Slay the Usurper to win'}</div>
           <div className="truncate font-display text-[14px] font-bold text-ink-100">{def.name}</div>
           <div className="text-[12px] leading-snug text-ink-300">{status}</div>
         </div>

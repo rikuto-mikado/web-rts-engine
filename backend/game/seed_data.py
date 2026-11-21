@@ -4,6 +4,8 @@ Coordinates use a flat world plane: x grows east, z grows south, both in the
 range [-map_size/2, map_size/2].
 """
 
+import copy
+
 UNIT_TYPES = [
     {
         "key": "infantry",
@@ -450,7 +452,7 @@ COMMANDERS = [
         "vision_mod": 1.4,
         "strengths": [
             "Wardens of the March: 150 mounted bowmen who see twice as far as any host",
-            "Find hidden bands within 450m, the enemy's Grey Sisters among them",
+            "Find hidden bands within 450m, concealed or disguised alike",
             "Enemy armies they sight stay marked on our map for a minute",
             "Never out of supply, 25% faster than other armies",
         ],
@@ -910,6 +912,114 @@ def g(infantry=0, cavalry=0, archers=0, engineers=0):
         "engineers": engineers,
     }
 
+
+# ---- Alliance War's other two courts --------------------------------------------------------------
+# The allied king's court mirrors the player's, the second enemy king's mirrors the Usurper's: the
+# same strengths, led by people of their own. (A king and five field commanders each: the fixed
+# bands are the player's alone.)
+
+
+def _court(source: str, faction: str, sort_order: int, **changes) -> dict:
+    """A commander of another court: `source`'s strengths and traits, with a person of their own."""
+    base = copy.deepcopy(next(c for c in COMMANDERS if c["key"] == source))
+    portrait = {**base["portrait"], **changes.pop("portrait", {})}
+    return {**base, "faction": faction, "sort_order": sort_order, **changes, "portrait": portrait}
+
+
+COMMANDERS += [
+    # The allied king's court.
+    _court(
+        "sovereign", "ally", 20,
+        key="edmund", name="King Edmund", title="The Steadfast King",
+        specialty="Leads the Crown Guard; steadies every army near him",
+        lore="An old ally of the crown, who sent for help when the Usurper's lords crossed his border. His Crown Guard has never yielded a field.",
+        banner_color="#1f6f8a",
+        strengths=["Crown Guard: 520 knights who never need paying", "Presence: armies within 350m deal +15% and take -10%", "Allies answer his summons more readily"],
+        weaknesses=["The Guard can never be reinforced", "If he falls, his kingdom passes to you"],
+        portrait={"hair": "#c9b48a", "beard_color": "#c9b48a", "hair_style": "short", "cloth": "#1c3a44", "trim": "#d8c070", "eyes": "#3a5a3a", "bg": "#0f2a33"},
+    ),
+    _court(
+        "godfrey", "ally", 21,
+        key="oswin", name="Marshal Oswin", title="The Stone Gate",
+        lore="Holds the allied king's castles as if they were his own; no wall he has stood behind has fallen.",
+        banner_color="#5a7a3a",
+        portrait={"hair": "#5a4a3a", "beard": "short", "cloth": "#3a4a2a", "trim": "#5a7a3a", "bg": "#1a2a12"},
+    ),
+    _court(
+        "elowen", "ally", 22,
+        key="rowena", name="Lady Rowena", title="Stormrider of the Fells",
+        lore="Leads the allied horse over the fells faster than word of her coming.",
+        banner_color="#2f8a7a",
+        portrait={"hair": "#2a1a12", "skin": "#e8c0a0", "cloth": "#1f4a44", "trim": "#2f8a7a", "bg": "#0f2a26"},
+    ),
+    _court(
+        "varian", "ally", 23,
+        key="cedric", name="Sir Cedric", title="The Iron Pike",
+        lore="His pikemen have held a ford for three days against twice their number.",
+        banner_color="#4a6a9a",
+        portrait={"hair": "#8a6a3a", "cloth": "#2a3a5a", "trim": "#4a6a9a", "bg": "#121a2a"},
+    ),
+    _court(
+        "isolde", "ally", 24,
+        key="gwendolyn", name="Dame Gwendolyn", title="Ember of the North",
+        lore="Her archers fire the enemy's camps by night and are gone before dawn.",
+        banner_color="#b0643a",
+        portrait={"hair": "#e0c070", "cloth": "#4a2a1a", "trim": "#b0643a", "bg": "#2a160c"},
+    ),
+    _court(
+        "bran", "ally", 25,
+        key="aldous", name="Aldous the Brave", title="Lance of the Vale",
+        lore="First into every charge; his knights would follow him through a wall.",
+        banner_color="#8a7a2a",
+        portrait={"hair": "#3a2a1a", "cloth": "#3a341a", "trim": "#8a7a2a", "bg": "#22200c"},
+    ),
+    # The second enemy king's court.
+    _court(
+        "usurper", "rival", 30,
+        key="draven", name="King Draven", title="The Iron Crown",
+        specialty="Leads the Black Guard; his hosts fight harder where he rides",
+        lore="The Usurper's mightiest ally, who sold his loyalty for half a kingdom. His Black Guard rides in iron from helm to heel.",
+        banner_color="#4a2a5a",
+        strengths=["Black Guard: 520 knights who never need paying", "Presence: his armies within 350m deal +15% and take -10%", "Rides out with some of the Great Hosts"],
+        weaknesses=["The Guard can never be reinforced", "If he falls, his kingdom passes to the Usurper"],
+        portrait={"female": False, "hair": "#1a1414", "beard": "full", "brows": "heavy", "cloth": "#24182c", "trim": "#9a8aa8", "bg": "#160c1c"},
+    ),
+    _court(
+        "hrolf", "rival", 34,
+        key="bardolf", name="Bardolf the Ram", title="Splitter of Gates",
+        lore="Has broken more gates than he has years, and he is not young.",
+        banner_color="#6a2a2a",
+        portrait={"hair": "#5a3a2a", "cloth": "#3a1a1a", "trim": "#6a2a2a", "bg": "#200e0e"},
+    ),
+    _court(
+        "gorm", "rival", 35,
+        key="morg", name="Morg the Grim", title="Knight of Iron",
+        lore="Never seen to smile, nor to retreat.",
+        banner_color="#3a3a3a",
+        portrait={"hair": "#2a2a2a", "cloth": "#1c1c1c", "trim": "#5a5a5a", "bg": "#121212"},
+    ),
+    _court(
+        "sabine", "rival", 36,
+        key="ysra", name="Ysra Blackfletch", title="Mistress of the Longbow",
+        lore="Her bowmen loose three arrows to anyone else's two.",
+        banner_color="#2a4a3a",
+        portrait={"hair": "#1a1a1a", "cloth": "#1a2a22", "trim": "#3a6a4a", "bg": "#0e1a14"},
+    ),
+    _court(
+        "vesk", "rival", 37,
+        key="torvald", name="Torvald the Raider", title="Burner of Barns",
+        lore="Rides where the armies are not, and leaves nothing standing.",
+        banner_color="#7a4a1a",
+        portrait={"hair": "#b0703a", "cloth": "#3a2410", "trim": "#7a4a1a", "bg": "#20140a"},
+    ),
+    _court(
+        "ulric", "rival", 38,
+        key="edric", name="Edric Stone", title="Keeper of the Marches",
+        lore="Holds King Draven's borders with a patience that wears down every assault.",
+        banner_color="#4a5a6a",
+        portrait={"hair": "#7a7a7a", "cloth": "#22282e", "trim": "#4a5a6a", "bg": "#12161a"},
+    ),
+]
 
 SCENARIOS = [
     {

@@ -9,6 +9,9 @@ class ApiTests(APITestCase):
         # Four raised in castles; five never (Household Knights, Assassins, Outriders, Saboteurs, Paladins).
         self.assertEqual(sum(1 for u in res.data["unit_types"] if u["recruitable"]), 4)
         self.assertTrue(any(c["faction"] == "enemy" for c in res.data["commanders"]))
+        # Alliance War: the allied king's court and the second enemy king's: a king and five commanders each.
+        for court in ("ally", "rival"):
+            self.assertEqual(sum(1 for c in res.data["commanders"] if c["faction"] == court), 6)
         self.assertEqual(res.data["scenarios"][0]["key"], "ashen-marches")
 
     def test_campaign_save_and_reports(self):

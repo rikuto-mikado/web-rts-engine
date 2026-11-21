@@ -19,7 +19,7 @@ import { holdingRadius } from './world'
  *   the paladins   whatever the state of the war, bands of the High King's paladins (`band` each,
  *                  led in turn by his five Justices) come down at the Sanctuary, `wave` together
  *                  every `every` seconds, no more than `bands` in the field at once, and each rides for the
- *                  nearest enemy castle (never the enemy's High Seat: that is ours to take). The
+ *                  nearest enemy castle (never an enemy royal seat: those are ours to take). The
  *                  castles they take are ours. They need no supply, pay no upkeep, never break and
  *                  always fight blessed. When they have taken `castles` castles, or after `limit`
  *                  seconds, they go home.
@@ -40,7 +40,7 @@ export const TEMPLE = {
   bands: 6,
   castles: 4,
   limit: 600,
-  /** About this far along the way from our court to the enemy's High Seat. */
+  /** About this far along the way from our court to the Usurper's seat. */
   along: 0.3,
   /** Far enough from every enemy castle (it is placed as far as it can be, up to this). */
   safe: 2200,

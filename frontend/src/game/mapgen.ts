@@ -1,9 +1,9 @@
 import { MAPS, type MapType } from './biomes'
 import { PLAYER } from './engine'
 import { clamp, mulberry32 } from './noise'
-import type { CastleDef, Difficulty, Escarpment, FactionDef, GameMode, GameRules, Rampart, Scenario, ScenarioDefinition, Team, Troops, FeatureKind, TerrainFeature } from './types'
+import type { CastleDef, Difficulty, Escarpment, FactionDef, GameMode, GameRules, Rampart, Scenario, ScenarioDefinition, Troops, FeatureKind, TerrainFeature } from './types'
 import { placeSanctuary } from './sanctuary'
-import { CASTLE_SIZES, ROYAL_SEAT_TIER, World, distToSegment, holdingRadius } from './world'
+import { CASTLE_SIZES, World, distToSegment, holdingRadius } from './world'
 
 /**
  * Procedural maps for Alliance War and Survival. Everything derives from the
@@ -36,7 +36,6 @@ export interface GeneratedMap {
 }
 
 export interface MapOptions {
-  factions?: number // total factions in Alliance War, including the player
   mapType?: MapType
   /** Alliance War: sets how much of the map the player's alliance holds at the start. */
   difficulty?: Difficulty
@@ -44,18 +43,35 @@ export interface MapOptions {
 
 /**
  * Alliance War: the enemy is always strong (the "hard" foe); the difficulty is how much
- * of the map your alliance still holds when the war begins.
+ * of the land (in castles' worth, a royal seat counting 5 and a stronghold 2) your alliance still
+ * holds when the war begins.
  */
 export const ALLIANCE_SHARE: Record<Difficulty, number> = { easy: 0.5, normal: 0.4, hard: 0.3, brutal: 0.2 }
+/**
+ * Alliance War's two kingdoms a side. Ours: the player's (a royal seat and two strongholds) and the
+ * allied king's who called for our help (a royal seat and five strongholds, about 62% of our side's
+ * strength). Theirs: the Usurper's and the second enemy king's, together as strong against ours as the
+ * difficulty says, shared between them half and half.
+ */
+export const KINGDOMS = { player: 2, ally: 5 }
+const SEAT_WORTH = 5
+const STRONGHOLD_WORTH = 2
+/** The enemy's strongholds (their two seats besides) at a difficulty. */
+export function enemyStrongholds(d: Difficulty): number {
+  const ours = 2 * SEAT_WORTH + (KINGDOMS.player + KINGDOMS.ally) * STRONGHOLD_WORTH
+  const theirs = (ours * (1 - ALLIANCE_SHARE[d])) / ALLIANCE_SHARE[d]
+  return Math.max(2, Math.round((theirs - 2 * SEAT_WORTH) / STRONGHOLD_WORTH))
+}
 /** Last Stand: hold out until the relief fleet lands, at the start of the second spring. */
 export const RELIEF_AT = 120 * 30
 
 /**
- * The two map sizes there are. Conquest: a small map with sites for ten castles, of which each realm
- * takes its seat and two strongholds. Alliance War: a medium map for 16 against 16 realms.
+ * The map sizes. Conquest: a small map with sites for ten castles, of which each realm takes its seat
+ * and two strongholds. Alliance War: as large as its castles need (the same ground for each as on a
+ * map of `castles` at `map` across), so a Squire's war is fought on a smaller map than a Last Stand.
  */
 export const CONQUEST_MAP = { map: 4160, castles: 10 }
-export const ALLIANCE_MAP = { map: 8000, realms: 32 }
+export const ALLIANCE_MAP = { map: 8000, castles: 57, least: 5000 }
 
 export function generateMap(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: MapOptions = {}): GeneratedMap {
   // Retry a few seeds if the layout ends up disconnected.
@@ -70,13 +86,17 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
   const rnd = mulberry32(seed)
   const R = (a: number, b: number) => a + rnd() * (b - a)
   const alliance = mode === 'alliance'
-  const factionCount = Math.max(6, Math.min(48, opts.factions ?? ALLIANCE_MAP.realms))
-  const size = alliance ? ALLIANCE_MAP.map : CONQUEST_MAP.map
+  const mapType: MapType = opts.mapType ?? 'crown'
+  const mapDef = MAPS[mapType]
+  // Alliance War: our nine castles, theirs by the difficulty, and a few free ones on the front.
+  const ourCastles = 2 + KINGDOMS.player + KINGDOMS.ally
+  const theirCastles = 2 + enemyStrongholds(opts.difficulty ?? 'easy')
+  const frontCastles = 2
+  const allianceCastles = ourCastles + theirCastles + frontCastles
+  const size = alliance ? Math.max(ALLIANCE_MAP.least, Math.round(ALLIANCE_MAP.map * Math.sqrt(allianceCastles / ALLIANCE_MAP.castles))) : CONQUEST_MAP.map
   const half = size / 2
   // Terrain features scale with map area relative to the medium preset.
   const areaScale = (size * size) / ((alliance ? 4000 : 2800) ** 2)
-  const mapType: MapType = opts.mapType ?? 'crown'
-  const mapDef = MAPS[mapType]
 
   // --- Terrain features, laid out for this map --------------------------------
   // u, v run from -1 (west, north) to 1 (east, south).
@@ -293,7 +313,8 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
   }
 
   // --- Castle sites (Poisson-like rejection sampling) -----------------------
-  const targetCastles = alliance ? Math.round(factionCount * 1.65 + 4) : CONQUEST_MAP.castles
+  // (The map's own fortresses stay free towns: sites besides ours and theirs.)
+  const targetCastles = alliance ? allianceCastles + fixedSites.length : CONQUEST_MAP.castles
   const dmin = alliance ? (size * 0.62) / Math.sqrt(targetCastles) : Math.min(800, (size * 0.6) / Math.sqrt(targetCastles))
   // Distance from a point to a polyline (for the walls and cliffs).
   const lineDist = (pts: [number, number][], x: number, z: number) => {
@@ -316,7 +337,7 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
     if (sites.some((s) => Math.hypot(x - s.x, z - s.z) < dmin)) continue
     sites.push({ x, z })
   }
-  if (sites.length < (alliance ? factionCount + 2 : Math.max(8, targetCastles - 3))) return null
+  if (sites.length < (alliance ? targetCastles - 2 : Math.max(8, targetCastles - 3))) return null
 
   // Bridges every ~450 units along each river.
   const bridges: { x: number; z: number; ford?: boolean }[] = []
@@ -390,8 +411,6 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
   }
   const factions: FactionDef[] = []
   const realmPool = [...REALMS].sort(() => rnd() - 0.5)
-  const realmName = () => `${TITLES[Math.floor(rnd() * TITLES.length)]} ${realmPool.pop() ?? 'Nowhere'}`
-  const personality = (): FactionDef['personality'] => (['aggressive', 'balanced', 'defensive'] as const)[Math.floor(rnd() * 3)]
 
   const assign: { faction: string; tier: number; capital: boolean; staging?: boolean; stronghold?: boolean }[] = sites.map(() => ({ faction: 'neutral', tier: 1, capital: false }))
   let rules: GameRules
@@ -437,77 +456,50 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
     const dz = Math.sin(theta)
     const proj = sites.map((s) => s.x * dx + s.z * dz + Math.sin((s.x * -dz + s.z * dx) / (size * 0.18)) * size * 0.06)
     const order = sites.map((_, i) => i).sort((a, b) => proj[a] - proj[b])
-    const neutralCount = Math.max(2, Math.round(sites.length * 0.08))
-    const mid = Math.round(order.length * ALLIANCE_SHARE[opts.difficulty ?? 'easy'])
-    const neutralSet = new Set(order.slice(Math.floor(mid - neutralCount / 2), Math.floor(mid - neutralCount / 2) + neutralCount))
-    const teamOf = (i: number): Team => (neutralSet.has(i) ? 'N' : order.indexOf(i) < mid ? 'A' : 'B')
-    const perTeam = Math.floor(factionCount / 2)
-    const hueA = [195, 165, 140, 210, 180, 150, 225, 175]
-    const hueB = [5, 25, 340, 285, 15, 355, 300, 35]
-    for (const team of ['A', 'B'] as const) {
-      // (The map's own fortresses stay free towns, whichever side of the front they fall.)
-      const members = sites.map((_, i) => i).filter((i) => teamOf(i) === team && !fixedSites.some((f) => f.x === sites[i].x && f.z === sites[i].z))
-      // The castle deepest behind the front becomes the alliance's High Seat.
-      const depth = (i: number) => (team === 'A' ? -proj[i] : proj[i])
-      const seeds: number[] = [members.reduce((b, i) => (depth(i) > depth(b) ? i : b), members[0])]
-      // (The two sites nearest the Usurper's High Seat are kept for her strongholds, not other lords' seats.)
-      const kept = team === 'B' ? members.filter((i) => i !== seeds[0]).sort((p, q) => Math.hypot(sites[p].x - sites[seeds[0]].x, sites[p].z - sites[seeds[0]].z) - Math.hypot(sites[q].x - sites[seeds[0]].x, sites[q].z - sites[seeds[0]].z)).slice(0, 2) : []
-      while (seeds.length < Math.min(perTeam, members.length - kept.length)) {
-        const next = members
-          .filter((i) => !seeds.includes(i) && !kept.includes(i))
-          .reduce(
-            (best, i) => {
-              const d = Math.min(...seeds.map((s) => Math.hypot(sites[i].x - sites[s].x, sites[i].z - sites[s].z)))
-              return d > best.d ? { i, d } : best
-            },
-            { i: -1, d: -1 },
-          ).i
-        if (next < 0) break
-        seeds.push(next)
-      }
-      // Pick the player's realm on team A: not the leader, not on the very front.
-      let playerSeed = -1
-      if (team === 'A') {
-        const candidates = seeds.slice(1).sort((a, b) => depth(b) - depth(a))
-        playerSeed = candidates[Math.floor(candidates.length * 0.4)] ?? seeds[0]
-      }
-      seeds.forEach((s, k) => {
-        const leader = k === 0
-        const id = s === playerSeed ? PLAYER : `${team}${k}`
-        const hues = team === 'A' ? hueA : hueB
-        const hue = hues[k % hues.length] + R(-8, 8)
-        const color = id === PLAYER ? '#2f63c4' : hslHex(hue, R(0.45, 0.65), R(0.32, 0.46))
-        factions.push({
-          id,
-          name: id === PLAYER ? `Kingdom of ${realmPool.pop() ?? 'Aethelgard'}` : realmName(),
-          color: leader ? (team === 'A' ? '#1f8a8a' : '#8f1d1d') : color,
-          team,
-          leader,
-          musters: leader,
-          personality: leader ? 'aggressive' : personality(),
-        })
-        // The King's court and the Usurper's are royal seats; the other lords keep lesser castles.
-        assign[s] = { faction: id, tier: id === PLAYER || (leader && team === 'B') ? CASTLE_SIZES.royal : leader ? CASTLE_SIZES.high : CASTLE_SIZES.lord, capital: true }
-      })
-      for (const i of members) {
-        if (seeds.includes(i)) continue
-        const owner = seeds.reduce((b, s) => (Math.hypot(sites[i].x - sites[s].x, sites[i].z - sites[s].z) < Math.hypot(sites[i].x - sites[b].x, sites[i].z - sites[b].z) ? s : b), seeds[0])
-        // A realm's lesser holdings are strongholds (its seat is its only castle).
-        assign[i] = { faction: assign[owner].faction, tier: CASTLE_SIZES.stronghold, capital: false, stronghold: true }
-      }
-      // The two strongholds nearest the King's court are the player's, and the two nearest the
-      // Usurper's High Seat hers, whoever else they would have gone to.
-      const court = team === 'A' ? playerSeed : seeds[0]
-      if (court >= 0) {
-        const d = (i: number) => Math.hypot(sites[i].x - sites[court].x, sites[i].z - sites[court].z)
-        const near = members.filter((i) => !seeds.includes(i)).sort((p, q) => d(p) - d(q)).slice(0, 2)
-        for (const i of near) assign[i] = { faction: assign[court].faction, tier: CASTLE_SIZES.stronghold, capital: false, stronghold: true }
-      }
+    // Our castles are the nine deepest on our side of the front, then a few free ones on the front
+    // itself, then theirs. (The map's own fortresses stay free towns, whichever side they fall.)
+    const isFixed = (i: number) => fixedSites.some((f) => f.x === sites[i].x && f.z === sites[i].z)
+    const line = order.filter((i) => !isFixed(i))
+    const ours = line.slice(0, ourCastles)
+    const neutralSet = new Set(line.slice(ourCastles, ourCastles + frontCastles))
+    const theirs = line.slice(ourCastles + frontCastles)
+    if (ours.length < ourCastles || theirs.length < 4) return null
+    const depthOf = (team: 'A' | 'B', i: number) => (team === 'A' ? -proj[i] : proj[i])
+    const dist = (p: number, q: number) => Math.hypot(sites[p].x - sites[q].x, sites[p].z - sites[q].z)
+    // A side's two royal seats: the deepest castle, and of the deeper half the one furthest from it.
+    const seatsOf = (team: 'A' | 'B', list: number[]): [number, number] => {
+      const deep = [...list].sort((p, q) => depthOf(team, q) - depthOf(team, p))
+      const first = deep[0]
+      const second = deep.slice(1, Math.max(2, Math.ceil(deep.length / 2))).reduce((b, i) => (dist(i, first) > dist(b, first) ? i : b), deep[1])
+      return [first, second]
     }
+    const kingdom = (id: string, seat: number, strongholds: number[]) => {
+      assign[seat] = { faction: id, tier: CASTLE_SIZES.royal, capital: true }
+      for (const i of strongholds) assign[i] = { faction: id, tier: CASTLE_SIZES.stronghold, capital: false, stronghold: true }
+    }
+    const name = () => `Kingdom of ${realmPool.pop() ?? 'Aethelgard'}`
+    // Ours: the allied king, whose land the enemy is invading, holds the seat nearer the front; we
+    // come to his aid from the deepest seat (the one whose loss ends the war), with the two castles
+    // nearest it.
+    const [playerSeat, allySeat] = seatsOf('A', ours)
+    const rest = ours.filter((i) => i !== allySeat && i !== playerSeat).sort((p, q) => dist(p, playerSeat) - dist(q, playerSeat))
+    factions.push({ id: PLAYER, name: name(), color: '#2f63c4', team: 'A', king: true })
+    factions.push({ id: 'A1', name: name(), color: '#1f8a8a', team: 'A', king: true, leader: true, musters: true, personality: 'aggressive' })
+    kingdom(PLAYER, playerSeat, rest.slice(0, KINGDOMS.player))
+    kingdom('A1', allySeat, rest.slice(KINGDOMS.player))
+    // Theirs: the Usurper holds the deepest seat, the second king the other; the rest shared half and
+    // half, each castle to the king it lies nearer (by turns where it is close).
+    const [usurperSeat, rivalSeat] = seatsOf('B', theirs)
+    const left = theirs.filter((i) => i !== usurperSeat && i !== rivalSeat).sort((p, q) => dist(p, usurperSeat) - dist(p, rivalSeat) - (dist(q, usurperSeat) - dist(q, rivalSeat)))
+    const half = Math.ceil(left.length / 2)
+    factions.push({ id: 'B0', name: name(), color: '#8f1d1d', team: 'B', king: true, leader: true, musters: true, personality: 'aggressive' })
+    factions.push({ id: 'B1', name: name(), color: '#5b2a72', team: 'B', king: true, musters: true, personality: 'balanced' })
+    kingdom('B0', usurperSeat, left.slice(0, half))
+    kingdom('B1', rivalSeat, left.slice(half))
     factions.push({ id: 'neutral', name: 'Free Towns', color: '#a08a56', team: 'N' })
     for (const i of neutralSet) assign[i] = { faction: 'neutral', tier: rnd() < 0.4 ? 2 : 1, capital: false }
-    const seatOf = (team: Team) => sites.findIndex((_, i) => assign[i].capital && factions.find((f) => f.id === assign[i].faction)?.leader && factions.find((f) => f.id === assign[i].faction)?.team === team)
-    rules = { mode: 'alliance', victoryCastles: [`c${seatOf('B')}`], defeatCastles: [`c${seatOf('A')}`], defeatOnEliminated: true, size: 'medium' }
+    // Win: both enemy royal seats (or both enemy kings slain). Lose: the King's own court (or the King).
+    rules = { mode: 'alliance', victoryCastles: [`c${usurperSeat}`, `c${rivalSeat}`], defeatCastles: [`c${playerSeat}`], defeatOnEliminated: true, size: 'medium' }
     // Last Stand: hold out until the relief fleet lands (or slay the Usurper first).
     if (opts.difficulty === 'brutal') Object.assign(rules, { timeLimit: RELIEF_AT, timeoutWinner: 'A' as const })
   }
@@ -521,7 +513,7 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
     castles.push({
       id: `c${i}`,
       name: fixed && !a.capital ? fixed.name : castleName(),
-      subtitle: fixed && !a.capital ? fixed.subtitle : a.capital ? (a.faction === PLAYER ? "The King's Court" : a.tier >= ROYAL_SEAT_TIER ? "The Usurper's Court" : f?.leader ? 'High Seat' : 'Seat of the Realm') : a.stronghold ? 'Stronghold' : a.staging ? 'War Camp' : 'Castle',
+      subtitle: fixed && !a.capital ? fixed.subtitle : a.capital ? (a.faction === PLAYER ? "The King's Court" : !alliance ? "The Usurper's Court" : a.faction === 'A1' ? 'The Allied Court' : a.faction === 'B0' ? "The Usurper's Court" : a.faction === 'B1' ? 'The Iron Court' : 'Seat of the Realm') : a.stronghold ? 'Stronghold' : a.staging ? 'War Camp' : 'Castle',
       faction: a.faction,
       tier: a.tier,
       x: Math.round(s.x),
@@ -557,7 +549,7 @@ function tryGenerate(mode: Exclude<GameMode, 'campaign'>, seed: number, opts: Ma
     key: `${mode}-${mapType}-${seed}`,
     name: `${alliance ? 'Alliance War' : 'Survival'} · ${mapDef.name}`,
     description: alliance
-      ? `${factions.length - 1} realms in two great alliances. Take the enemy High Seat.`
+      ? 'Your kingdom and the allied king who called for your help, against the Usurper and the Iron King. Slay both enemy kings, or take both their royal seats.'
       : 'Two realms of a size, each a royal seat and two strongholds. Take the enemy seat.',
     seed,
     map_size: size,

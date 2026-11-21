@@ -674,7 +674,7 @@ export function figureGeometries(kind: FigureKind, detail: 'near' | 'far' = 'nea
       break
     }
     case 'saboteur': {
-      // A saboteur of the Night Sappers (or the Rootcutters): a short hooded work-cloak over a
+      // A saboteur of the Night Sappers: a short hooded work-cloak over a
       // leather jerkin, a miner's mattock in hand, a shuttered dark-lantern at the belt glowing
       // through its slits, a coil of fuse-rope and a powder-pot satchel on the back.
       const coat = 0x4a3a2a
@@ -705,7 +705,7 @@ export function figureGeometries(kind: FigureKind, detail: 'near' | 'far' = 'nea
       break
     }
     case 'outrider': {
-      // An outrider of the Wardens (or the Thorn Hunt): a mounted bowman on a lean steppe horse with
+      // An outrider of the Wardens: a mounted bowman on a lean steppe horse with
       // saddlebags and a bedroll, a sweeping hooded ranger cloak, a composite recurve bow held at
       // the ready with an arrow on the string, a feathered quiver at the hip.
       const jerkin = 0x5a6b3a

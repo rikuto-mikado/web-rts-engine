@@ -64,7 +64,8 @@ export interface PortraitSpec {
 
 export interface CommanderDef {
   key: string
-  faction: 'player' | 'enemy'
+  /** Whose court: ours, the Usurper's ('enemy'); in Alliance War also the allied king's ('ally') and the second enemy king's ('rival'). */
+  faction: 'player' | 'enemy' | 'ally' | 'rival'
   name: string
   title: string
   specialty: string
@@ -111,10 +112,12 @@ export interface FactionDef {
   name: string
   color: string
   team: Team
-  /** Leads its alliance: owns the named enemy commanders, its capital is the alliance's High Seat. */
+  /** Leads its alliance's computer-played realms (in Alliance War one of the kings): sets the alliance's target; on the enemy side owns the named commanders. */
   leader?: boolean
   /** Periodically gathers a Great Host from several castles. */
   musters?: boolean
+  /** Alliance War: heads one of the side's two kingdoms (its seat is a royal seat, its court its own commanders). */
+  king?: boolean
   personality?: 'aggressive' | 'balanced' | 'defensive'
   /** The Endless Night: pays no upkeep, needs no supply, holds nothing and is never wiped out; its broken bands crumble to dust. */
   undying?: boolean
@@ -456,9 +459,9 @@ export interface Army {
   sacred?: boolean
   /** The Whisper Blades: Corvin Ashe's own knife-men. Never reinforced (bar an abbey's sanctuary); they strike at commanders, not walls. */
   blades?: boolean
-  /** The Wardens of the March (or the enemy's Thorn Hunt): mounted bowmen who see far and find hidden bands. Fixed like the Blades. */
+  /** The Wardens of the March: mounted bowmen who see far and find hidden bands. Fixed like the Blades. */
   wardens?: boolean
-  /** The Night Sappers (or the enemy's Rootcutters): a fixed band of hidden saboteurs. */
+  /** The Night Sappers: a fixed band of hidden saboteurs. */
   sappers?: boolean
   /** Sighted by a side's Wardens: that side keeps it on the map until this time (by team). */
   marked?: Record<string, number>
@@ -548,6 +551,10 @@ export interface GreatHostState {
   nextAt: number
   startedAt: number
   wave: number
+  /** A conqueror's host pressing on from castle to castle: how many it has taken on this march. */
+  pushes?: number
+  /** The castle the host is marching on. */
+  targetId?: string
 }
 
 /** A palisaded field camp built by an army away from castles. */
@@ -802,15 +809,12 @@ export interface GameState {
   royalId?: string | null
   /** Corvin Ashe's Whisper Blades (null: none in this war, or they are gone). */
   bladesId?: string | null
-  /** Mother Sereth's Grey Sisters (null: none in this war, or they are gone). */
+  /** Mother Sereth's Grey Sisters: the raiders' knives on Convoy Raid's forest road only (null elsewhere, or once gone). */
   sistersId?: string | null
   /** Rowan Fenwick's Wardens of the March (null: none in this war, or they are gone). */
   wardensId?: string | null
-  /** Corrick Vane's Thorn Hunt (null: none in this war, or they are gone). */
-  huntId?: string | null
-  /** The Night Sappers, and the enemy's Rootcutters (null once gone, or in modes without them). */
+  /** Tamsin Holt's Night Sappers (null once gone, or in modes without them). */
   sappersId?: string | null
-  cuttersId?: string | null
   /** Attempts the enemy's knives have made on the King. */
   kingAttempts?: number
   /** Auto-recruit spending: 'low' | 'normal' | 'high' share of net income. */

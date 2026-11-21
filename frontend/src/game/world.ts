@@ -59,7 +59,7 @@ export function wardReach(id: string): number {
  * The sizes of castle (a castle's tier). Fixed by the map, never built up:
  *
  *   1  a motte and bailey (timber)          3  a lord's seat
- *   2  a stronghold, or a small castle      4  an alliance leader's High Seat
+ *   2  a stronghold, or a small castle      4  a king's great castle (Alliance War)
  *   5  a royal seat (the King's, the Usurper's, the Sun Emperor's)
  *
  * The size sets the ground it covers and its walls, garrison room, income, manpower and stores

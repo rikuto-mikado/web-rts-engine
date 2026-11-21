@@ -7,6 +7,9 @@ class Faction(models.TextChoices):
     PLAYER = "player", "Player"
     ENEMY = "enemy", "Enemy"
     NEUTRAL = "neutral", "Neutral"
+    # Alliance War: the allied king's court, and the second enemy king's.
+    ALLY = "ally", "Allied kingdom"
+    RIVAL = "rival", "Second enemy kingdom"
 
 
 class UnitType(models.Model):

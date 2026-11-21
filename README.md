@@ -39,7 +39,7 @@ npm run dev                  # http://localhost:5173 (proxies /api to :8000)
 | Mode             | Map                                          | Goal                                                   |
 | ---------------- | -------------------------------------------- | ------------------------------------------------------ |
 | **Conquest**     | Random, small                                | Two realms of a size (a royal seat and two strongholds each): take the enemy seat, keep yours |
-| **Alliance War** | Random, medium, 16 v 16 realms               | Your alliance takes the enemy High Seat                |
+| **Alliance War** | Random, two kingdoms a side                  | Slay both enemy kings or take both their seats; keep your court |
 | **Convoy Raid**  | The Greenwood Road (one forest road)         | Escort: bring 3 of 5 gold wagons in. Raid: seize 3     |
 | **The Long Night** | The Royal Vale (the King's walled city)    | Hold the Citadel and keep the King alive until dawn    |
 | **War of the Three Crowns** | The Three Realms (a continent, three royal cities) | Shatter both rival crowns: slay their monarchs or take their Citadels |
@@ -52,7 +52,7 @@ out like the Long Night's (`layRoyalCity`: an inner and an outer wall with
 gatehouses, wards, streets and thousands of houses, the Citadel at the heart),
 and each ringed by three vassal lords and a march fortress. **Team A** is the
 player's (King Aldric, the Royal Guard, the Whisper Blades, the Night Sappers and the Wardens),
-**team B** the Usurper Queen's (Thorn Guard, Grey Sisters, Rootcutters, Thorn Hunt), and
+**team B** the Usurper Queen's (her Thorn Guard), and
 **team C** the Sun Emperor's (Vaelor the Sun-Crowned and his Solar Guard in
 bronze and gold; Vesk, Sabine and Ulric serve him). Between them: three rivers
 running out from the heart along the borders with mountain ranges broken by
@@ -279,15 +279,14 @@ backend records each match's result and battle reports.
   and track your infamy and the abbeys praying it away.
 - **Castle sizes**: every castle has a fixed size, set by the map and never
   built up: 1 a motte and bailey, 2 a stronghold (or a small castle), 3 a
-  lord's seat, 4 an alliance leader's High Seat, 5 a royal seat. The size sets
+  lord's seat, 4 a great castle, 5 a royal seat. The size sets
   its ground, walls, garrison room, income, manpower and stores
   (`CASTLE_SIZES` in `game/world.ts`). Villages keep sizes of their own
   (palisade, then stone walls they raise themselves).
 - **Strongholds**: fortresses built for war rather than lords' seats. Every
   realm's lesser holdings are strongholds (in Conquest, Alliance War and the
-  Three Crowns); its seat is its only castle. In Alliance War the two nearest
-  the player's court are the player's, and the two nearest the Usurper's High
-  Seat hers. A dry
+  Three Crowns); its seat is its only castle. In Alliance War every kingdom is
+  a royal seat and strongholds, nothing else. A dry
   ditch with a palisade and chevaux-de-frise; a curtain whose squat octagonal
   bastions carry ballistas, mangonels, braziers and watch-cupolas on flat decks;
   casemates against the back of the walls (vaults below, barracks or a firing
@@ -431,7 +430,7 @@ backend records each match's result and battle reports.
     troops waiting there hide in 4 seconds.
   - **The Deepwood**: a sea of trees rising to a dome at its heart, with a
     low mist drifting through it. Any host inside is seen only within 170m
-    (the Wardens and the Thorn Hunt read its tracks out to 450m) and sees
+    (our Wardens read its tracks out to 450m) and sees
     only half as far out itself. No charges; arrows do 50% less, horsemen
     30% less; foot 0.75x, horses 0.35x, so marching hosts go round it unless
     the way through is much shorter. Hidden bands are concealed there.
@@ -458,7 +457,7 @@ backend records each match's result and battle reports.
   captures are ranked.
 - **The Usurper Queen**: Queen Morwenna leads the enemy alliance (and the
   Ashen Dominion in Conquest) with her crimson Thorn Guard, 520 knights. She holds
-  court in the enemy High Seat and rides out at the rear of some Great Hosts,
+  court in her royal seat and rides out at the rear of some Great Hosts,
   steeling them with her presence. Destroy her guard and the war is won. Her
   last known whereabouts show as a red crown on the map and in the War tab;
   scouts who come near her bring word.
@@ -500,19 +499,22 @@ backend records each match's result and battle reports.
   unseen, it stays a secret) or a Supply Depot (raising it gives them away),
   and for stakes, pits, barricades, pitch barrels and pulling down a bridge;
   never for siege engines, the castrum, laager or redoubt, or bridging a river.
-  The Rootcutters have the same skills. Wiped out, they gather again 5 minutes later (40 strong); an abbey fills
-  them up. The enemy has the same in Brother Gall's Rootcutters, who lie up
-  outside the castle a Great Host is marching on and open its postern, the
-  Grey Sisters covering them.
+  Wiped out, they gather again 5 minutes later (40 strong); an abbey fills
+  them up.
 - **The Wardens of the March**: Rowan Fenwick leads 150 Outriders (mounted
   bowmen) and nothing else. They see 1.8x as far as an army, find hidden
   bands within 450m (concealed or disguised alike), and keep every enemy army
   they sight on our map for 60 seconds; poor in a stand-up fight, they storm
   no walls, never run out of supply and march 1.25x. Selected, they show two
-  green rings: where they find hidden bands, and how far they see. The enemy
-  has the same in Corrick Vane's Thorn Hunt, which rides with the Great Hosts,
-  hunts our Whisper Blades and circles its frontier castle. Wiped out, they
-  gather again 5 minutes later (70 strong); an abbey fills them up.
+  green rings: where they find hidden bands, and how far they see. Wiped out,
+  they gather again 5 minutes later (70 strong); an abbey fills them up.
+- **The fixed bands are ours alone**: the Blades, the Sappers and the Wardens
+  are the player's trump cards, in every war. No realm the computer plays
+  keeps spies, scouts or saboteurs (every king keeps his guard); the one
+  exception is Convoy Raid, where the raiders bring Mother Sereth and her
+  Grey Sisters onto the forest road. The computer's lords take no part in
+  the knife-work: no strikes at our commanders, no wells fouled, no wagons
+  robbed by hidden bands.
 - **Army size and battle groups**: outside the Long Night and Convoy Raid an
   army holds at most 1500 soldiers under a named commander and 800 under a
   captain (`ARMY_CAP`); mustering more leaves the rest in the garrison, and
@@ -544,16 +546,15 @@ backend records each match's result and battle reports.
   follow is picked by tapping it on the map (or from a list of the nearest).
   Escorts never merge into the army they guard; any order by hand cancels a
   standing order. Player armies only (`game/fieldorders.ts`).
-- **Fixed bands' own troops**: the Royal Guard and the Thorn Guard are
-  Household Knights, the Blades and the Sisters Assassins, the Sappers and the
-  Rootcutters Saboteurs, the Wardens and the Hunt Outriders: unit types of their own (`recruitable: false`), raised in no
-  castle, each drawn in its own harness.
-- **The Grey Abbess**: the Usurper's spymaster, Mother Sereth, leads her Grey
-  Sisters (130, by the same rules as the Blades): they strike at our
-  commanders (the King too, rarely; the easier the war, the closer our leaders
-  are guarded), cover Brother Gall's Rootcutters at their work on our
-  castles and rob our wagons, and mend in her castles. Our walls, wardens' keeps, outposts and scouts find them out, and
-  the chronicle reports it.
+- **Fixed bands' own troops**: every king's guard (the Royal Guard, the Thorn
+  Guard and the rest) is Household Knights, the Blades (and Convoy Raid's Grey
+  Sisters) Assassins, the Sappers Saboteurs, the Wardens Outriders: unit
+  types of their own (`recruitable: false`), raised in no castle, each drawn
+  in its own harness.
+- **The Grey Abbess**: on Convoy Raid's forest road, when we guard the train,
+  Mother Sereth leads the raiders' Grey Sisters (by the same rules as the
+  Blades): they strike at the leaders of our wagons' guards. Our walls,
+  outposts and scouts find them out, and the chronicle reports it.
 - **Commanders' hosts**: an army takes its commander's kind of host (Godfrey a
   siege train, Elowen raiding horse, Varian a pike wall, Isolde an archer host,
   Bran a knightly charge; a captain combined arms) and formation; the one
@@ -563,16 +564,51 @@ backend records each match's result and battle reports.
   recommended mix suits any commander, engineers included); it buys whatever
   the garrison is shortest of, spends at most 25 / 50 / 75% of net income
   (Thrifty / Steady / Eager) and always leaves 400 gold for building.
-- **Alliance War difficulty** is how much of the land your alliance still
-  holds: Squire 5:5, Knight 6:4, Warlord 7:3, Last Stand 8:2, against an enemy
-  that always plays hard. From Warlord up, palisade forts and mangonel redoubts
-  already stand at the fords and before the frontier castles. In a Last Stand,
-  holding out until the relief fleet lands (Spring 1248) also wins the war.
+- **Alliance War's kingdoms**: two a side, every one a royal seat and
+  strongholds (no lesser castles). Yours: a royal seat and two strongholds,
+  all yours to command. The allied king who called you to his aid: a royal
+  seat and five strongholds (about 62% of our side's strength), played by the
+  computer. Theirs: the Usurper's and the Iron King's (King Draven), sharing
+  the enemy's land half and half. Every king keeps a court like yours: his
+  guard (520 knights) and five field commanders, with the same strengths as
+  ours and the Usurper's but people of their own (the fixed bands are ours
+  alone). Slay a king and his kingdom
+  passes whole to the king beside him: castles with their garrisons, armies,
+  commanders and treasury. The allied king's passes to
+  you; the Iron King's to the Usurper or hers to him. Slay both enemy kings,
+  or take both their royal seats, and the war is won; lose your own court or
+  the King and it is lost. The map is as large as its castles need (a Squire's
+  war on a smaller map than a Last Stand). Kings cannot be bought off.
+- **Ways of war** (`WAYS` in `game/ai.ts`): the computer's realms do not
+  fight alike. Every foe is a **conqueror**, aggressive but not reckless: it
+  musters its Great Hosts a quarter sooner, marches only on a castle it
+  outweighs 1.15 to 1 (its garrison and the armies about it), and having taken
+  one presses on to the next it can win close by (up to three on one march)
+  instead of turning home; it brings more engineers for the sieges. Our
+  allies are **tacticians**: they fall on an enemy host's detachments while
+  they are still gathering, strike at the castles an enemy host has left bare
+  behind it, choose their targets by how weakly they are held, break off a
+  losing fight sooner (at 65% of their men, not 55%), and when you lay siege
+  to a castle they send men to the assault if you are short, otherwise strike
+  at the castle next to it so that no relief comes from there. In the Alliance
+  War their Great Hosts muster as often and as strong as the enemy's. (The player's
+  realm, played by the computer only on autopilot for balance tests, keeps
+  neither.)
+- **Alliance War difficulty** is how strong the enemy's two kingdoms are
+  against ours (a royal seat worth five strongholds' two): Squire 5:5 (9
+  castles to their 9), Knight 6:4 (15), Warlord 7:3 (25), Last Stand 8:2 (45).
+  Every king, ally or foe, earns the same from a castle and musters his Great
+  Hosts at the same steady pace: the land is the only difference. Our court
+  stands deepest; the allied king's, whose land is being invaded, nearer the
+  front. From Warlord up, palisade forts
+  and mangonel redoubts already stand at the fords and before the frontier
+  castles. In a Last Stand, holding out until the relief fleet lands (Spring
+  1248) also wins the war.
 - **The High King's Blessing** (Alliance War, any difficulty, off unless
   chosen on the menu): the Sanctuary of the High King, a round temple of white
   marble with a gilded dome and a blue-white sacred flame, stands on open
   ground in our own country: about a fifth of the way from your court towards
-  the enemy High Seat (at least 1.4km out), its nearest castle always one of
+  the Usurper's seat (at least 1.4km out), its nearest castle always one of
   ours and every enemy castle as far off as the map allows (in practice 2.2km
   or more). Once in the war the King may pray there: his guard within 65m, out
   of any fight, for 30 seconds (the count pauses if he leaves or is attacked,
@@ -584,7 +620,7 @@ backend records each match's result and battle reports.
     Household Knights, never raised in a castle) come down at the Sanctuary,
     two bands of 400 every 40 seconds, at most six bands in the field, each
     led by one of his five Justices in turn. Each band rides for the nearest
-    enemy castle (never the enemy High Seat); the castles they take are ours.
+    enemy castle (never an enemy royal seat); the castles they take are ours.
     They need no supply, pay no upkeep, never break and always fight blessed.
     When they have taken 4 castles (or after 10 minutes) they go home.
 - **War report**: when the war ends, a thirty-second timelapse replays it on
